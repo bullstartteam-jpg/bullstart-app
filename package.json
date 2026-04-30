@@ -1,0 +1,73 @@
+{
+  "name": "bullstart",
+  "version": "1.0.0",
+  "description": "BullStart Desktop App",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "webpack serve --config webpack.renderer.config.js & electron .",
+    "build:renderer": "webpack --config webpack.renderer.config.js --mode production",
+    "build:win": "npm run build:renderer && electron-builder --win",
+    "build:mac": "npm run build:renderer && electron-builder --mac",
+    "build:linux": "npm run build:renderer && electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.bullstart.app",
+    "productName": "BullStart",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "src/main/**/*",
+      "build/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build-resources/icon.png",
+      "signAndEditExecutable": false
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "build-resources/icon.png"
+    },
+    "linux": {
+      "icon": "build-resources/icon.png"
+    }
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-env": "^7.29.2",
+    "@babel/preset-react": "^7.28.5",
+    "@tailwindcss/postcss": "^4.2.4",
+    "babel-loader": "^10.1.1",
+    "css-loader": "^7.1.4",
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1",
+    "html-webpack-plugin": "^5.6.7",
+    "postcss": "^8.5.12",
+    "postcss-loader": "^8.2.1",
+    "style-loader": "^4.0.0",
+    "tailwindcss": "^4.2.4",
+    "webpack": "^5.106.2",
+    "webpack-cli": "^7.0.2",
+    "webpack-dev-server": "^5.2.3"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1039.0",
+    "axios": "^1.15.2",
+    "bwip-js": "^4.10.1",
+    "jsbarcode": "^3.12.3",
+    "pdf-lib": "^1.17.1",
+    "qrcode": "^1.5.4",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "react-router-dom": "^7.14.2"
+  }
+}

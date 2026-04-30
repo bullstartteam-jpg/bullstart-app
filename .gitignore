@@ -1,0 +1,15 @@
+*.log
+.DS_Store
+.env
+.env.backup
+.env.production
+.env.local
+/.fleet
+/.idea
+/.nova
+/.vscode
+/.zed
+/build
+/dist
+/node_modules
+Thumbs.db
