@@ -151,6 +151,21 @@ export default function Orders() {
     }
   };
 
+  const handleBulkReProduction = async () => {
+    if (selected.length === 0) return;
+    const ok = await askConfirm(`Re-production ${selected.length} order(s)?\nĐặt production=false cho orders và toàn bộ order_item_metas của chúng. Đơn sẽ được tính lại trong gangsheet kế tiếp.`, { title: 'Confirm re-production', okText: 'Re-production' });
+    if (!ok) return;
+    try {
+      const res = await api.post('/orders/bulk-re-production', { order_ids: selected });
+      await notify(res.data.message, { title: 'Bulk re-production', kind: 'success' });
+      setSelected([]);
+      fetchOrders();
+      refreshUnpaidBanner();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Error', { title: 'Re-production failed', kind: 'error' });
+    }
+  };
+
   const handleBulkDelete = async () => {
     if (selected.length === 0) return;
     const ok = await askConfirm(`Delete ${selected.length} order(s)? This cannot be undone.`, { title: 'Confirm delete', okText: 'Delete' });
@@ -315,6 +330,11 @@ export default function Orders() {
             {isStaff && (
               <button onClick={handleBulkReconvert} className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded-lg">
                 Bulk Reconvert
+              </button>
+            )}
+            {isAdmin && (
+              <button onClick={handleBulkReProduction} className="px-3 py-1.5 bg-purple-500 hover:bg-purple-600 text-white text-xs rounded-lg" title="Reset production flag of orders and all metas so they re-enter the gangsheet pipeline">
+                Bulk Re-Production
               </button>
             )}
             {isAdmin && (

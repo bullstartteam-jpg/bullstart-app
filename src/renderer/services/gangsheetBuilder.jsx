@@ -7,11 +7,11 @@ const DPI = 300;
 const PT_PER_IN = 72;
 const pxToPt = (px) => (px / DPI) * PT_PER_IN;
 
-// Page: landscape 11 × 8.5 inch  (3300 × 2550 px @ 300 DPI)
+// Page: landscape 11 × 8.5 inch (3300 × 2550 px @ 300 DPI).
 const PAGE_W = 11  * PT_PER_IN;   // 792
 const PAGE_H = 8.5 * PT_PER_IN;   // 612
 
-// Design: landscape 3030 × 2130 px @ 300 DPI → 10.1 × 7.1 inch → 727.2 × 511.2 pt
+// Design: landscape 3030 × 2130 px @ 300 DPI → 10.1 × 7.1 inch → 727.2 × 511.2 pt.
 const DESIGN_W = pxToPt(3030);
 const DESIGN_H = pxToPt(2130);
 
@@ -136,8 +136,6 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
 
     const page = pdf.addPage([PAGE_W, PAGE_H]);
     // Center the design horizontally and pin it flush with the top edge.
-    // pdf-lib uses a bottom-left origin, so y = PAGE_H - DESIGN_H makes the
-    // top edge of the design align with the top edge of the page.
     const x = (PAGE_W - DESIGN_W) / 2;
     const y = PAGE_H - DESIGN_H;
     page.drawImage(img, { x, y, width: DESIGN_W, height: DESIGN_H });

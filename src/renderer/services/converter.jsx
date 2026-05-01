@@ -184,13 +184,33 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   const sourceW = sourceImg.naturalWidth || sourceImg.width;
   const sourceH = sourceImg.naturalHeight || sourceImg.height;
 
+  // _qr output must always be landscape (width >= height). If the source is
+  // portrait (e.g. a 2130×3030 design), rotate it 90° counter-clockwise so the
+  // printed _qr is landscape with the original "top edge" of the design on the right.
+  const isPortraitSource = sourceW < sourceH;
+  const aspect = sourceW / Math.max(1, sourceH);
+  console.log('[converter] composeImage', { systemId, sourceW, sourceH, aspect: aspect.toFixed(4), isPortraitSource });
+
   const canvas = document.createElement('canvas');
-  canvas.width = sourceW;
-  canvas.height = sourceH;
+  if (isPortraitSource) {
+    canvas.width = sourceH;   // landscape width = original height
+    canvas.height = sourceW;  // landscape height = original width
+  } else {
+    canvas.width = sourceW;
+    canvas.height = sourceH;
+  }
   const ctx = canvas.getContext('2d');
 
-  // 1. Source design fills the canvas (no footer band).
-  ctx.drawImage(sourceImg, 0, 0);
+  // 1. Source design fills the canvas (rotated 90° CCW for portrait sources).
+  if (isPortraitSource) {
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(sourceImg, -sourceW / 2, -sourceH / 2);
+    ctx.restore();
+  } else {
+    ctx.drawImage(sourceImg, 0, 0);
+  }
 
   // 2. Build content. Barcode encodes ONLY the short system_id so the bars
   //    stay narrow even with a 1D format. The accessory summary lives in
@@ -214,7 +234,9 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   const panelW = innerW + PANEL_PAD * 2;
   const panelH = TEXT_H + TEXT_TO_BAR + BARCODE_H + PANEL_PAD * 2;
   const panelX = MARGIN;
-  const panelY = sourceH - MARGIN - panelH;
+  // Use the (possibly rotated) canvas height so the panel always sits at the
+  // bottom-left of the printed orientation.
+  const panelY = canvas.height - MARGIN - panelH;
 
   // 3a. White panel background — keeps the barcode scannable on busy designs.
   ctx.fillStyle = '#ffffff';
@@ -235,6 +257,7 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
     BARCODE_H
   );
 
+  console.log('[converter] composeImage output canvas', { systemId, canvasW: canvas.width, canvasH: canvas.height });
   return await canvasToBlob(canvas, 'image/png');
 }
 
