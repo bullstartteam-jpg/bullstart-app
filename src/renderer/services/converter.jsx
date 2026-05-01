@@ -150,10 +150,9 @@ async function processOne(item, meta) {
 }
 
 /**
- * Render a Code 128 1D barcode into a fresh canvas. We only encode the
- * short system_id (e.g. "GC123") — the longer accessory summary stays as the
- * human-readable text label above the bars. With ~5-10 chars Code 128 fits
- * in a very narrow strip.
+ * Render a Code 128 1D barcode into a fresh canvas. Encodes only the short
+ * system_id (e.g. "PS_C115"). Background is transparent so the bars sit on
+ * the design without an opaque rectangle.
  */
 function generateBarcodeCanvas(value) {
   const c = document.createElement('canvas');
@@ -162,10 +161,10 @@ function generateBarcodeCanvas(value) {
     text: value,
     scale: 3,
     height: 14,         // mm — taller bars are easier to scan
-    includetext: false, // we render our own label
+    includetext: false,
     paddingwidth: 0,
     paddingheight: 0,
-    backgroundcolor: 'FFFFFF',
+    // No backgroundcolor → transparent gaps between bars.
   });
   return c;
 }
@@ -178,7 +177,10 @@ function generateBarcodeCanvas(value) {
  */
 async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   const id = driveId(sourceUrl);
-  const fetchUrl = id ? driveThumb(sourceUrl, 'w1600') : sourceUrl;
+  // Drive thumbnails are capped at the requested width; w3230 covers the full
+  // 3030/3130-px native designs at 300 DPI (10.1×7.1 in landscape) without
+  // downsampling. Direct (non-Drive) URLs are fetched at native resolution.
+  const fetchUrl = id ? driveThumb(sourceUrl, 'w3230') : sourceUrl;
 
   const sourceImg = await loadImage(fetchUrl);
   const sourceW = sourceImg.naturalWidth || sourceImg.width;
@@ -212,19 +214,18 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
     ctx.drawImage(sourceImg, 0, 0);
   }
 
-  // 2. Build content. Barcode encodes ONLY the short system_id so the bars
-  //    stay narrow even with a 1D format. The accessory summary lives in
-  //    the human-readable label above.
+  // 2. Build content. Code 128 1D barcode encodes only the short system_id.
+  //    The accessory summary lives in the human-readable text label above.
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
   const barcodeCanvas = generateBarcodeCanvas(systemId);
 
-  // 3. Overlay layout — bottom-left corner, with extra inset (+30 right, +30 up).
+  // 3. Overlay layout — bottom-left corner.
   const MARGIN = 60;
   const PANEL_PAD = 10;
   const TEXT_H = 22;
   const TEXT_TO_BAR = 6;
-  const BARCODE_W = 200;
-  const BARCODE_H = 50;
+  const BARCODE_W = 350;
+  const BARCODE_H = 130;
 
   // Measure text width so the panel always fits both the label and the barcode.
   ctx.font = 'bold 18px sans-serif';
@@ -234,21 +235,20 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   const panelW = innerW + PANEL_PAD * 2;
   const panelH = TEXT_H + TEXT_TO_BAR + BARCODE_H + PANEL_PAD * 2;
   const panelX = MARGIN;
-  // Use the (possibly rotated) canvas height so the panel always sits at the
+  // Use the (possibly rotated) canvas height so the overlay always sits at the
   // bottom-left of the printed orientation.
   const panelY = canvas.height - MARGIN - panelH;
 
-  // 3a. White panel background — keeps the barcode scannable on busy designs.
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(panelX, panelY, panelW, panelH);
+  // No background panel — the barcode and label are drawn directly onto the
+  // design with transparent gaps so the artwork below shows through.
 
-  // 3b. Code label above the barcode.
+  // Text label above the barcode.
   ctx.fillStyle = '#000000';
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
   ctx.fillText(codeText, panelX + PANEL_PAD, panelY + PANEL_PAD);
 
-  // 3c. Barcode below the label, left-aligned within the panel.
+  // Barcode below the label, left-aligned within the layout slot.
   ctx.drawImage(
     barcodeCanvas,
     panelX + PANEL_PAD,
@@ -258,7 +258,8 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   );
 
   console.log('[converter] composeImage output canvas', { systemId, canvasW: canvas.width, canvasH: canvas.height });
-  return await canvasToBlob(canvas, 'image/png');
+  const rawBlob = await canvasToBlob(canvas, 'image/png');
+  return await setPngDpi(rawBlob, 300);
 }
 
 function canvasToBlob(canvas, type = 'image/png') {
@@ -268,6 +269,76 @@ function canvasToBlob(canvas, type = 'image/png') {
       type
     );
   });
+}
+
+// Inject a pHYs chunk into a PNG blob so it advertises 300 DPI metadata. The
+// raster pixels are unchanged — this only fixes how viewers (Drive, Photoshop,
+// printers honoring the chunk) report the resolution.
+async function setPngDpi(blob, dpi = 300) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  // PNG signature (8 bytes) + IHDR chunk header. We insert pHYs right after
+  // IHDR — that's the spec-compliant location.
+  const SIG_LEN = 8;
+  // IHDR: 4 length + 4 type + 13 data + 4 CRC = 25 bytes
+  const IHDR_END = SIG_LEN + 25;
+
+  // Strip any existing pHYs chunk to avoid duplicates.
+  const stripped = stripPhysChunk(buf);
+
+  const ppm = Math.round(dpi / 0.0254); // pixels per meter
+  const phys = new Uint8Array(4 + 4 + 9 + 4);
+  // length (9)
+  phys[0] = 0; phys[1] = 0; phys[2] = 0; phys[3] = 9;
+  // type "pHYs"
+  phys[4] = 0x70; phys[5] = 0x48; phys[6] = 0x59; phys[7] = 0x73;
+  // data: ppmX (4), ppmY (4), unit (1=meter)
+  const dv = new DataView(phys.buffer);
+  dv.setUint32(8, ppm, false);
+  dv.setUint32(12, ppm, false);
+  phys[16] = 1;
+  // CRC over type + data
+  const crc = crc32(phys.subarray(4, 17));
+  dv.setUint32(17, crc, false);
+
+  const out = new Uint8Array(stripped.length + phys.length);
+  out.set(stripped.subarray(0, IHDR_END), 0);
+  out.set(phys, IHDR_END);
+  out.set(stripped.subarray(IHDR_END), IHDR_END + phys.length);
+  return new Blob([out], { type: 'image/png' });
+}
+
+function stripPhysChunk(buf) {
+  let i = 8;
+  while (i < buf.length) {
+    const len = (buf[i] << 24) | (buf[i + 1] << 16) | (buf[i + 2] << 8) | buf[i + 3];
+    const type = String.fromCharCode(buf[i + 4], buf[i + 5], buf[i + 6], buf[i + 7]);
+    const total = 4 + 4 + len + 4;
+    if (type === 'pHYs') {
+      const out = new Uint8Array(buf.length - total);
+      out.set(buf.subarray(0, i), 0);
+      out.set(buf.subarray(i + total), i);
+      return out;
+    }
+    if (type === 'IEND') break;
+    i += total;
+  }
+  return buf;
+}
+
+// Standard PNG CRC32 (poly 0xEDB88320). Cached table.
+let _crcTable = null;
+function crc32(bytes) {
+  if (!_crcTable) {
+    _crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      _crcTable[n] = c >>> 0;
+    }
+  }
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) crc = (_crcTable[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8)) >>> 0;
+  return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 
 // Load an image either via direct <img> (works for non-tainted CORS-friendly URLs)
