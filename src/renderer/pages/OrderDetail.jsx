@@ -5,6 +5,7 @@ import api, { getApiUrl } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { UrlPreview, PreviewModal } from '../components/Preview';
 import { isPreviewable } from '../utils/drive';
+import { notify, askConfirm } from '../components/Dialog';
 
 const STATUS_MAP = ['new_order', 'processing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
@@ -44,33 +45,55 @@ export default function OrderDetail() {
   };
 
   const handlePay = async () => {
+    // Frontend pre-check: compare order's unpaid amount to wallet balance.
+    try {
+      const balanceRes = await api.get('/wallet/balance');
+      const wallet = parseFloat(balanceRes.data.wallet) || 0;
+      const required = (parseFloat(order?.total_cost) || 0) - (parseFloat(order?.paid_cost) || 0);
+      if (required <= 0) {
+        return notify('Order already fully paid.', { title: 'Nothing to pay' });
+      }
+      if (wallet < required) {
+        return notify(`Insufficient wallet balance.\nRequired: $${required.toFixed(2)}\nWallet: $${wallet.toFixed(2)}\nShort by: $${(required - wallet).toFixed(2)}`, { title: 'Cannot pay', kind: 'error' });
+      }
+      const ok = await askConfirm(`Pay $${required.toFixed(2)} for this order?`, { title: 'Confirm pay', okText: 'Pay' });
+      if (!ok) return;
+    } catch {
+      // fall through; backend will enforce
+    }
     try {
       const res = await api.post(`/orders/${id}/pay`);
-      alert(res.data.message);
+      await notify(res.data.message, { title: 'Pay', kind: 'success' });
       fetchOrder();
     } catch (err) {
-      alert(err.response?.data?.message || 'Error');
+      const d = err.response?.data;
+      const msg = d?.required != null && d?.wallet != null
+        ? `${d.message}.\nRequired: $${d.required}\nWallet: $${d.wallet}`
+        : (d?.message || 'Error');
+      notify(msg, { title: 'Pay failed', kind: 'error' });
     }
   };
 
   const handleDelete = async () => {
-    if (!confirm('Delete this order?')) return;
+    const ok = await askConfirm('Delete this order?', { title: 'Confirm delete', okText: 'Delete' });
+    if (!ok) return;
     try {
       await api.delete(`/orders/${id}`);
       navigate('/orders');
     } catch (err) {
-      alert(err.response?.data?.message || 'Error');
+      notify(err.response?.data?.message || 'Error', { title: 'Delete failed', kind: 'error' });
     }
   };
 
   const handleReconvert = async () => {
-    if (!confirm('Reconvert all _qr images for this order?\nExisting QR-overlaid images will be removed and re-built by the converter cron.')) return;
+    const ok = await askConfirm('Reconvert all _qr images for this order?\nExisting QR-overlaid images will be removed and re-built by the converter cron.', { title: 'Reconvert', okText: 'Reconvert' });
+    if (!ok) return;
     try {
       const res = await api.post(`/orders/${id}/reconvert`);
-      alert(res.data.message);
+      await notify(res.data.message, { title: 'Reconvert', kind: 'success' });
       fetchOrder();
     } catch (err) {
-      alert(err.response?.data?.message || 'Error');
+      notify(err.response?.data?.message || 'Error', { title: 'Reconvert failed', kind: 'error' });
     }
   };
 

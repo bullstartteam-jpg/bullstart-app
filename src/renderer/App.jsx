@@ -15,6 +15,7 @@ import Tiers from './pages/Tiers';
 import Convert from './pages/Convert';
 import Gangsheet from './pages/Gangsheet';
 import Profile from './pages/Profile';
+import { DialogHost } from './components/Dialog';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -25,23 +26,26 @@ function ProtectedRoute({ children }) {
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-        <Route index element={<Dashboard />} />
-        <Route path="orders" element={<Orders />} />
-        <Route path="orders/create" element={<OrderCreate />} />
-        <Route path="orders/:id" element={<OrderDetail />} />
-        <Route path="products" element={<Products />} />
-        <Route path="products/:id" element={<ProductDetail />} />
-        <Route path="wallet" element={<Wallet />} />
-        <Route path="users" element={<Users />} />
-        <Route path="tiers" element={<Tiers />} />
-        <Route path="settings" element={<Settings />} />
-        <Route path="convert" element={<Convert />} />
-        <Route path="gangsheet" element={<Gangsheet />} />
-        <Route path="profile" element={<Profile />} />
-      </Route>
-    </Routes>
+    <>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+          <Route index element={<Dashboard />} />
+          <Route path="orders" element={<Orders />} />
+          <Route path="orders/create" element={<OrderCreate />} />
+          <Route path="orders/:id" element={<OrderDetail />} />
+          <Route path="products" element={<Products />} />
+          <Route path="products/:id" element={<ProductDetail />} />
+          <Route path="wallet" element={<Wallet />} />
+          <Route path="users" element={<Users />} />
+          <Route path="tiers" element={<Tiers />} />
+          <Route path="settings" element={<Settings />} />
+          <Route path="convert" element={<Convert />} />
+          <Route path="gangsheet" element={<Gangsheet />} />
+          <Route path="profile" element={<Profile />} />
+        </Route>
+      </Routes>
+      <DialogHost />
+    </>
   );
 }

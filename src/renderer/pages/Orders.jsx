@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { notify, askConfirm } from '../components/Dialog';
 
 const STATUS_MAP = ['new_order', 'processing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
@@ -26,6 +27,19 @@ export default function Orders() {
   const isStaff = hasRole('admin') || hasRole('support');
   const isAdmin = hasRole('admin');
   const navigate = useNavigate();
+
+  // Pay-All preview modal state
+  const [showPayAll, setShowPayAll] = useState(false);
+  const [payAllUserId, setPayAllUserId] = useState('');
+  const [payAllSummary, setPayAllSummary] = useState(null);
+  const [payAllLoading, setPayAllLoading] = useState(false);
+  const [adminUsers, setAdminUsers] = useState([]);
+
+  useEffect(() => {
+    if (isAdmin) {
+      api.get('/users', { params: { per_page: 100 } }).then(res => setAdminUsers(res.data.data || []));
+    }
+  }, [isAdmin]);
 
   const fetchOrders = () => {
     setLoading(true);
@@ -56,13 +70,40 @@ export default function Orders() {
 
   const handleBulkPay = async () => {
     if (selected.length === 0) return;
+
+    // Frontend pre-check: sum unpaid amounts of selected orders, compare against wallet.
+    try {
+      const balanceRes = await api.get('/wallet/balance');
+      const wallet = parseFloat(balanceRes.data.wallet) || 0;
+      const required = orders
+        .filter(o => selected.includes(o.id))
+        .reduce((sum, o) => {
+          const remain = (parseFloat(o.total_cost) || 0) - (parseFloat(o.paid_cost) || 0);
+          return remain > 0 ? sum + remain : sum;
+        }, 0);
+      if (required <= 0) {
+        return notify('All selected orders are already fully paid.', { title: 'Nothing to pay' });
+      }
+      if (wallet < required) {
+        return notify(`Insufficient wallet balance.\nRequired: $${required.toFixed(2)}\nWallet: $${wallet.toFixed(2)}\nShort by: $${(required - wallet).toFixed(2)}`, { title: 'Cannot pay', kind: 'error' });
+      }
+      const ok = await askConfirm(`Pay ${selected.length} order(s) for $${required.toFixed(2)}?`, { title: 'Confirm bulk pay', okText: 'Pay' });
+      if (!ok) return;
+    } catch {
+      // If balance check fails, fall through and let backend enforce.
+    }
+
     try {
       const res = await api.post('/orders/bulk-pay', { order_ids: selected });
-      alert(res.data.message);
+      await notify(res.data.message, { title: 'Bulk pay', kind: 'success' });
       setSelected([]);
       fetchOrders();
     } catch (err) {
-      alert(err.response?.data?.message || 'Error');
+      const d = err.response?.data;
+      const msg = d?.required != null && d?.wallet != null
+        ? `${d.message}.\nRequired: $${d.required}\nWallet: $${d.wallet}`
+        : (d?.message || 'Error');
+      notify(msg, { title: 'Bulk pay failed', kind: 'error' });
     }
   };
 
@@ -73,42 +114,89 @@ export default function Orders() {
     const text = ids.join('\n');
     try {
       await navigator.clipboard.writeText(text);
-      alert(`Copied ${ids.length} system ID${ids.length > 1 ? 's' : ''} to clipboard`);
+      notify(`Copied ${ids.length} system ID${ids.length > 1 ? 's' : ''} to clipboard`, { kind: 'success' });
     } catch {
-      // Fallback: textarea trick
       const ta = document.createElement('textarea');
       ta.value = text;
       document.body.appendChild(ta);
       ta.select();
       document.execCommand('copy');
       document.body.removeChild(ta);
-      alert(`Copied ${ids.length} system ID${ids.length > 1 ? 's' : ''}`);
+      notify(`Copied ${ids.length} system ID${ids.length > 1 ? 's' : ''}`, { kind: 'success' });
     }
   };
 
   const handleBulkReconvert = async () => {
     if (selected.length === 0) return;
-    if (!confirm(`Reconvert ${selected.length} order(s)?\nTheir _qr metas will be removed and rebuilt by the converter cron.`)) return;
+    const ok = await askConfirm(`Reconvert ${selected.length} order(s)?\nTheir _qr metas will be removed and rebuilt by the converter cron.`, { title: 'Confirm reconvert', okText: 'Reconvert' });
+    if (!ok) return;
     try {
       const res = await api.post('/orders/bulk-reconvert', { order_ids: selected });
-      alert(res.data.message);
+      await notify(res.data.message, { title: 'Bulk reconvert', kind: 'success' });
       setSelected([]);
       fetchOrders();
     } catch (err) {
-      alert(err.response?.data?.message || 'Error');
+      notify(err.response?.data?.message || 'Error', { title: 'Reconvert failed', kind: 'error' });
     }
   };
 
   const handleBulkDelete = async () => {
     if (selected.length === 0) return;
-    if (!confirm(`Delete ${selected.length} order(s)? This cannot be undone.`)) return;
+    const ok = await askConfirm(`Delete ${selected.length} order(s)? This cannot be undone.`, { title: 'Confirm delete', okText: 'Delete' });
+    if (!ok) return;
     try {
       const res = await api.post('/orders/bulk-delete', { order_ids: selected });
-      alert(res.data.message);
+      await notify(res.data.message, { title: 'Bulk delete', kind: 'success' });
       setSelected([]);
       fetchOrders();
     } catch (err) {
-      alert(err.response?.data?.message || 'Error');
+      notify(err.response?.data?.message || 'Error', { title: 'Delete failed', kind: 'error' });
+    }
+  };
+
+  const fetchPayAllSummary = async (userId) => {
+    setPayAllLoading(true);
+    setPayAllSummary(null);
+    try {
+      const params = userId ? { user_id: userId } : {};
+      const res = await api.get('/orders/unpaid-summary', { params });
+      setPayAllSummary(res.data);
+    } catch (err) {
+      notify(err.response?.data?.message || 'Error fetching summary', { title: 'Error', kind: 'error' });
+      setShowPayAll(false);
+    } finally {
+      setPayAllLoading(false);
+    }
+  };
+
+  const openPayAll = () => {
+    setShowPayAll(true);
+    setPayAllUserId('');
+    setPayAllSummary(null);
+    if (!isAdmin) {
+      // Seller: fetch summary for self immediately
+      fetchPayAllSummary(null);
+    }
+  };
+
+  const confirmPayAll = async () => {
+    if (!payAllSummary) return;
+    if (payAllSummary.short > 0) return; // safety
+    setPayAllLoading(true);
+    try {
+      const payload = isAdmin && payAllUserId ? { user_id: Number(payAllUserId) } : {};
+      const res = await api.post('/orders/pay-all-unpaid', payload);
+      setShowPayAll(false);
+      await notify(res.data.message, { title: 'Pay all unpaid', kind: 'success' });
+      fetchOrders();
+    } catch (err) {
+      const d = err.response?.data;
+      const msg = d?.required != null && d?.wallet != null
+        ? `${d.message}.\nRequired: $${d.required}\nWallet: $${d.wallet}\nShort by: $${(d.required - d.wallet).toFixed(2)}`
+        : (d?.message || 'Error');
+      notify(msg, { title: 'Cannot pay all', kind: 'error' });
+    } finally {
+      setPayAllLoading(false);
     }
   };
 
@@ -129,6 +217,9 @@ export default function Orders() {
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl font-bold text-neutral-800">Orders</h2>
         <div className="flex gap-2">
+          <button onClick={openPayAll} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-sm rounded-lg transition-colors">
+            Pay All Unpaid
+          </button>
           {hasPermission('orders', 'can_create') && (
             <Link to="/orders/create" className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg transition-colors">
               New Order
@@ -274,6 +365,73 @@ export default function Orders() {
           </div>
         );
       })()}
+
+      {/* Pay-All preview modal */}
+      {showPayAll && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setShowPayAll(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-[480px] max-w-[90%] p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-neutral-800 mb-3">Pay All Unpaid Orders</h3>
+
+            {isAdmin && (
+              <div className="mb-3">
+                <label className="text-xs text-neutral-500">User</label>
+                <select
+                  value={payAllUserId}
+                  onChange={e => {
+                    const v = e.target.value;
+                    setPayAllUserId(v);
+                    if (v) fetchPayAllSummary(v);
+                    else setPayAllSummary(null);
+                  }}
+                  className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
+                >
+                  <option value="">Select user...</option>
+                  {adminUsers.map(u => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
+                </select>
+              </div>
+            )}
+
+            {payAllLoading && <p className="text-sm text-neutral-500 py-3">Loading…</p>}
+
+            {payAllSummary && !payAllLoading && (
+              <div className="space-y-1.5 text-sm bg-[#faf8f6] rounded-lg p-3 border border-neutral-200">
+                {isAdmin && (
+                  <div className="flex justify-between"><span className="text-neutral-500">User</span><span className="text-neutral-800">{payAllSummary.user_name}</span></div>
+                )}
+                <div className="flex justify-between"><span className="text-neutral-500">Unpaid orders</span><span className="text-neutral-800 font-medium">{payAllSummary.count}</span></div>
+                <div className="flex justify-between"><span className="text-neutral-500">Total to pay</span><span className="text-neutral-800 font-semibold">${Number(payAllSummary.total_unpaid).toFixed(2)}</span></div>
+                <div className="flex justify-between"><span className="text-neutral-500">Wallet balance</span><span className="text-neutral-800">${Number(payAllSummary.wallet).toFixed(2)}</span></div>
+                {payAllSummary.short > 0 ? (
+                  <div className="flex justify-between border-t border-neutral-200 pt-1.5 mt-1.5">
+                    <span className="text-red-500 font-medium">Short by</span>
+                    <span className="text-red-500 font-semibold">${Number(payAllSummary.short).toFixed(2)}</span>
+                  </div>
+                ) : (
+                  <div className="flex justify-between border-t border-neutral-200 pt-1.5 mt-1.5">
+                    <span className="text-emerald-600 font-medium">After paying</span>
+                    <span className="text-emerald-600 font-semibold">${(Number(payAllSummary.wallet) - Number(payAllSummary.total_unpaid)).toFixed(2)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {payAllSummary && payAllSummary.count === 0 && (
+              <p className="text-sm text-neutral-500 mt-2">No unpaid orders.</p>
+            )}
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setShowPayAll(false)} className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Cancel</button>
+              <button
+                onClick={confirmPayAll}
+                disabled={!payAllSummary || payAllSummary.count === 0 || payAllSummary.short > 0 || payAllLoading}
+                className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg"
+              >
+                {payAllLoading ? 'Paying…' : `Pay $${payAllSummary ? Number(payAllSummary.total_unpaid).toFixed(2) : '0.00'}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

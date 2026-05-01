@@ -4,6 +4,7 @@ import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { driveThumb, isPreviewable } from '../utils/drive';
 import { UrlPreview, PreviewModal } from '../components/Preview';
+import { notify, askConfirm } from '../components/Dialog';
 
 const META_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
 
@@ -127,11 +128,12 @@ export default function OrderCreate() {
       } catch (err) {
         if (err.response?.status === 409 && Array.isArray(err.response?.data?.duplicates)) {
           const dups = err.response.data.duplicates.join(', ');
-          if (!confirm(`Ref_id đã tồn tại: ${dups}\n\nCó muốn tiếp tục tạo order không?`)) {
+          const cont = await askConfirm(`Ref_id đã tồn tại: ${dups}\n\nCó muốn tiếp tục tạo order không?`, { title: 'Duplicate ref_id', okText: 'Tiếp tục', cancelText: 'Huỷ' });
+          if (!cont) {
             setLoading(false);
             return;
           }
-          const doRename = confirm(`Có muốn thêm hậu tố _r_<số> vào ref_id để tránh trùng không?\n\nOK = Có (auto rename)\nCancel = Không (giữ nguyên ref_id trùng)`);
+          const doRename = await askConfirm('Có muốn thêm hậu tố _r_<số> vào ref_id để tránh trùng không?', { title: 'Rename ref_id', okText: 'Có (auto rename)', cancelText: 'Không (giữ trùng)' });
           res = await submitOrder({ force: true, rename: doRename });
         } else {
           throw err;
@@ -139,7 +141,9 @@ export default function OrderCreate() {
       }
       navigate(`/orders/${res.data.order.id}`);
     } catch (err) {
-      alert(err.response?.data?.message || JSON.stringify(err.response?.data?.errors) || 'Error');
+      const errs = err.response?.data?.errors;
+      const msg = err.response?.data?.message || (errs ? Object.values(errs).flat().join('\n') : 'Error');
+      notify(msg, { title: 'Create order failed', kind: 'error' });
     } finally {
       setLoading(false);
     }
@@ -164,11 +168,12 @@ export default function OrderCreate() {
         if (err.response?.status === 409 && Array.isArray(err.response?.data?.duplicates)) {
           const dups = err.response.data.duplicates;
           const preview = dups.slice(0, 20).join(', ') + (dups.length > 20 ? `, … (+${dups.length - 20} more)` : '');
-          if (!confirm(`Phát hiện ${dups.length} ref_id trùng:\n${preview}\n\nCó muốn tiếp tục import không?`)) {
+          const cont = await askConfirm(`Phát hiện ${dups.length} ref_id trùng:\n${preview}\n\nCó muốn tiếp tục import không?`, { title: 'Duplicate ref_id', okText: 'Tiếp tục', cancelText: 'Huỷ' });
+          if (!cont) {
             setLoading(false);
             return;
           }
-          const doRename = confirm(`Có muốn thêm hậu tố _r_<số> vào ref_id trùng không?\n\nOK = Có (auto rename)\nCancel = Không (giữ nguyên ref_id trùng)`);
+          const doRename = await askConfirm('Có muốn thêm hậu tố _r_<số> vào ref_id trùng không?', { title: 'Rename ref_id', okText: 'Có (auto rename)', cancelText: 'Không (giữ trùng)' });
           res = await submitCsv({ force: true, rename: doRename });
         } else {
           throw err;
@@ -176,7 +181,7 @@ export default function OrderCreate() {
       }
       setCsvResult(res.data);
     } catch (err) {
-      alert(err.response?.data?.message || 'Error');
+      notify(err.response?.data?.message || 'Error', { title: 'Import failed', kind: 'error' });
     } finally {
       setLoading(false);
     }
@@ -192,7 +197,7 @@ export default function OrderCreate() {
       a.click();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      alert('Download failed');
+      notify('Download failed', { title: 'Error', kind: 'error' });
     }
   };
 
