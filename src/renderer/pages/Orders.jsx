@@ -3,7 +3,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 
-const STATUS_MAP = ['new_order', 'processing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped'];
+const STATUS_MAP = ['new_order', 'processing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
+const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
 const STATUS_COLORS = {
   0: 'bg-blue-100 text-blue-600',
   1: 'bg-yellow-100 text-yellow-600',
@@ -12,6 +13,7 @@ const STATUS_COLORS = {
   4: 'bg-orange-100 text-orange-600',
   5: 'bg-gray-100 text-gray-600',
   6: 'bg-emerald-100 text-emerald-600',
+  7: 'bg-rose-100 text-rose-600',
 };
 
 export default function Orders() {
@@ -168,7 +170,11 @@ export default function Orders() {
               className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-xs"
             >
               <option value="">Bulk Status...</option>
-              {STATUS_MAP.map((s, i) => <option key={i} value={i}>{s}</option>)}
+              {STATUS_MAP.map((s, i) => (
+                (isStaff || SELLER_STATUS_OPTIONS.includes(i))
+                  ? <option key={i} value={i}>{s}</option>
+                  : null
+              ))}
             </select>
             <button onClick={handleBulkPay} className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs rounded-lg">
               Bulk Pay

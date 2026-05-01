@@ -94,28 +94,49 @@ export default function OrderCreate() {
     setForm({ ...form, items: form.items.filter((_, i) => i !== index) });
   };
 
+  const submitOrder = async ({ force = false, rename = false } = {}) => {
+    const payload = {
+      ref_id: form.ref_id || null,
+      items: form.items.map(it => ({
+        product_variant_id: it.product_variant_id,
+        accessory_item_id: it.accessory_item_id ? Number(it.accessory_item_id) : null,
+        mockup_front: it.mockup_front,
+        mockup_back: it.mockup_back,
+        order_type: it.order_type,
+        quantity: Math.max(1, parseInt(it.quantity, 10) || 1),
+        metas: (it.metas || []).filter(m => m.key && m.key.trim() !== '').map(m => ({ key: m.key, value: m.value })),
+      })),
+      force,
+      rename,
+    };
+    if (form.method === 'label') {
+      payload.shipping_label = form.shipping_label;
+    } else {
+      payload.address = form.address;
+    }
+    return api.post('/orders', payload);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const payload = {
-        ref_id: form.ref_id || null,
-        items: form.items.map(it => ({
-          product_variant_id: it.product_variant_id,
-          accessory_item_id: it.accessory_item_id ? Number(it.accessory_item_id) : null,
-          mockup_front: it.mockup_front,
-          mockup_back: it.mockup_back,
-          order_type: it.order_type,
-          quantity: Math.max(1, parseInt(it.quantity, 10) || 1),
-          metas: (it.metas || []).filter(m => m.key && m.key.trim() !== '').map(m => ({ key: m.key, value: m.value })),
-        })),
-      };
-      if (form.method === 'label') {
-        payload.shipping_label = form.shipping_label;
-      } else {
-        payload.address = form.address;
+      let res;
+      try {
+        res = await submitOrder();
+      } catch (err) {
+        if (err.response?.status === 409 && Array.isArray(err.response?.data?.duplicates)) {
+          const dups = err.response.data.duplicates.join(', ');
+          if (!confirm(`Ref_id đã tồn tại: ${dups}\n\nCó muốn tiếp tục tạo order không?`)) {
+            setLoading(false);
+            return;
+          }
+          const doRename = confirm(`Có muốn thêm hậu tố _r_<số> vào ref_id để tránh trùng không?\n\nOK = Có (auto rename)\nCancel = Không (giữ nguyên ref_id trùng)`);
+          res = await submitOrder({ force: true, rename: doRename });
+        } else {
+          throw err;
+        }
       }
-      const res = await api.post('/orders', payload);
       navigate(`/orders/${res.data.order.id}`);
     } catch (err) {
       alert(err.response?.data?.message || JSON.stringify(err.response?.data?.errors) || 'Error');
@@ -124,13 +145,35 @@ export default function OrderCreate() {
     }
   };
 
-  const handleCsvImport = async () => {
-    if (!csvFile) return;
+  const submitCsv = async ({ force = false, rename = false } = {}) => {
     const formData = new FormData();
     formData.append('file', csvFile);
+    if (force) formData.append('force', '1');
+    if (rename) formData.append('rename', '1');
+    return api.post('/orders/import-csv', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+  };
+
+  const handleCsvImport = async () => {
+    if (!csvFile) return;
     setLoading(true);
     try {
-      const res = await api.post('/orders/import-csv', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      let res;
+      try {
+        res = await submitCsv();
+      } catch (err) {
+        if (err.response?.status === 409 && Array.isArray(err.response?.data?.duplicates)) {
+          const dups = err.response.data.duplicates;
+          const preview = dups.slice(0, 20).join(', ') + (dups.length > 20 ? `, … (+${dups.length - 20} more)` : '');
+          if (!confirm(`Phát hiện ${dups.length} ref_id trùng:\n${preview}\n\nCó muốn tiếp tục import không?`)) {
+            setLoading(false);
+            return;
+          }
+          const doRename = confirm(`Có muốn thêm hậu tố _r_<số> vào ref_id trùng không?\n\nOK = Có (auto rename)\nCancel = Không (giữ nguyên ref_id trùng)`);
+          res = await submitCsv({ force: true, rename: doRename });
+        } else {
+          throw err;
+        }
+      }
       setCsvResult(res.data);
     } catch (err) {
       alert(err.response?.data?.message || 'Error');

@@ -6,7 +6,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { UrlPreview, PreviewModal } from '../components/Preview';
 import { isPreviewable } from '../utils/drive';
 
-const STATUS_MAP = ['new_order', 'processing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped'];
+const STATUS_MAP = ['new_order', 'processing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
+const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
 
 export default function OrderDetail() {
   const { id } = useParams();
@@ -85,7 +86,7 @@ export default function OrderDetail() {
           <button onClick={() => navigate('/orders')} className="text-neutral-400 hover:text-neutral-700 text-sm mb-2">&larr; Back to orders</button>
           <h2 className="text-xl font-bold text-neutral-800">Order {order.system_id}</h2>
           {order.ref_id && <p className="text-xs text-neutral-500 mt-1">Ref: <span className="font-mono">{order.ref_id}</span></p>}
-          {(() => {
+          {!hasRole('seller') && (() => {
             const base = getApiUrl().replace(/\/api\/?$/, '');
             const qrUrl = `${base}/qr/${order.system_id}`;
             return (
@@ -126,7 +127,11 @@ export default function OrderDetail() {
               <div>
                 <label className="text-xs text-neutral-500">Status</label>
                 <select value={form.status} onChange={e => setForm(f => ({ ...f, status: parseInt(e.target.value) }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm">
-                  {STATUS_MAP.map((s, i) => <option key={i} value={i}>{s}</option>)}
+                  {STATUS_MAP.map((s, i) => (
+                    (!hasRole('seller') || SELLER_STATUS_OPTIONS.includes(i) || i === order.status)
+                      ? <option key={i} value={i}>{s}</option>
+                      : null
+                  ))}
                 </select>
               </div>
               <div>

@@ -135,10 +135,10 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
     }
 
     const page = pdf.addPage([PAGE_W, PAGE_H]);
-    // Pin the design to the top-left corner. pdf-lib uses bottom-left origin,
-    // so y = PAGE_H - DESIGN_H places the top edge of the design at the top
-    // edge of the page; x = 0 puts the left edge flush with the left edge.
-    const x = 0;
+    // Center the design horizontally and pin it flush with the top edge.
+    // pdf-lib uses a bottom-left origin, so y = PAGE_H - DESIGN_H makes the
+    // top edge of the design align with the top edge of the page.
+    const x = (PAGE_W - DESIGN_W) / 2;
     const y = PAGE_H - DESIGN_H;
     page.drawImage(img, { x, y, width: DESIGN_W, height: DESIGN_H });
 
