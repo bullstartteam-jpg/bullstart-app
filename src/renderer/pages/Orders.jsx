@@ -35,10 +35,19 @@ export default function Orders() {
   const [payAllLoading, setPayAllLoading] = useState(false);
   const [adminUsers, setAdminUsers] = useState([]);
 
+  // Seller's own unpaid totals — shown as banner above the list
+  const [unpaidBanner, setUnpaidBanner] = useState(null);
+  const refreshUnpaidBanner = () => {
+    if (hasRole('seller')) {
+      api.get('/orders/unpaid-summary').then(res => setUnpaidBanner(res.data)).catch(() => {});
+    }
+  };
+
   useEffect(() => {
     if (isAdmin) {
       api.get('/users', { params: { per_page: 100 } }).then(res => setAdminUsers(res.data.data || []));
     }
+    refreshUnpaidBanner();
   }, [isAdmin]);
 
   const fetchOrders = () => {
@@ -53,7 +62,7 @@ export default function Orders() {
     }).finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchOrders(); }, [filters.page, filters.status]);
+  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -98,6 +107,7 @@ export default function Orders() {
       await notify(res.data.message, { title: 'Bulk pay', kind: 'success' });
       setSelected([]);
       fetchOrders();
+      refreshUnpaidBanner();
     } catch (err) {
       const d = err.response?.data;
       const msg = d?.required != null && d?.wallet != null
@@ -135,6 +145,7 @@ export default function Orders() {
       await notify(res.data.message, { title: 'Bulk reconvert', kind: 'success' });
       setSelected([]);
       fetchOrders();
+      refreshUnpaidBanner();
     } catch (err) {
       notify(err.response?.data?.message || 'Error', { title: 'Reconvert failed', kind: 'error' });
     }
@@ -149,6 +160,7 @@ export default function Orders() {
       await notify(res.data.message, { title: 'Bulk delete', kind: 'success' });
       setSelected([]);
       fetchOrders();
+      refreshUnpaidBanner();
     } catch (err) {
       notify(err.response?.data?.message || 'Error', { title: 'Delete failed', kind: 'error' });
     }
@@ -189,6 +201,7 @@ export default function Orders() {
       setShowPayAll(false);
       await notify(res.data.message, { title: 'Pay all unpaid', kind: 'success' });
       fetchOrders();
+      refreshUnpaidBanner();
     } catch (err) {
       const d = err.response?.data;
       const msg = d?.required != null && d?.wallet != null
@@ -227,6 +240,35 @@ export default function Orders() {
           )}
         </div>
       </div>
+
+      {/* Seller unpaid banner */}
+      {hasRole('seller') && unpaidBanner && unpaidBanner.count > 0 && (
+        <div className={`mb-4 px-4 py-3 rounded-lg border flex items-center justify-between gap-4 ${
+          unpaidBanner.short > 0
+            ? 'bg-red-50 border-red-200'
+            : 'bg-yellow-50 border-yellow-200'
+        }`}>
+          <div className="flex items-center gap-4 flex-wrap text-sm">
+            <span className="text-neutral-600">Pending unpaid:</span>
+            <span className="font-semibold text-neutral-800">{unpaidBanner.count} order{unpaidBanner.count > 1 ? 's' : ''}</span>
+            <span className="text-neutral-300">·</span>
+            <span className="text-neutral-600">Total to pay:</span>
+            <span className="font-semibold text-red-600">${Number(unpaidBanner.total_unpaid).toFixed(2)}</span>
+            <span className="text-neutral-300">·</span>
+            <span className="text-neutral-600">Wallet:</span>
+            <span className="font-semibold text-neutral-800">${Number(unpaidBanner.wallet).toFixed(2)}</span>
+            {unpaidBanner.short > 0 && (
+              <>
+                <span className="text-neutral-300">·</span>
+                <span className="text-red-600 font-medium">Short by ${Number(unpaidBanner.short).toFixed(2)}</span>
+              </>
+            )}
+          </div>
+          <button onClick={openPayAll} className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs rounded-lg whitespace-nowrap">
+            Pay All
+          </button>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex gap-3 mb-4 items-center flex-wrap">
