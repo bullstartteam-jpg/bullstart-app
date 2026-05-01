@@ -23,9 +23,10 @@ export default function Orders() {
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({ status: '', ref_id: '', page: 1 });
   const [selected, setSelected] = useState([]);
-  const { hasPermission, hasRole } = useAuth();
+  const { hasPermission, hasRole, user: authUser } = useAuth();
   const isStaff = hasRole('admin') || hasRole('support');
   const isAdmin = hasRole('admin');
+  const isSeller = hasRole('seller');
   const navigate = useNavigate();
 
   // Pay-All preview modal state
@@ -38,17 +39,16 @@ export default function Orders() {
   // Seller's own unpaid totals — shown as banner above the list
   const [unpaidBanner, setUnpaidBanner] = useState(null);
   const refreshUnpaidBanner = () => {
-    if (hasRole('seller')) {
-      api.get('/orders/unpaid-summary').then(res => setUnpaidBanner(res.data)).catch(() => {});
-    }
+    if (!isSeller) return;
+    api.get('/orders/unpaid-summary').then(res => setUnpaidBanner(res.data)).catch(() => {});
   };
 
   useEffect(() => {
     if (isAdmin) {
       api.get('/users', { params: { per_page: 100 } }).then(res => setAdminUsers(res.data.data || []));
     }
-    refreshUnpaidBanner();
-  }, [isAdmin]);
+    if (isSeller) refreshUnpaidBanner();
+  }, [isAdmin, isSeller, authUser?.id]);
 
   const fetchOrders = () => {
     setLoading(true);
