@@ -22,6 +22,7 @@ export default function Orders() {
   const [selected, setSelected] = useState([]);
   const { hasPermission, hasRole } = useAuth();
   const isStaff = hasRole('admin') || hasRole('support');
+  const isAdmin = hasRole('admin');
   const navigate = useNavigate();
 
   const fetchOrders = () => {
@@ -96,6 +97,19 @@ export default function Orders() {
     }
   };
 
+  const handleBulkDelete = async () => {
+    if (selected.length === 0) return;
+    if (!confirm(`Delete ${selected.length} order(s)? This cannot be undone.`)) return;
+    try {
+      const res = await api.post('/orders/bulk-delete', { order_ids: selected });
+      alert(res.data.message);
+      setSelected([]);
+      fetchOrders();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error');
+    }
+  };
+
   const toggleSelect = (id) => {
     setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
@@ -162,6 +176,11 @@ export default function Orders() {
             {isStaff && (
               <button onClick={handleBulkReconvert} className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded-lg">
                 Bulk Reconvert
+              </button>
+            )}
+            {isAdmin && (
+              <button onClick={handleBulkDelete} className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs rounded-lg">
+                Bulk Delete
               </button>
             )}
           </div>
