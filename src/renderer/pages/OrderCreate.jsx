@@ -166,7 +166,7 @@ export default function OrderCreate() {
         res = await submitCsv();
       } catch (err) {
         if (err.response?.status === 409 && Array.isArray(err.response?.data?.duplicates)) {
-          const dups = err.response.data.duplicates;
+          const dups = err.response.data.duplicates.map(String);
           const preview = dups.slice(0, 20).join(', ') + (dups.length > 20 ? `, … (+${dups.length - 20} more)` : '');
           const cont = await askConfirm(`Phát hiện ${dups.length} ref_id trùng:\n${preview}\n\nCó muốn tiếp tục import không?`, { title: 'Duplicate ref_id', okText: 'Tiếp tục', cancelText: 'Huỷ' });
           if (!cont) {

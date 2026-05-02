@@ -36,6 +36,11 @@ export default function Orders() {
   const [payAllLoading, setPayAllLoading] = useState(false);
   const [adminUsers, setAdminUsers] = useState([]);
 
+  // Bulk-Assign modal
+  const [showAssign, setShowAssign] = useState(false);
+  const [assignUserId, setAssignUserId] = useState('');
+  const [assignLoading, setAssignLoading] = useState(false);
+
   // Seller's own unpaid totals — shown as banner above the list
   const [unpaidBanner, setUnpaidBanner] = useState(null);
   const refreshUnpaidBanner = () => {
@@ -151,6 +156,38 @@ export default function Orders() {
     }
   };
 
+  const [dupRefreshing, setDupRefreshing] = useState(false);
+
+  const handleRefreshDuplicates = async () => {
+    setDupRefreshing(true);
+    try {
+      const res = await api.post('/orders/refresh-duplicates');
+      await notify(res.data.message, { title: 'Refresh duplicates', kind: 'success' });
+      fetchOrders();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Error', { title: 'Refresh failed', kind: 'error' });
+    } finally {
+      setDupRefreshing(false);
+    }
+  };
+
+  const handleBulkAssign = async () => {
+    if (selected.length === 0 || !assignUserId) return;
+    setAssignLoading(true);
+    try {
+      const res = await api.post('/orders/bulk-assign', { order_ids: selected, user_id: Number(assignUserId) });
+      setShowAssign(false);
+      setAssignUserId('');
+      await notify(res.data.message, { title: 'Bulk assign', kind: 'success' });
+      setSelected([]);
+      fetchOrders();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Error', { title: 'Assign failed', kind: 'error' });
+    } finally {
+      setAssignLoading(false);
+    }
+  };
+
   const handleBulkReProduction = async () => {
     if (selected.length === 0) return;
     const ok = await askConfirm(`Re-production ${selected.length} order(s)?\nĐặt production=false cho orders và toàn bộ order_item_metas của chúng. Đơn sẽ được tính lại trong gangsheet kế tiếp.`, { title: 'Confirm re-production', okText: 'Re-production' });
@@ -260,6 +297,16 @@ export default function Orders() {
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl font-bold text-neutral-800">Orders</h2>
         <div className="flex gap-2">
+          {isStaff && (
+            <button
+              onClick={handleRefreshDuplicates}
+              disabled={dupRefreshing}
+              className="px-4 py-2 bg-rose-100 hover:bg-rose-200 disabled:opacity-50 text-rose-700 text-sm rounded-lg transition-colors"
+              title="Recompute the duplicate ref_id snapshot used to highlight rows in red"
+            >
+              {dupRefreshing ? 'Refreshing…' : 'Refresh Duplicates'}
+            </button>
+          )}
           <button onClick={openPayAll} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-sm rounded-lg transition-colors">
             Pay All Unpaid
           </button>
@@ -348,6 +395,11 @@ export default function Orders() {
               </button>
             )}
             {isAdmin && (
+              <button onClick={() => setShowAssign(true)} className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs rounded-lg" title="Reassign selected orders to another seller">
+                Bulk Assign
+              </button>
+            )}
+            {isAdmin && (
               <button onClick={handleBulkSetProduction} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded-lg" title="Mark orders + all their metas as produced (production=true) — removes them from the gangsheet pipeline">
                 Bulk Mark Produced
               </button>
@@ -376,6 +428,7 @@ export default function Orders() {
               </th>
               <th className="p-3 text-left">System ID</th>
               <th className="p-3 text-left">Ref ID</th>
+              {isStaff && <th className="p-3 text-left">User</th>}
               <th className="p-3 text-left">Status</th>
               <th className="p-3 text-left">Ship Type</th>
               <th className="p-3 text-right">Total</th>
@@ -386,16 +439,30 @@ export default function Orders() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan="9" className="p-6 text-center text-neutral-400">Loading...</td></tr>
+              <tr><td colSpan={isStaff ? 10 : 9} className="p-6 text-center text-neutral-400">Loading...</td></tr>
             ) : orders.length === 0 ? (
-              <tr><td colSpan="9" className="p-6 text-center text-neutral-400">No orders found</td></tr>
+              <tr><td colSpan={isStaff ? 10 : 9} className="p-6 text-center text-neutral-400">No orders found</td></tr>
             ) : orders.map(order => (
               <tr key={order.id} className="border-b border-neutral-100 hover:bg-orange-50/50 cursor-pointer transition-colors" onClick={() => navigate(`/orders/${order.id}`)}>
                 <td className="p-3" onClick={e => e.stopPropagation()}>
                   <input type="checkbox" checked={selected.includes(order.id)} onChange={() => toggleSelect(order.id)} className="accent-orange-500" />
                 </td>
                 <td className="p-3 text-orange-500 font-mono text-xs">{order.system_id}</td>
-                <td className="p-3 text-neutral-700 text-xs">{order.ref_id || <span className="text-neutral-400">-</span>}</td>
+                <td className={`p-3 text-xs ${order.is_duplicate_ref ? 'text-red-600 font-semibold' : 'text-neutral-700'}`}>
+                  {order.ref_id ? (
+                    <span title={order.is_duplicate_ref ? 'Ref ID duplicated across multiple orders' : ''}>
+                      {order.ref_id}
+                      {order.is_duplicate_ref && <span className="ml-1 text-[10px] uppercase tracking-wide">dup</span>}
+                    </span>
+                  ) : <span className="text-neutral-400">-</span>}
+                </td>
+                {isStaff && (
+                  <td className="p-3 text-neutral-700 text-xs">
+                    {order.user ? (
+                      <span title={order.user.email}>{order.user.name}</span>
+                    ) : <span className="text-neutral-400">-</span>}
+                  </td>
+                )}
                 <td className="p-3">
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[order.status]}`}>{STATUS_MAP[order.status]}</span>
                 </td>
@@ -509,6 +576,44 @@ export default function Orders() {
                 className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg"
               >
                 {payAllLoading ? 'Paying…' : `Pay $${payAllSummary ? Number(payAllSummary.total_unpaid).toFixed(2) : '0.00'}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Assign modal */}
+      {showAssign && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setShowAssign(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-[480px] max-w-[90%] p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-neutral-800 mb-3">Bulk Assign Orders</h3>
+            <p className="text-sm text-neutral-600 mb-3">Reassign <span className="font-semibold text-neutral-800">{selected.length}</span> selected order(s) to another user.</p>
+            <div className="mb-4">
+              <label className="text-xs text-neutral-500">Target user</label>
+              <select
+                value={assignUserId}
+                onChange={e => setAssignUserId(e.target.value)}
+                className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
+              >
+                <option value="">Select user...</option>
+                {adminUsers.map(u => (
+                  <option key={u.id} value={u.id}>
+                    {u.name} ({u.email}){u.role?.name ? ` — ${u.role.name}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="text-xs text-neutral-500 mb-4">
+              Note: orders' wallet history (paid/refund) sticks with the original payer. After reassignment, future payments will deduct from the new user's wallet.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowAssign(false)} className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Cancel</button>
+              <button
+                onClick={handleBulkAssign}
+                disabled={!assignUserId || assignLoading}
+                className="px-4 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg"
+              >
+                {assignLoading ? 'Assigning…' : 'Assign'}
               </button>
             </div>
           </div>

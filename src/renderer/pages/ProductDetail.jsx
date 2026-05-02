@@ -9,7 +9,7 @@ export default function ProductDetail() {
   const { hasRole } = useAuth();
   const [product, setProduct] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [variantForm, setVariantForm] = useState({ sku: '', color: '', size: '', weight: '', length: '', width: '', height: '' });
+  const [variantForm, setVariantForm] = useState({ sku: '', color: '', size: '', paper_type: '', weight: '', length: '', width: '', height: '' });
   const [showVariantForm, setShowVariantForm] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ name: '', style: '', line_id: '', status: 1 });
@@ -70,7 +70,7 @@ export default function ProductDetail() {
       payload[k] = payload[k] === '' ? null : Number(payload[k]);
     });
     await api.post(`/products/${id}/variants`, payload);
-    setVariantForm({ sku: '', color: '', size: '', weight: '', length: '', width: '', height: '' });
+    setVariantForm({ sku: '', color: '', size: '', paper_type: '', weight: '', length: '', width: '', height: '' });
     setShowVariantForm(false);
     fetchProduct();
   };
@@ -200,7 +200,7 @@ export default function ProductDetail() {
 
         {showVariantForm && (
           <form onSubmit={handleAddVariant} className="mb-4 grid grid-cols-8 gap-2 items-end">
-            {['sku', 'color', 'size', 'weight', 'length', 'width', 'height'].map(field => (
+            {['sku', 'color', 'size', 'paper_type', 'weight', 'length', 'width', 'height'].map(field => (
               <div key={field}>
                 <label className="text-xs text-neutral-500 capitalize">{field}</label>
                 <input value={variantForm[field]} onChange={e => setVariantForm({ ...variantForm, [field]: e.target.value })} className="w-full mt-1 px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-neutral-800 text-xs" />
@@ -216,6 +216,7 @@ export default function ProductDetail() {
               <th className="pb-2 text-left">SKU</th>
               <th className="pb-2 text-left">Color</th>
               <th className="pb-2 text-left">Size</th>
+              <th className="pb-2 text-left">Paper</th>
               <th className="pb-2 text-right">Weight</th>
               <th className="pb-2 text-right">L x W x H</th>
               <th className="pb-2 text-right">Prices</th>
@@ -359,6 +360,7 @@ function VariantRow({ variant, tiers, isAdmin, onSaved, onDelete }) {
     sku: variant.sku ?? '',
     color: variant.color ?? '',
     size: variant.size ?? '',
+    paper_type: variant.paper_type ?? '',
     weight: variant.weight ?? '',
     length: variant.length ?? '',
     width: variant.width ?? '',
@@ -393,6 +395,7 @@ function VariantRow({ variant, tiers, isAdmin, onSaved, onDelete }) {
         sku: form.sku || null,
         color: form.color,
         size: form.size,
+        paper_type: form.paper_type || null,
         status: parseInt(form.status),
       };
       ['weight', 'length', 'width', 'height'].forEach(k => {
@@ -438,6 +441,7 @@ function VariantRow({ variant, tiers, isAdmin, onSaved, onDelete }) {
           <td className="py-2 pr-2"><input value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs" placeholder="sku" /></td>
           <td className="py-2 pr-2"><input value={form.color} onChange={e => setForm(f => ({ ...f, color: e.target.value }))} className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs" placeholder="color" /></td>
           <td className="py-2 pr-2"><input value={form.size} onChange={e => setForm(f => ({ ...f, size: e.target.value }))} className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs" placeholder="size" /></td>
+          <td className="py-2 pr-2"><input value={form.paper_type} onChange={e => setForm(f => ({ ...f, paper_type: e.target.value }))} className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs" placeholder="paper" /></td>
           <td className="py-2 pr-2"><input type="text" inputMode="decimal" value={form.weight} onChange={e => setForm(f => ({ ...f, weight: e.target.value }))} className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs text-right" placeholder="weight" /></td>
           <td className="py-2 pr-2">
             <div className="grid grid-cols-3 gap-1">
@@ -511,6 +515,7 @@ function VariantRow({ variant, tiers, isAdmin, onSaved, onDelete }) {
       <td className="py-2 text-neutral-700 font-mono text-xs">{variant.sku || '-'}</td>
       <td className="py-2 text-neutral-800">{variant.color || '-'}</td>
       <td className="py-2 text-neutral-800">{variant.size || '-'}</td>
+      <td className="py-2 text-neutral-800">{variant.paper_type || '-'}</td>
       <td className="py-2 text-right text-neutral-600">{variant.weight || '-'}</td>
       <td className="py-2 text-right text-neutral-600">{variant.length && variant.width && variant.height ? `${variant.length}x${variant.width}x${variant.height}` : '-'}</td>
       <td className="py-2 text-right">
