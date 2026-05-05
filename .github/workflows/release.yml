@@ -10,7 +10,14 @@ permissions:
 
 jobs:
   release:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+          - os: macos-latest
+            target: --mac
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
@@ -28,7 +35,7 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
-      - name: Build + publish Windows installer
-        run: npx electron-builder --win --publish always
+      - name: Build + publish installer
+        run: npx electron-builder ${{ matrix.target }} --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
