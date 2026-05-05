@@ -21,7 +21,9 @@ export default function Orders() {
   const [orders, setOrders] = useState([]);
   const [meta, setMeta] = useState({});
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ status: '', ref_id: '', system_id: '', user_id: '', page: 1 });
+  const [filters, setFilters] = useState({ status: '', ref_id: '', ref_ids: '', system_id: '', user_id: '', date_from: '', date_to: '', page: 1 });
+  const [showRefIdsModal, setShowRefIdsModal] = useState(false);
+  const [refIdsInput, setRefIdsInput] = useState('');
   const [selected, setSelected] = useState([]);
   const { hasPermission, hasRole, user: authUser } = useAuth();
   const isStaff = hasRole('admin') || hasRole('support');
@@ -60,8 +62,11 @@ export default function Orders() {
     const params = { page: filters.page, per_page: 20 };
     if (filters.status !== '') params.status = filters.status;
     if (filters.ref_id) params.ref_id = filters.ref_id;
+    if (filters.ref_ids) params.ref_ids = filters.ref_ids;
     if (filters.system_id) params.system_id = filters.system_id;
     if (filters.user_id) params.user_id = filters.user_id;
+    if (filters.date_from) params.date_from = filters.date_from;
+    if (filters.date_to) params.date_to = filters.date_to;
 
     api.get('/orders', { params }).then(res => {
       setOrders(res.data.data);
@@ -69,7 +74,7 @@ export default function Orders() {
     }).finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.user_id]);
+  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.user_id, filters.ref_ids, filters.date_from, filters.date_to]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -124,14 +129,10 @@ export default function Orders() {
     }
   };
 
-  const handleCopyIds = async () => {
-    if (selected.length === 0) return;
-    const ids = orders.filter(o => selected.includes(o.id)).map(o => o.system_id).filter(Boolean);
-    if (ids.length === 0) return;
-    const text = ids.join('\n');
+  const copyToClipboard = async (text, label, count) => {
     try {
       await navigator.clipboard.writeText(text);
-      notify(`Copied ${ids.length} system ID${ids.length > 1 ? 's' : ''} to clipboard`, { kind: 'success' });
+      notify(`Copied ${count} ${label} to clipboard`, { kind: 'success' });
     } catch {
       const ta = document.createElement('textarea');
       ta.value = text;
@@ -139,8 +140,27 @@ export default function Orders() {
       ta.select();
       document.execCommand('copy');
       document.body.removeChild(ta);
-      notify(`Copied ${ids.length} system ID${ids.length > 1 ? 's' : ''}`, { kind: 'success' });
+      notify(`Copied ${count} ${label}`, { kind: 'success' });
     }
+  };
+
+  const handleCopyIds = async () => {
+    if (selected.length === 0) return;
+    const ids = orders.filter(o => selected.includes(o.id)).map(o => o.system_id).filter(Boolean);
+    if (ids.length === 0) return;
+    copyToClipboard(ids.join('\n'), `system ID${ids.length > 1 ? 's' : ''}`, ids.length);
+  };
+
+  const handleCopyTrackings = async () => {
+    if (selected.length === 0) return;
+    const tracks = orders
+      .filter(o => selected.includes(o.id))
+      .map(o => o.tracking_id)
+      .filter(t => t && t.trim() !== '');
+    if (tracks.length === 0) {
+      return notify('Selected orders have no tracking_id yet.', { title: 'Nothing to copy' });
+    }
+    copyToClipboard(tracks.join('\n'), `tracking_id${tracks.length > 1 ? 's' : ''}`, tracks.length);
   };
 
   const handleBulkReconvert = async () => {
@@ -174,6 +194,36 @@ export default function Orders() {
 
   const pushTrackingLog = (entry) => {
     setTrackingLog(prev => [...prev.slice(-99), { ...entry, at: new Date() }]);
+  };
+
+  const handleExport = async () => {
+    const params = {};
+    if (filters.status !== '') params.status = filters.status;
+    if (filters.ref_id) params.ref_id = filters.ref_id;
+    if (filters.ref_ids) params.ref_ids = filters.ref_ids;
+    if (filters.system_id) params.system_id = filters.system_id;
+    if (filters.user_id) params.user_id = filters.user_id;
+    if (filters.date_from) params.date_from = filters.date_from;
+    if (filters.date_to) params.date_to = filters.date_to;
+    if (selected.length > 0) params.order_ids = selected.join(',');
+    try {
+      const res = await api.get('/orders/export', { params, responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.download = `orders_${selected.length > 0 ? `selected_${selected.length}_` : ''}${stamp}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      notify(
+        selected.length > 0
+          ? `Exported ${selected.length} selected order(s)`
+          : `Exported ALL ${meta.total ?? '?'} order(s) matching current filters`,
+        { title: 'Export', kind: 'success' }
+      );
+    } catch (err) {
+      notify(err.response?.data?.message || 'Export failed', { title: 'Export failed', kind: 'error' });
+    }
   };
 
   const handleRefreshDuplicates = async () => {
@@ -411,6 +461,16 @@ export default function Orders() {
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl font-bold text-neutral-800">Orders</h2>
         <div className="flex gap-2">
+          <button
+            onClick={handleExport}
+            className="px-4 py-2 bg-purple-100 hover:bg-purple-200 text-purple-700 text-sm rounded-lg transition-colors"
+            title={selected.length > 0
+              ? `Export ${selected.length} selected order(s) to CSV`
+              : 'Export orders matching current filters to CSV'
+            }
+          >
+            Export {selected.length > 0 ? `(${selected.length})` : 'CSV'}
+          </button>
           {isStaff && (
             <button
               onClick={openTrackingModal}
@@ -488,6 +548,28 @@ export default function Orders() {
             className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-800 text-sm focus:outline-none focus:border-orange-400 w-44"
           />
           <button type="submit" className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Search</button>
+          <button
+            type="button"
+            onClick={() => { setRefIdsInput(filters.ref_ids); setShowRefIdsModal(true); }}
+            className={`px-3 py-1.5 text-xs rounded-lg ${
+              filters.ref_ids
+                ? 'bg-orange-100 text-orange-700 border border-orange-300'
+                : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
+            }`}
+            title="Paste a list of ref_ids (newline / comma separated)"
+          >
+            {filters.ref_ids ? `List (${filters.ref_ids.split(/[\s,]+/).filter(Boolean).length})` : 'Search List'}
+          </button>
+          {filters.ref_ids && (
+            <button
+              type="button"
+              onClick={() => setFilters(f => ({ ...f, ref_ids: '', page: 1 }))}
+              className="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-500"
+              title="Clear list filter"
+            >
+              ✕
+            </button>
+          )}
         </form>
 
         <select
@@ -512,11 +594,41 @@ export default function Orders() {
           </select>
         )}
 
+        <div className="flex items-center gap-1 text-sm">
+          <span className="text-xs text-neutral-500">From</span>
+          <input
+            type="date"
+            value={filters.date_from}
+            onChange={e => setFilters(f => ({ ...f, date_from: e.target.value, page: 1 }))}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm"
+          />
+          <span className="text-xs text-neutral-500 ml-1">To</span>
+          <input
+            type="date"
+            value={filters.date_to}
+            onChange={e => setFilters(f => ({ ...f, date_to: e.target.value, page: 1 }))}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm"
+          />
+          {(filters.date_from || filters.date_to) && (
+            <button
+              type="button"
+              onClick={() => setFilters(f => ({ ...f, date_from: '', date_to: '', page: 1 }))}
+              className="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-500"
+              title="Clear date range"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
         {selected.length > 0 && (
           <div className="flex gap-2 ml-auto">
             <span className="text-neutral-500 text-sm py-1.5">{selected.length} selected</span>
             <button onClick={handleCopyIds} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg" title="Copy all selected system IDs to clipboard (newline-separated)">
               Copy IDs
+            </button>
+            <button onClick={handleCopyTrackings} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg" title="Copy tracking_id of selected orders to clipboard">
+              Copy Trackings
             </button>
             <select
               onChange={e => { if (e.target.value) handleBulkStatus(parseInt(e.target.value)); e.target.value = ''; }}
@@ -826,6 +938,40 @@ export default function Orders() {
                   <button onClick={cancelTrackingQueue} className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm rounded-lg">Cancel</button>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Search by ref_id list modal */}
+      {showRefIdsModal && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setShowRefIdsModal(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-[560px] max-w-[95%] p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-neutral-800 mb-2">Search by list of ref_ids</h3>
+            <p className="text-xs text-neutral-500 mb-3">
+              Paste ref_ids cách nhau bằng <strong>xuống dòng</strong> hoặc <strong>dấu phẩy</strong>. Tìm exact match.
+            </p>
+            <textarea
+              value={refIdsInput}
+              onChange={e => setRefIdsInput(e.target.value)}
+              placeholder="577373453914968570&#10;577373657219633277&#10;577373927209669239&#10;..."
+              rows={10}
+              className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm font-mono"
+            />
+            <div className="text-xs text-neutral-500 mt-2">
+              Detected: <span className="font-semibold">{refIdsInput.split(/[\s,]+/).filter(Boolean).length}</span> ref_id(s)
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setShowRefIdsModal(false)} className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Cancel</button>
+              <button
+                onClick={() => {
+                  setFilters(f => ({ ...f, ref_ids: refIdsInput, page: 1 }));
+                  setShowRefIdsModal(false);
+                }}
+                className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg"
+              >
+                Apply
+              </button>
             </div>
           </div>
         </div>

@@ -492,11 +492,45 @@ function FindTab() {
   );
 }
 
+// Track which gangsheets the current admin has already downloaded. Stored
+// per-machine in localStorage so the checkmark survives reloads but doesn't
+// require backend changes / a shared table.
+const DOWNLOADED_KEY = 'gangsheet_downloaded_ids';
+function loadDownloadedSet() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DOWNLOADED_KEY) || '[]');
+    return new Set(Array.isArray(raw) ? raw : []);
+  } catch {
+    return new Set();
+  }
+}
+function saveDownloadedSet(s) {
+  localStorage.setItem(DOWNLOADED_KEY, JSON.stringify([...s]));
+}
+
 function ManageTab({ isAdmin }) {
   const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
+  const [downloadedSet, setDownloadedSet] = useState(loadDownloadedSet);
+
+  const markDownloaded = (id) => {
+    setDownloadedSet(prev => {
+      const next = new Set(prev);
+      next.add(id);
+      saveDownloadedSet(next);
+      return next;
+    });
+  };
+  const toggleDownloaded = (id) => {
+    setDownloadedSet(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      saveDownloadedSet(next);
+      return next;
+    });
+  };
 
   const fetchList = async () => {
     setLoading(true);
@@ -553,7 +587,13 @@ function ManageTab({ isAdmin }) {
         </div>
         <button type="submit" className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Apply</button>
         <button type="button" onClick={clearFilters} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Clear</button>
-        <span className="text-xs text-neutral-400 ml-auto">Total: {list.total ?? 0}</span>
+        <span className="text-xs text-neutral-500 ml-auto">
+          <span className="font-semibold text-emerald-600">{[...downloadedSet].filter(id => list.data.some(g => g.id === id)).length}</span>
+          {' / '}
+          <span className="font-semibold">{list.data.length}</span>
+          {' downloaded · Total: '}
+          {list.total ?? 0}
+        </span>
       </form>
 
       {/* Table */}
@@ -561,6 +601,7 @@ function ManageTab({ isAdmin }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-neutral-500 text-xs bg-[#faf8f6] border-b border-neutral-200">
+              <th className="px-3 py-2 text-center w-10" title="Click to toggle downloaded mark">✓</th>
               <th className="px-3 py-2 text-left">Filename</th>
               <th className="px-3 py-2 text-left">Range</th>
               <th className="px-3 py-2 text-left">Line</th>
@@ -573,11 +614,26 @@ function ManageTab({ isAdmin }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan="8" className="p-6 text-center text-neutral-400">Loading…</td></tr>
+              <tr><td colSpan="9" className="p-6 text-center text-neutral-400">Loading…</td></tr>
             ) : list.data.length === 0 ? (
-              <tr><td colSpan="8" className="p-6 text-center text-neutral-400">No gangsheets found.</td></tr>
-            ) : list.data.map(g => (
-              <tr key={g.id} className="border-b border-neutral-100 hover:bg-orange-50/30">
+              <tr><td colSpan="9" className="p-6 text-center text-neutral-400">No gangsheets found.</td></tr>
+            ) : list.data.map(g => {
+              const isDl = downloadedSet.has(g.id);
+              return (
+              <tr key={g.id} className={`border-b border-neutral-100 hover:bg-orange-50/30 ${isDl ? 'bg-green-50/40' : ''}`}>
+                <td className="px-3 py-2 text-center">
+                  <button
+                    onClick={() => toggleDownloaded(g.id)}
+                    title={isDl ? 'Đã download — click để bỏ đánh dấu' : 'Chưa download — click để đánh dấu'}
+                    className={`w-6 h-6 rounded border-2 flex items-center justify-center text-base transition ${
+                      isDl
+                        ? 'bg-emerald-500 border-emerald-600 text-white'
+                        : 'bg-white border-neutral-300 hover:border-emerald-400 text-transparent hover:text-emerald-300'
+                    }`}
+                  >
+                    ✓
+                  </button>
+                </td>
                 <td className="px-3 py-2 font-mono text-xs text-neutral-700 truncate max-w-[260px]">{g.filename}</td>
                 <td className="px-3 py-2 font-mono text-xs text-neutral-500">
                   {g.first_system_id}{g.first_system_id !== g.last_system_id && <> → {g.last_system_id}</>}
@@ -590,14 +646,23 @@ function ManageTab({ isAdmin }) {
                 <td className="px-3 py-2 text-right">
                   <div className="flex gap-3 justify-end">
                     <button onClick={() => setDetail(g)} className="text-xs text-neutral-600 hover:text-neutral-800">Detail</button>
-                    <a href={g.file_url} target="_blank" rel="noreferrer" className="text-xs text-orange-500 hover:text-orange-600">Download</a>
+                    <a
+                      href={g.file_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={() => markDownloaded(g.id)}
+                      className="text-xs text-orange-500 hover:text-orange-600"
+                    >
+                      Download
+                    </a>
                     {isAdmin && (
                       <button onClick={() => handleDelete(g)} className="text-xs text-red-500 hover:text-red-600">Delete</button>
                     )}
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
