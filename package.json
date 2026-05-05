@@ -1,6 +1,6 @@
 {
   "name": "bullstart",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "BullStart Desktop App",
   "main": "src/main/main.js",
   "scripts": {
