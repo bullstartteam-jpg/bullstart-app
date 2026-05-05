@@ -12,14 +12,24 @@ const API_URL = localStorage.getItem('api_url') || DEFAULT_API_URL;
 
 const api = axios.create({
   baseURL: API_URL,
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    // Disable HTTP caching — Electron's Chromium otherwise caches GETs and we
+    // end up showing stale order/wallet data after a server-side change.
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
+  },
 });
 
-// Attach token to requests
+// Attach token + cache-bust GET requests so any intermediate cache (proxy,
+// service worker, browser) can't return a stale response.
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  if ((config.method || 'get').toLowerCase() === 'get') {
+    config.params = { ...(config.params || {}), _: Date.now() };
   }
   return config;
 });

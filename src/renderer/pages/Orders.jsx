@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -21,7 +21,7 @@ export default function Orders() {
   const [orders, setOrders] = useState([]);
   const [meta, setMeta] = useState({});
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ status: '', ref_id: '', page: 1 });
+  const [filters, setFilters] = useState({ status: '', ref_id: '', user_id: '', page: 1 });
   const [selected, setSelected] = useState([]);
   const { hasPermission, hasRole, user: authUser } = useAuth();
   const isStaff = hasRole('admin') || hasRole('support');
@@ -60,6 +60,7 @@ export default function Orders() {
     const params = { page: filters.page, per_page: 20 };
     if (filters.status !== '') params.status = filters.status;
     if (filters.ref_id) params.ref_id = filters.ref_id;
+    if (filters.user_id) params.user_id = filters.user_id;
 
     api.get('/orders', { params }).then(res => {
       setOrders(res.data.data);
@@ -67,7 +68,7 @@ export default function Orders() {
     }).finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status]);
+  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.user_id]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -158,6 +159,22 @@ export default function Orders() {
 
   const [dupRefreshing, setDupRefreshing] = useState(false);
 
+  // Tracking-fetch queue — processes orders one at a time like the converter.
+  const [showTracking, setShowTracking] = useState(false);
+  const [trackingQueue, setTrackingQueue] = useState([]);   // [{id, system_id, shipping_label}]
+  const [trackingDone, setTrackingDone] = useState(0);
+  const [trackingErrors, setTrackingErrors] = useState(0);
+  const [trackingPaused, setTrackingPaused] = useState(false);
+  const [trackingRunning, setTrackingRunning] = useState(false);
+  const [trackingLog, setTrackingLog] = useState([]); // [{kind, sid, msg, at}]
+  const trackingPausedRef = useRef(false);
+  const trackingCancelRef = useRef(false);
+  trackingPausedRef.current = trackingPaused;
+
+  const pushTrackingLog = (entry) => {
+    setTrackingLog(prev => [...prev.slice(-99), { ...entry, at: new Date() }]);
+  };
+
   const handleRefreshDuplicates = async () => {
     setDupRefreshing(true);
     try {
@@ -169,6 +186,102 @@ export default function Orders() {
     } finally {
       setDupRefreshing(false);
     }
+  };
+
+  const openTrackingModal = async () => {
+    setShowTracking(true);
+    setTrackingDone(0);
+    setTrackingErrors(0);
+    setTrackingLog([]);
+    setTrackingPaused(false);
+    trackingCancelRef.current = false;
+    try {
+      const res = await api.get('/orders/pending-tracking', { params: { limit: 500 } });
+      setTrackingQueue(res.data.data || []);
+    } catch (err) {
+      notify(err.response?.data?.message || 'Error', { title: 'Load queue failed', kind: 'error' });
+      setShowTracking(false);
+    }
+  };
+
+  const startTrackingQueue = async () => {
+    if (trackingRunning || trackingQueue.length === 0) return;
+    setTrackingRunning(true);
+    trackingCancelRef.current = false;
+
+    let q = [...trackingQueue];
+    const BASE_DELAY = 3000;
+    const ERROR_BACKOFF = 8000;
+    const CONSECUTIVE_FAIL_LIMIT = 5; // auto-stop after this many in a row
+    let consecutiveFails = 0;
+    let delay = BASE_DELAY;
+
+    while (q.length > 0 && !trackingCancelRef.current) {
+      while (trackingPausedRef.current && !trackingCancelRef.current) {
+        await new Promise(r => setTimeout(r, 300));
+      }
+      if (trackingCancelRef.current) break;
+
+      const item = q.shift();
+      setTrackingQueue([...q]);
+      pushTrackingLog({ kind: 'info', sid: item.system_id, msg: 'Fetching…' });
+      let hadError = false;
+      try {
+        // 1. Call carrier directly from Electron main (bypasses Laravel + CORS).
+        const result = await window.electronAPI.fetchTracking(item.shipping_label);
+        const tk = result?.tracking_id;
+        if (!tk) {
+          pushTrackingLog({ kind: 'warn', sid: item.system_id, msg: 'No tracking in carrier response' });
+          setTrackingErrors(e => e + 1);
+          consecutiveFails = 0;
+        } else {
+          // 2. Save to backend.
+          await api.post(`/orders/${item.id}/save-tracking`, { tracking_id: tk });
+          const carrier = result.carrier ? ` (${result.carrier})` : '';
+          pushTrackingLog({ kind: 'ok', sid: item.system_id, msg: `tracking = ${tk}${carrier}` });
+          setTrackingDone(d => d + 1);
+          consecutiveFails = 0;
+        }
+      } catch (err) {
+        const upstreamStatus = err.upstreamStatus;
+        const upstreamBody = err.upstreamBody;
+        const upstreamMsg = typeof upstreamBody === 'string'
+          ? upstreamBody.slice(0, 200)
+          : (upstreamBody?.error ? String(upstreamBody.error).slice(0, 200) : '');
+        const baseMsg = err.response?.data?.message || err.message || 'Error';
+        const msg = upstreamStatus
+          ? `Carrier ${upstreamStatus}${upstreamMsg ? ' — ' + upstreamMsg : ''}`
+          : baseMsg;
+        pushTrackingLog({ kind: 'error', sid: item.system_id, msg });
+        setTrackingErrors(e => e + 1);
+        hadError = true;
+        consecutiveFails++;
+      }
+
+      // Circuit breaker: bail out if upstream keeps failing — pointless to keep hammering it.
+      if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
+        pushTrackingLog({
+          kind: 'error',
+          sid: '!!',
+          msg: `Stopping — ${consecutiveFails} consecutive upstream failures. Verify carrier.pressify.us is reachable.`,
+        });
+        break;
+      }
+
+      delay = hadError ? ERROR_BACKOFF : BASE_DELAY;
+      if (q.length > 0) {
+        pushTrackingLog({ kind: 'info', sid: '·', msg: `waiting ${Math.round(delay / 1000)}s…` });
+      }
+      await new Promise(r => setTimeout(r, delay));
+    }
+
+    setTrackingRunning(false);
+    fetchOrders();
+  };
+
+  const cancelTrackingQueue = () => {
+    trackingCancelRef.current = true;
+    setTrackingPaused(false);
   };
 
   const handleBulkAssign = async () => {
@@ -299,6 +412,15 @@ export default function Orders() {
         <div className="flex gap-2">
           {isStaff && (
             <button
+              onClick={openTrackingModal}
+              className="px-4 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 text-sm rounded-lg transition-colors"
+              title="Open the tracking-fetch queue — processes orders without tracking one at a time"
+            >
+              Fetch Tracking
+            </button>
+          )}
+          {isStaff && (
+            <button
               onClick={handleRefreshDuplicates}
               disabled={dupRefreshing}
               className="px-4 py-2 bg-rose-100 hover:bg-rose-200 disabled:opacity-50 text-rose-700 text-sm rounded-lg transition-colors"
@@ -368,6 +490,19 @@ export default function Orders() {
           <option value="">All Status</option>
           {STATUS_MAP.map((s, i) => <option key={i} value={i}>{s}</option>)}
         </select>
+
+        {isStaff && (
+          <select
+            value={filters.user_id}
+            onChange={e => setFilters(f => ({ ...f, user_id: e.target.value, page: 1 }))}
+            className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-56"
+          >
+            <option value="">All Users</option>
+            {adminUsers.map(u => (
+              <option key={u.id} value={u.id}>{u.name} ({u.email})</option>
+            ))}
+          </select>
+        )}
 
         {selected.length > 0 && (
           <div className="flex gap-2 ml-auto">
@@ -615,6 +750,74 @@ export default function Orders() {
               >
                 {assignLoading ? 'Assigning…' : 'Assign'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tracking-fetch queue modal */}
+      {showTracking && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => !trackingRunning && setShowTracking(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-[640px] max-w-[95%] p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-neutral-800 mb-3">Fetch Tracking — Queue</h3>
+
+            <div className="grid grid-cols-4 gap-3 text-sm mb-3">
+              <div className="bg-neutral-50 rounded-lg p-2 text-center">
+                <div className="text-xs text-neutral-500">Pending</div>
+                <div className="text-lg font-bold text-neutral-800">{trackingQueue.length}</div>
+              </div>
+              <div className="bg-emerald-50 rounded-lg p-2 text-center">
+                <div className="text-xs text-emerald-600">Done</div>
+                <div className="text-lg font-bold text-emerald-700">{trackingDone}</div>
+              </div>
+              <div className="bg-red-50 rounded-lg p-2 text-center">
+                <div className="text-xs text-red-600">Errors</div>
+                <div className="text-lg font-bold text-red-700">{trackingErrors}</div>
+              </div>
+              <div className="bg-neutral-50 rounded-lg p-2 text-center">
+                <div className="text-xs text-neutral-500">Status</div>
+                <div className="text-xs font-bold text-neutral-700 mt-1">
+                  {trackingRunning ? (trackingPaused ? 'Paused' : 'Running') : 'Idle'}
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-[#0d1117] text-neutral-200 text-xs font-mono rounded-lg p-3 h-60 overflow-y-auto mb-3">
+              {trackingLog.length === 0 ? (
+                <p className="text-neutral-500">Click Start to begin processing.</p>
+              ) : trackingLog.map((l, i) => (
+                <div key={i} className={
+                  l.kind === 'ok' ? 'text-emerald-400' :
+                  l.kind === 'warn' ? 'text-yellow-400' :
+                  l.kind === 'error' ? 'text-red-400' :
+                  'text-neutral-300'
+                }>
+                  [{l.at.toLocaleTimeString()}] {l.sid}: {l.msg}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end gap-2">
+              {!trackingRunning && (
+                <>
+                  <button onClick={() => setShowTracking(false)} className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Close</button>
+                  <button
+                    onClick={startTrackingQueue}
+                    disabled={trackingQueue.length === 0}
+                    className="px-4 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-sm rounded-lg"
+                  >
+                    Start ({trackingQueue.length})
+                  </button>
+                </>
+              )}
+              {trackingRunning && (
+                <>
+                  <button onClick={() => setTrackingPaused(p => !p)} className="px-4 py-1.5 bg-yellow-500 hover:bg-yellow-600 text-white text-sm rounded-lg">
+                    {trackingPaused ? 'Resume' : 'Pause'}
+                  </button>
+                  <button onClick={cancelTrackingQueue} className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm rounded-lg">Cancel</button>
+                </>
+              )}
             </div>
           </div>
         </div>

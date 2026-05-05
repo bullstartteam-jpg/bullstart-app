@@ -266,27 +266,16 @@ export default function OrderDetail() {
         </table>
 
         {/* Metas */}
-        {order.items?.some(item => item.metas?.length > 0) && (
+        {order.items?.length > 0 && (
           <div className="mt-4">
             <h4 className="text-xs text-neutral-500 mb-2">Item Metas</h4>
-            {order.items.filter(item => item.metas?.length > 0).map(item => (
-              <div key={item.id} className="mb-3 pl-2 border-l-2 border-neutral-100">
-                <div className="text-[11px] text-neutral-400 mb-1">
-                  Item #{item.id} — {item.product_variant?.product?.name}
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  {item.metas.map(meta => (
-                    <div key={meta.id} className="flex items-center gap-2 text-xs bg-[#faf8f6] px-2 py-1 rounded">
-                      <span className="text-neutral-500 font-medium">{meta.key}:</span>
-                      {isPreviewable(meta.value) ? (
-                        <UrlPreview url={meta.value} onOpen={setPreviewUrl} label={`Meta ${meta.key}`} size="sm" />
-                      ) : (
-                        <span className="text-neutral-700">{meta.value || '-'}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
+            {order.items.map(item => (
+              <ItemMetasBlock
+                key={item.id}
+                item={item}
+                onPreview={setPreviewUrl}
+                onSaved={fetchOrder}
+              />
             ))}
           </div>
         )}
@@ -302,6 +291,130 @@ function Row({ label, value }) {
     <div className="flex justify-between">
       <span className="text-neutral-500">{label}</span>
       <span className="text-neutral-800 font-medium">{value}</span>
+    </div>
+  );
+}
+
+const SOURCE_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
+
+function ItemMetasBlock({ item, onPreview, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const initialForm = () => {
+    const f = {};
+    for (const k of SOURCE_KEYS) f[k] = '';
+    for (const m of item.metas || []) {
+      if (SOURCE_KEYS.includes(m.key)) f[m.key] = m.value || '';
+    }
+    return f;
+  };
+  const [form, setForm] = useState(initialForm);
+
+  const startEdit = () => { setForm(initialForm()); setEditing(true); };
+  const cancel = () => { setEditing(false); };
+
+  const save = async () => {
+    const ok = await askConfirm(
+      'Lưu thay đổi sẽ XOÁ tất cả _qr meta tương ứng để converter regenerate. Tiếp tục?',
+      { title: 'Update metas', okText: 'Save & regenerate' }
+    );
+    if (!ok) return;
+    setSaving(true);
+    try {
+      const metas = SOURCE_KEYS.map(k => ({ key: k, value: form[k] || null }));
+      const res = await api.put(`/order-items/${item.id}/metas`, { metas });
+      await notify(res.data.message, { title: 'Metas updated', kind: 'success' });
+      setEditing(false);
+      onSaved?.();
+    } catch (err) {
+      const errs = err.response?.data?.errors;
+      const msg = err.response?.data?.message || (errs ? Object.values(errs).flat().join('\n') : 'Error');
+      notify(msg, { title: 'Update failed', kind: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const sourceMetas = (item.metas || []).filter(m => SOURCE_KEYS.includes(m.key));
+  const qrMetas = (item.metas || []).filter(m => /^(front|back|left|right|neck|special)_qr(_\d+)?$/.test(m.key));
+
+  return (
+    <div className="mb-4 pl-2 border-l-2 border-neutral-100">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11px] text-neutral-400">
+          Item #{item.id} — {item.product_variant?.product?.name}
+          {qrMetas.length > 0 && (
+            <span className="ml-2 px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded">{qrMetas.length} _qr</span>
+          )}
+        </div>
+        {!editing ? (
+          <button onClick={startEdit} className="text-xs text-orange-600 hover:text-orange-700">Edit metas</button>
+        ) : (
+          <div className="flex gap-2">
+            <button onClick={cancel} disabled={saving} className="text-xs text-neutral-500 hover:text-neutral-700">Cancel</button>
+            <button onClick={save} disabled={saving} className="text-xs bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white px-2 py-0.5 rounded">
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {editing ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {SOURCE_KEYS.map(k => (
+            <div key={k} className="flex items-center gap-2 text-xs">
+              <label className="text-neutral-500 font-medium w-16 capitalize">{k}</label>
+              <input
+                value={form[k]}
+                onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))}
+                placeholder="URL (Drive / B2 / direct image) — leave empty to delete"
+                className="flex-1 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-xs"
+              />
+            </div>
+          ))}
+          <p className="md:col-span-2 text-[10px] text-neutral-400">
+            Lưu sẽ xoá toàn bộ _qr meta tương ứng. Converter cron sẽ regenerate từ URL mới.
+          </p>
+        </div>
+      ) : (
+        <>
+          {sourceMetas.length === 0 && qrMetas.length === 0 ? (
+            <p className="text-xs text-neutral-400">No metas. Click "Edit metas" to add source URLs.</p>
+          ) : (
+            <div className="space-y-2">
+              {sourceMetas.length > 0 && (
+                <div className="flex flex-wrap gap-3">
+                  {sourceMetas.map(meta => (
+                    <div key={meta.id} className="flex items-center gap-2 text-xs bg-[#faf8f6] px-2 py-1 rounded">
+                      <span className="text-neutral-500 font-medium">{meta.key}:</span>
+                      {isPreviewable(meta.value) ? (
+                        <UrlPreview url={meta.value} onOpen={onPreview} label={`Meta ${meta.key}`} size="sm" />
+                      ) : (
+                        <span className="text-neutral-700">{meta.value || '-'}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {qrMetas.length > 0 && (
+                <div className="flex flex-wrap gap-3 pt-2 border-t border-neutral-100">
+                  {qrMetas.map(meta => (
+                    <div key={meta.id} className="flex items-center gap-2 text-xs bg-blue-50 px-2 py-1 rounded">
+                      <span className="text-blue-600 font-mono font-medium">{meta.key}:</span>
+                      {isPreviewable(meta.value) ? (
+                        <UrlPreview url={meta.value} onOpen={onPreview} label={`QR ${meta.key}`} size="sm" />
+                      ) : (
+                        <span className="text-neutral-700">{meta.value || '-'}</span>
+                      )}
+                      {meta.production && <span className="text-green-600" title="Produced">●</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

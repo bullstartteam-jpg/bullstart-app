@@ -191,27 +191,32 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   // printed _qr is landscape with the original "top edge" of the design on the right.
   const isPortraitSource = sourceW < sourceH;
   const aspect = sourceW / Math.max(1, sourceH);
-  console.log('[converter] composeImage', { systemId, sourceW, sourceH, aspect: aspect.toFixed(4), isPortraitSource });
+
+  // Final canvas is always 3000×2100 — slightly smaller than the standard
+  // 3030×2130 design so labels print with built-in inner margin. The source
+  // image (rotated if portrait) is scaled to fill this target before the
+  // barcode/text overlay is drawn on top.
+  const TARGET_W = 3000;
+  const TARGET_H = 2100;
+  console.log('[converter] composeImage', { systemId, sourceW, sourceH, aspect: aspect.toFixed(4), isPortraitSource, target: `${TARGET_W}x${TARGET_H}` });
 
   const canvas = document.createElement('canvas');
-  if (isPortraitSource) {
-    canvas.width = sourceH;   // landscape width = original height
-    canvas.height = sourceW;  // landscape height = original width
-  } else {
-    canvas.width = sourceW;
-    canvas.height = sourceH;
-  }
+  canvas.width = TARGET_W;
+  canvas.height = TARGET_H;
   const ctx = canvas.getContext('2d');
 
-  // 1. Source design fills the canvas (rotated 90° CCW for portrait sources).
+  // 1. Draw source scaled to fill the 3175×2175 canvas. If portrait, rotate
+  //    90° CCW around the canvas centre — after rotation the image's original
+  //    width maps to TARGET_H and height to TARGET_W, so we hand drawImage the
+  //    swapped dimensions.
   if (isPortraitSource) {
     ctx.save();
-    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.translate(TARGET_W / 2, TARGET_H / 2);
     ctx.rotate(-Math.PI / 2);
-    ctx.drawImage(sourceImg, -sourceW / 2, -sourceH / 2);
+    ctx.drawImage(sourceImg, -TARGET_H / 2, -TARGET_W / 2, TARGET_H, TARGET_W);
     ctx.restore();
   } else {
-    ctx.drawImage(sourceImg, 0, 0);
+    ctx.drawImage(sourceImg, 0, 0, TARGET_W, TARGET_H);
   }
 
   // 2. Build content. Code 128 1D barcode encodes only the short system_id.
@@ -220,7 +225,8 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   const barcodeCanvas = generateBarcodeCanvas(systemId);
 
   // 3. Overlay layout — bottom-left corner.
-  const MARGIN = 60;
+  const MARGIN_X = 190; // 60 base + 130 horizontal inset
+  const MARGIN_Y = 60;  // bottom margin unchanged
   const PANEL_PAD = 10;
   const TEXT_H = 22;
   const TEXT_TO_BAR = 6;
@@ -234,10 +240,10 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   const innerW = Math.max(BARCODE_W, textW);
   const panelW = innerW + PANEL_PAD * 2;
   const panelH = TEXT_H + TEXT_TO_BAR + BARCODE_H + PANEL_PAD * 2;
-  const panelX = MARGIN;
+  const panelX = MARGIN_X;
   // Use the (possibly rotated) canvas height so the overlay always sits at the
   // bottom-left of the printed orientation.
-  const panelY = canvas.height - MARGIN - panelH;
+  const panelY = canvas.height - MARGIN_Y - panelH;
 
   // No background panel — the barcode and label are drawn directly onto the
   // design with transparent gaps so the artwork below shows through.

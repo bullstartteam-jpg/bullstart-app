@@ -1,8 +1,44 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { autoUpdater } = require('electron-updater');
 
 let mainWindow;
+
+// ---------------------------------------------------------------------------
+// Auto-update — pulls latest release from GitHub and installs on next quit.
+// ---------------------------------------------------------------------------
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+
+function notifyRenderer(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
+
+autoUpdater.on('checking-for-update', () => notifyRenderer('updater-status', { status: 'checking' }));
+autoUpdater.on('update-available', (info) => notifyRenderer('updater-status', { status: 'available', version: info?.version }));
+autoUpdater.on('update-not-available', () => notifyRenderer('updater-status', { status: 'up-to-date' }));
+autoUpdater.on('download-progress', (p) => notifyRenderer('updater-status', {
+  status: 'downloading',
+  percent: Math.round(p.percent || 0),
+  bytesPerSecond: p.bytesPerSecond,
+}));
+autoUpdater.on('update-downloaded', (info) => {
+  notifyRenderer('updater-status', { status: 'downloaded', version: info?.version });
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'Update ready',
+    message: `BullStart ${info?.version} đã tải xong. Khởi động lại để cài đặt?`,
+    buttons: ['Restart now', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+  }).then((res) => {
+    if (res.response === 0) autoUpdater.quitAndInstall();
+  }).catch(() => {});
+});
+autoUpdater.on('error', (err) => notifyRenderer('updater-status', { status: 'error', message: err?.message || String(err) }));
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -36,7 +72,16 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  if (app.isPackaged) {
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((err) => {
+        console.warn('[updater] check failed', err?.message || err);
+      });
+    }, 3000);
+  }
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
@@ -48,6 +93,16 @@ app.on('activate', () => {
 
 // IPC handlers
 ipcMain.handle('get-app-version', () => app.getVersion());
+
+ipcMain.handle('check-for-updates', async () => {
+  if (!app.isPackaged) return { status: 'dev', message: 'Skipped in dev build' };
+  try {
+    const r = await autoUpdater.checkForUpdates();
+    return { status: r?.updateInfo ? 'available' : 'up-to-date', version: r?.updateInfo?.version };
+  } catch (err) {
+    return { status: 'error', message: err?.message || String(err) };
+  }
+});
 
 // Open a URL in the user's default external browser.
 ipcMain.handle('open-external', (_event, url) => {
@@ -96,4 +151,48 @@ ipcMain.handle('fetch-image', async (_event, url) => {
   const buf = Buffer.from(await res.arrayBuffer());
   const contentType = res.headers.get('content-type') || 'image/png';
   return { base64: buf.toString('base64'), contentType };
+});
+
+// Fetch tracking from carrier.pressify.us by POSTing the shipping label URL.
+// Done in the main process so we sidestep renderer CORS and don't need a server
+// round-trip just to call the public carrier endpoint.
+ipcMain.handle('fetch-tracking', async (_event, labelUrl) => {
+  if (typeof labelUrl !== 'string' || !labelUrl) {
+    throw new Error('Missing labelUrl');
+  }
+  // Drive /file/d/{id}/{view|edit|...} → direct download form so the carrier
+  // gets the actual PDF rather than Drive's HTML preview wrapper.
+  let url = labelUrl;
+  const m = url.match(/(?:\/file\/d\/|[?&]id=)([a-zA-Z0-9_-]+)/);
+  if (m) {
+    url = `https://drive.google.com/uc?export=download&id=${m[1]}`;
+  }
+
+  const res = await fetch('https://carrier.pressify.us/track', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+
+  let body = null;
+  try { body = await res.json(); } catch { body = await res.text().catch(() => null); }
+
+  if (!res.ok) {
+    const err = new Error(`Carrier HTTP ${res.status}`);
+    err.upstreamStatus = res.status;
+    err.upstreamBody = body;
+    throw err;
+  }
+
+  const tracking = body?.tracking_id
+    ?? body?.tracking
+    ?? body?.trackingNumber
+    ?? body?.data?.tracking_id
+    ?? null;
+
+  return {
+    tracking_id: tracking,
+    carrier: body?.carrier ?? null,
+    raw: body,
+  };
 });

@@ -232,11 +232,12 @@ export default function OrderCreate() {
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Customer ref */}
           <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm">
-            <label className="text-xs text-neutral-500">Ref ID <span className="text-neutral-400">(your reference, optional)</span></label>
+            <label className="text-xs text-neutral-500">Ref ID <span className="text-red-500">*</span></label>
             <input
               value={form.ref_id}
               onChange={e => setForm(f => ({ ...f, ref_id: e.target.value }))}
               placeholder="e.g. TikTok order # / your internal ref..."
+              required
               className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
             />
           </div>

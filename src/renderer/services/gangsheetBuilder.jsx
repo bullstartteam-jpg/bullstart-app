@@ -1,19 +1,27 @@
 import { PDFDocument } from 'pdf-lib';
 
-// pdf-lib measures everything in PDF points (1 inch = 72 pt). We keep page
-// + design dimensions in points and let pdf-lib retain the original raster
-// data at full 300-DPI via embedPng/embedJpg.
+// Pixel-only layout. Build each gangsheet page as a raster canvas, then embed
+// the canvas as a single PNG into the PDF page. No PDF point math — design is
+// placed by absolute pixel coordinates inside a fixed 3300×2550 canvas.
 const DPI = 300;
 const PT_PER_IN = 72;
-const pxToPt = (px) => (px / DPI) * PT_PER_IN;
 
-// Page: landscape 11 × 8.5 inch (3300 × 2550 px @ 300 DPI).
-const PAGE_W = 11  * PT_PER_IN;   // 792
-const PAGE_H = 8.5 * PT_PER_IN;   // 612
+// Page canvas size (Letter landscape @ 300 DPI).
+const CANVAS_W = 3300;
+const CANVAS_H = 2550;
 
-// Design: landscape 3030 × 2130 px @ 300 DPI → 10.1 × 7.1 inch → 727.2 × 511.2 pt.
-const DESIGN_W = pxToPt(3030);
-const DESIGN_H = pxToPt(2130);
+// Design footprint within the canvas (matches converter.composeImage output).
+const DESIGN_W = 3000;
+const DESIGN_H = 2100;
+
+// Horizontal centered, top fixed at 150 px so the design sits closer to the
+// upper edge with a wider bottom margin for trimming / printer feed.
+const DESIGN_X = (CANVAS_W - DESIGN_W) / 2;   // 150
+const DESIGN_Y = 150;                         // 0.5 in from top
+
+// PDF page size in points (= canvas size at 300 DPI). 11 × 8.5 in landscape.
+const PAGE_W_PT = (CANVAS_W / DPI) * PT_PER_IN;   // 792
+const PAGE_H_PT = (CANVAS_H / DPI) * PT_PER_IN;   // 612
 
 // Source side keys, in the canonical order we want them to appear in the gang sheet.
 const SOURCE_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
@@ -101,6 +109,28 @@ function base64ToBytes(b64) {
   return bytes;
 }
 
+// Load an image element from raw bytes — used to draw the _qr design onto the
+// canvas before re-encoding the whole sheet as a single PNG.
+function loadImageFromBytes(bytes) {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([bytes]);
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+    img.src = url;
+  });
+}
+
+function canvasToBlob(canvas, type = 'image/png') {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error('Canvas toBlob returned null'))),
+      type,
+    );
+  });
+}
+
 /**
  * Compose one chunk into a single PDF Blob.
  *
@@ -125,20 +155,29 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
   const metaIdsUsed = [];
   const seenOrders = new Set();
 
+  // Reuse one canvas across all pages — fast, predictable memory.
+  const sheetCanvas = document.createElement('canvas');
+  sheetCanvas.width = CANVAS_W;
+  sheetCanvas.height = CANVAS_H;
+  const sheetCtx = sheetCanvas.getContext('2d');
+
   for (const rec of records) {
     const bytes = await fetchImageBytes(rec.meta.value);
-    let img;
-    try {
-      img = await pdf.embedPng(bytes);
-    } catch {
-      img = await pdf.embedJpg(bytes);
-    }
+    const img = await loadImageFromBytes(bytes);
 
-    const page = pdf.addPage([PAGE_W, PAGE_H]);
-    // Center the design horizontally and pin it flush with the top edge.
-    const x = (PAGE_W - DESIGN_W) / 2;
-    const y = PAGE_H - DESIGN_H;
-    page.drawImage(img, { x, y, width: DESIGN_W, height: DESIGN_H });
+    // 1. Reset canvas to white.
+    sheetCtx.fillStyle = '#ffffff';
+    sheetCtx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+    // 2. Draw the _qr design centered on the canvas.
+    sheetCtx.drawImage(img, DESIGN_X, DESIGN_Y, DESIGN_W, DESIGN_H);
+
+    // 3. Snapshot the canvas as a single PNG, embed into PDF as a full page.
+    const blob = await canvasToBlob(sheetCanvas, 'image/png');
+    const pngBytes = new Uint8Array(await blob.arrayBuffer());
+    const pageImg = await pdf.embedPng(pngBytes);
+    const page = pdf.addPage([PAGE_W_PT, PAGE_H_PT]);
+    page.drawImage(pageImg, { x: 0, y: 0, width: PAGE_W_PT, height: PAGE_H_PT });
 
     metaIdsUsed.push(rec.meta.id);
     if (!seenOrders.has(rec.order.id)) {

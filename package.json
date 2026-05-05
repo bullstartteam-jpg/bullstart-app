@@ -34,7 +34,15 @@
     },
     "linux": {
       "icon": "build-resources/icon.png"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "bullstartteam-jpg",
+        "repo": "bullstart-app",
+        "releaseType": "release"
+      }
+    ]
   },
   "keywords": [],
   "author": "",
@@ -62,6 +70,7 @@
     "@aws-sdk/client-s3": "^3.1039.0",
     "axios": "^1.15.2",
     "bwip-js": "^4.10.1",
+    "electron-updater": "^6.8.3",
     "jsbarcode": "^3.12.3",
     "pdf-lib": "^1.17.1",
     "qrcode": "^1.5.4",
