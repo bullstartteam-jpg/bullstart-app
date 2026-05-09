@@ -21,7 +21,7 @@ export default function Orders() {
   const [orders, setOrders] = useState([]);
   const [meta, setMeta] = useState({});
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ status: '', ref_id: '', ref_ids: '', system_id: '', user_id: '', date_from: '', date_to: '', page: 1 });
+  const [filters, setFilters] = useState({ status: '', ref_id: '', ref_ids: '', system_id: '', user_id: '', date_from: '', date_to: '', page: 1, per_page: 20 });
   const [showRefIdsModal, setShowRefIdsModal] = useState(false);
   const [refIdsInput, setRefIdsInput] = useState('');
   const [selected, setSelected] = useState([]);
@@ -59,7 +59,7 @@ export default function Orders() {
 
   const fetchOrders = () => {
     setLoading(true);
-    const params = { page: filters.page, per_page: 20 };
+    const params = { page: filters.page, per_page: filters.per_page || 20 };
     if (filters.status !== '') params.status = filters.status;
     if (filters.ref_id) params.ref_id = filters.ref_id;
     if (filters.ref_ids) params.ref_ids = filters.ref_ids;
@@ -74,7 +74,7 @@ export default function Orders() {
     }).finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.user_id, filters.ref_ids, filters.date_from, filters.date_to]);
+  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -333,6 +333,41 @@ export default function Orders() {
   const cancelTrackingQueue = () => {
     trackingCancelRef.current = true;
     setTrackingPaused(false);
+  };
+
+  const handleBulkMergeDuplicates = async () => {
+    if (selected.length < 2) {
+      return notify('Select at least 2 orders to merge.', { title: 'Merge duplicates' });
+    }
+    // Preview duplicate groups in the selection — orders sharing the same
+    // (user_id, ref_id) where the count >= 2.
+    const sel = orders.filter(o => selected.includes(o.id) && o.ref_id);
+    const byKey = {};
+    for (const o of sel) {
+      const k = `${o.user_id}|${o.ref_id}`;
+      (byKey[k] ||= []).push(o);
+    }
+    const groups = Object.values(byKey).filter(g => g.length >= 2);
+    if (groups.length === 0) {
+      return notify('No duplicate ref_id groups in the current selection.', { title: 'Merge duplicates' });
+    }
+    const totalLosers = groups.reduce((s, g) => s + (g.length - 1), 0);
+    const summary = groups.map(g => `· ${g[0].ref_id}: ${g.length} → 1 (keep ${[...g].sort((a,b)=>b.id-a.id)[0].system_id})`).join('\n');
+
+    const ok = await askConfirm(
+      `Merge ${groups.length} group(s), removing ${totalLosers} duplicate order(s)?\n\n${summary}\n\nMỗi group: giữ order mới nhất (highest id), gộp items + paid_cost, recalculate totals. Loser orders + addresses bị xoá.`,
+      { title: 'Confirm merge', okText: 'Merge' },
+    );
+    if (!ok) return;
+
+    try {
+      const res = await api.post('/orders/bulk-merge-duplicates', { order_ids: selected });
+      await notify(res.data.message, { title: 'Bulk merge', kind: 'success' });
+      setSelected([]);
+      fetchOrders();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Error', { title: 'Merge failed', kind: 'error' });
+    }
   };
 
   const handleBulkAssign = async () => {
@@ -621,6 +656,17 @@ export default function Orders() {
           )}
         </div>
 
+        <select
+          value={filters.per_page}
+          onChange={e => setFilters(f => ({ ...f, per_page: parseInt(e.target.value), page: 1 }))}
+          className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm"
+          title="Rows per page"
+        >
+          {[10, 20, 50, 100, 200, 500].map(n => (
+            <option key={n} value={n}>{n} / page</option>
+          ))}
+        </select>
+
         {selected.length > 0 && (
           <div className="flex gap-2 ml-auto">
             <span className="text-neutral-500 text-sm py-1.5">{selected.length} selected</span>
@@ -647,6 +693,15 @@ export default function Orders() {
             {isStaff && (
               <button onClick={handleBulkReconvert} className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded-lg">
                 Bulk Reconvert
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                onClick={handleBulkMergeDuplicates}
+                className="px-3 py-1.5 bg-fuchsia-500 hover:bg-fuchsia-600 text-white text-xs rounded-lg"
+                title="Merge selected orders sharing the same ref_id — keep newest, move items, recalc totals"
+              >
+                Merge Duplicates
               </button>
             )}
             {isAdmin && (

@@ -1,5 +1,5 @@
 import bwipjs from 'bwip-js';
-import api from './api';
+import api, { getApiUrl } from './api';
 import { driveThumb, driveId } from '../utils/drive';
 
 let intervalId = null;
@@ -150,17 +150,20 @@ async function processOne(item, meta) {
 }
 
 /**
- * Render a Code 128 1D barcode into a fresh canvas. Encodes only the short
- * system_id (e.g. "PS_C115"). Background is transparent so the bars sit on
- * the design without an opaque rectangle.
+ * Render a PDF417 stacked-linear barcode into a fresh canvas. PDF417 is
+ * rectangular (landscape) so it fits the original 350×130 footprint without
+ * being stretched into a distorted matrix. Encodes a URL — most modern
+ * barcode scanners (and phones with a barcode app) auto-open it as a link.
+ * Background is transparent.
  */
 function generateBarcodeCanvas(value) {
   const c = document.createElement('canvas');
   bwipjs.toCanvas(c, {
-    bcid: 'code128',
+    bcid: 'pdf417',
     text: value,
     scale: 3,
-    height: 14,         // mm — taller bars are easier to scan
+    columns: 6,         // ≈ 350/130 aspect when paired with default rowmult
+    eclevel: 4,         // moderate error correction
     includetext: false,
     paddingwidth: 0,
     paddingheight: 0,
@@ -170,10 +173,10 @@ function generateBarcodeCanvas(value) {
 }
 
 /**
- * Compose the QR/barcode-overlaid image. We no longer add a footer below the
- * source — the small PDF417 barcode + a single text label sit directly on the
- * design at the bottom-left corner, on top of a small white panel for
- * scanning reliability.
+ * Compose the barcode-overlaid image. A PDF417 barcode (encoding the QR
+ * portal URL) + a single text label sit directly on the design at the
+ * bottom-left corner. No background panel — transparent gaps between bars
+ * let the artwork show through.
  */
 async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   const id = driveId(sourceUrl);
@@ -219,12 +222,15 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
     ctx.drawImage(sourceImg, 0, 0, TARGET_W, TARGET_H);
   }
 
-  // 2. Build content. Code 128 1D barcode encodes only the short system_id.
-  //    The accessory summary lives in the human-readable text label above.
+  // 2. Build content. The QR code now encodes the full QR-portal URL so a
+  //    phone scan opens the order page directly. The human-readable label
+  //    above still shows system_id (+ accessory summary).
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
-  const barcodeCanvas = generateBarcodeCanvas(systemId);
+  const qrPortalUrl = `${getApiUrl().replace(/\/api\/?$/, '')}/qr/${systemId}`;
+  const barcodeCanvas = generateBarcodeCanvas(qrPortalUrl);
 
-  // 3. Overlay layout — bottom-left corner.
+  // 3. Overlay layout — bottom-left corner. PDF417 is naturally landscape so
+  //    it fits the original 350×130 slot.
   const MARGIN_X = 190; // 60 base + 130 horizontal inset
   const MARGIN_Y = 60;  // bottom margin unchanged
   const PANEL_PAD = 10;
