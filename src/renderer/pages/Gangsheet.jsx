@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey } from '../services/gangsheetBuilder';
+import { buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount } from '../services/gangsheetBuilder';
 
 export default function Gangsheet() {
   const { hasRole } = useAuth();
@@ -98,7 +98,13 @@ function ComposeTab() {
   const handleGenerate = async () => {
     const selected = pending.filter(o => selectedIds.has(o.id));
     if (selected.length === 0) { alert('Select at least 1 order'); return; }
-    const chunks = chunkArray(selected, batchSize);
+    // Split two-sided orders out so they get their own gangsheet (named with
+    // `_two_size` suffix). One-side orders ship in the normal sheets.
+    const { oneSide, twoSide } = splitOrdersBySideCount(selected);
+    const chunks = [
+      ...chunkArray(oneSide, batchSize).map(chunk => ({ chunk, suffix: '' })),
+      ...chunkArray(twoSide, batchSize).map(chunk => ({ chunk, suffix: 'two_size' })),
+    ];
     setRunning(true); setResults([]);
     const out = [];
     try {
@@ -110,13 +116,14 @@ function ComposeTab() {
       }
 
       for (let ci = 0; ci < chunks.length; ci++) {
-        const chunk = chunks[ci];
+        const { chunk, suffix } = chunks[ci];
         const linePrefix = dominantLineId(chunk);
         const totalInChunk = flattenQrMetas(chunk).length;
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
 
         const built = await buildGangsheetForChunk(chunk, {
           linePrefix,
+          nameSuffix: suffix,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 
@@ -314,7 +321,12 @@ function FindTab() {
   const handleGenerate = async () => {
     const selected = orders.filter(o => selectedIds.has(o.id));
     if (selected.length === 0) { alert('Select at least 1 order'); return; }
-    const chunks = chunkArray(selected, batchSize);
+    // includeProduced=true here, so two-sidedness check must consider all metas.
+    const { oneSide, twoSide } = splitOrdersBySideCount(selected, { includeProduced: true });
+    const chunks = [
+      ...chunkArray(oneSide, batchSize).map(chunk => ({ chunk, suffix: '' })),
+      ...chunkArray(twoSide, batchSize).map(chunk => ({ chunk, suffix: 'two_size' })),
+    ];
     setRunning(true); setResults([]);
     const out = [];
     try {
@@ -325,7 +337,7 @@ function FindTab() {
       }
 
       for (let ci = 0; ci < chunks.length; ci++) {
-        const chunk = chunks[ci];
+        const { chunk, suffix } = chunks[ci];
         const linePrefix = dominantLineId(chunk);
         const totalInChunk = flattenQrMetas(chunk, { includeProduced: true }).length;
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
@@ -333,6 +345,7 @@ function FindTab() {
         const built = await buildGangsheetForChunk(chunk, {
           linePrefix,
           includeProduced: true,
+          nameSuffix: suffix,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 

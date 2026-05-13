@@ -19,6 +19,14 @@ const DESIGN_H = 2100;
 const DESIGN_X = (CANVAS_W - DESIGN_W) / 2;   // 150
 const DESIGN_Y = 150;                         // 0.5 in from top
 
+// Registration marks drawn in the margin around the design — corner L-shapes
+// pointing toward each design corner + a tick at the center of each edge.
+// Used by the press operator to align the gangsheet on the printer bed.
+const MARK_GAP = 30;        // px gap between design edge and mark (no overlap)
+const MARK_ARM = 90;        // length of each L-arm
+const MARK_THICK = 10;      // line thickness
+const CENTER_TICK = 70;     // length of the per-edge center mark
+
 // PDF page size in points (= canvas size at 300 DPI). 11 × 8.5 in landscape.
 const PAGE_W_PT = (CANVAS_W / DPI) * PT_PER_IN;   // 792
 const PAGE_H_PT = (CANVAS_H / DPI) * PT_PER_IN;   // 612
@@ -44,10 +52,42 @@ function shortDate(d = new Date()) {
   return `${months[d.getMonth()]}${String(d.getDate()).padStart(2, '0')}`;
 }
 
-export function gangsheetFilename({ linePrefix, firstSid, lastSid, ordersCount, metasCount, date }) {
+export function gangsheetFilename({ linePrefix, firstSid, lastSid, ordersCount, metasCount, date, suffix }) {
   const prefix = linePrefix || 'GANGSHEET';
   const day = date || shortDate();
-  return `${prefix}_${firstSid}-${lastSid}_${ordersCount}_${metasCount}_${day}.pdf`;
+  const sfx = suffix ? `_${suffix}` : '';
+  return `${prefix}_${firstSid}-${lastSid}_${ordersCount}_${metasCount}_${day}${sfx}.pdf`;
+}
+
+/**
+ * Split orders into two buckets:
+ *   - twoSide: order has BOTH a front_qr AND a back_qr meta among unproduced
+ *              metas (respecting `includeProduced` the same way flattenQrMetas
+ *              does). These need their own gangsheet so a press operator
+ *              prints both sides in one pass.
+ *   - oneSide: everything else (only front, only back, or neither — left/
+ *              right/neck/special-only orders go here).
+ */
+export function splitOrdersBySideCount(orders, { includeProduced = false } = {}) {
+  const twoSide = [];
+  const oneSide = [];
+  for (const order of orders) {
+    let hasFront = false;
+    let hasBack = false;
+    for (const item of order.items || []) {
+      for (const m of item.metas || []) {
+        if (m.production && !includeProduced) continue;
+        const parsed = parseQrKey(m.key);
+        if (!parsed) continue;
+        if (parsed.sourceKey === 'front') hasFront = true;
+        else if (parsed.sourceKey === 'back') hasBack = true;
+        if (hasFront && hasBack) break;
+      }
+      if (hasFront && hasBack) break;
+    }
+    (hasFront && hasBack ? twoSide : oneSide).push(order);
+  }
+  return { twoSide, oneSide };
 }
 
 // Split an array into roughly even chunks of size `size`.
@@ -122,6 +162,53 @@ function loadImageFromBytes(bytes) {
   });
 }
 
+/**
+ * Draw corner L-marks + center ticks around the design. Each L's elbow points
+ * at the design corner with a small gap, so the operator can register the
+ * sheet without the marks bleeding onto the artwork. Center ticks on every
+ * edge mark the mid-point of the design for symmetric alignment.
+ */
+function drawAlignmentMarks(ctx) {
+  ctx.save();
+  ctx.fillStyle = '#000000';
+
+  const dx1 = DESIGN_X;
+  const dy1 = DESIGN_Y;
+  const dx2 = DESIGN_X + DESIGN_W;
+  const dy2 = DESIGN_Y + DESIGN_H;
+  const cx = (dx1 + dx2) / 2;
+  const cy = (dy1 + dy2) / 2;
+
+  // Place the inner corner of the L at (ix, iy), arms extending in (sx, sy)
+  // (each ±1) AWAY from the design. Thickness extends INTO the corner (toward
+  // the design) so the L-elbow visually points at the design corner.
+  const drawCornerL = (ix, iy, sx, sy) => {
+    // Horizontal arm: width=ARM in -sx direction, thickness=T in -sy direction
+    const hx = sx > 0 ? ix : ix - MARK_ARM;
+    const hy = sy > 0 ? iy - MARK_THICK : iy;
+    ctx.fillRect(hx, hy, MARK_ARM, MARK_THICK);
+    // Vertical arm
+    const vx = sx > 0 ? ix - MARK_THICK : ix;
+    const vy = sy > 0 ? iy : iy - MARK_ARM;
+    ctx.fillRect(vx, vy, MARK_THICK, MARK_ARM);
+  };
+
+  // 4 corners — inner corner sits diagonally outside each design corner.
+  drawCornerL(dx1 - MARK_GAP, dy1 - MARK_GAP, -1, -1); // top-left
+  drawCornerL(dx2 + MARK_GAP, dy1 - MARK_GAP, +1, -1); // top-right
+  drawCornerL(dx1 - MARK_GAP, dy2 + MARK_GAP, -1, +1); // bottom-left
+  drawCornerL(dx2 + MARK_GAP, dy2 + MARK_GAP, +1, +1); // bottom-right
+
+  // Center ticks marking the horizontal mid-point of the design — vertical
+  // sticks above the top edge and below the bottom edge. (Left/right edge
+  // ticks were intentionally dropped — operator only needs to find the
+  // horizontal center for press alignment.)
+  ctx.fillRect(cx - MARK_THICK / 2, dy1 - MARK_GAP - CENTER_TICK, MARK_THICK, CENTER_TICK);
+  ctx.fillRect(cx - MARK_THICK / 2, dy2 + MARK_GAP, MARK_THICK, CENTER_TICK);
+
+  ctx.restore();
+}
+
 function canvasToBlob(canvas, type = 'image/png') {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
@@ -140,7 +227,7 @@ function canvasToBlob(canvas, type = 'image/png') {
  *   { blob, filename, linePrefix, firstSid, lastSid, ordersInChunk, metasUsed,
  *     orderIds, metaIds }
  */
-export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false } = {}) {
+export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '' } = {}) {
   if (!orders.length) throw new Error('Empty chunk');
 
   const records = flattenQrMetas(orders, { includeProduced });
@@ -172,6 +259,11 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
     // 2. Draw the _qr design centered on the canvas.
     sheetCtx.drawImage(img, DESIGN_X, DESIGN_Y, DESIGN_W, DESIGN_H);
 
+    // 2b. Registration marks in the surrounding margin — corner L-shapes +
+    //     center-edge ticks. Drawn after the design so they sit on top of any
+    //     bleed pixels but stay outside the printable artwork area.
+    drawAlignmentMarks(sheetCtx);
+
     // 3. Snapshot the canvas as a single PNG, embed into PDF as a full page.
     const blob = await canvasToBlob(sheetCanvas, 'image/png');
     const pngBytes = new Uint8Array(await blob.arrayBuffer());
@@ -200,6 +292,7 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
     lastSid,
     ordersCount: ordersInChunk,
     metasCount: metasUsed,
+    suffix: nameSuffix,
   });
 
   const pdfBytes = await pdf.save();
