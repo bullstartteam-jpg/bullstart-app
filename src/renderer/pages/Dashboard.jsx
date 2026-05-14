@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 
 const STATUS_COLORS = {
   new_order: 'bg-blue-100 text-blue-600',
@@ -11,9 +12,17 @@ const STATUS_COLORS = {
   shipped: 'bg-emerald-100 text-emerald-600',
 };
 
+const WAREHOUSE_ADDRESS = {
+  line1: '4353 Saddle Horn Way',
+  city: 'Oceanside',
+  zipcode: '92057',
+};
+
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const { hasRole } = useAuth();
+  const isSeller = hasRole('seller');
 
   useEffect(() => {
     api.get('/dashboard').then(res => {
@@ -21,12 +30,37 @@ export default function Dashboard() {
     }).finally(() => setLoading(false));
   }, []);
 
+  const copyWarehouse = async () => {
+    const text = `${WAREHOUSE_ADDRESS.line1}, ${WAREHOUSE_ADDRESS.city} ${WAREHOUSE_ADDRESS.zipcode}`;
+    try { await navigator.clipboard.writeText(text); } catch { /* ignore */ }
+  };
+
   if (loading) return <div className="p-6 text-neutral-400">Loading...</div>;
   if (!stats) return <div className="p-6 text-red-500">Failed to load dashboard</div>;
 
   return (
     <div className="p-6">
       <h2 className="text-xl font-bold text-neutral-800 mb-6">Dashboard</h2>
+
+      {isSeller && (
+        <div className="mb-6 bg-orange-50 border border-orange-200 rounded-xl p-4 shadow-sm flex items-start gap-4">
+          <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center text-xl">
+            📦
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-semibold text-orange-700 uppercase tracking-wider mb-1">Warehouse Address</div>
+            <div className="text-base font-semibold text-neutral-800">{WAREHOUSE_ADDRESS.line1}</div>
+            <div className="text-sm text-neutral-700">{WAREHOUSE_ADDRESS.city}, CA {WAREHOUSE_ADDRESS.zipcode}</div>
+          </div>
+          <button
+            onClick={copyWarehouse}
+            className="px-3 py-1.5 bg-white border border-orange-200 text-orange-700 text-xs font-medium rounded-lg hover:bg-orange-100"
+            title="Copy address to clipboard"
+          >
+            Copy
+          </button>
+        </div>
+      )}
 
       {/* Stats cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">

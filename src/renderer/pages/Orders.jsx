@@ -21,7 +21,7 @@ export default function Orders() {
   const [orders, setOrders] = useState([]);
   const [meta, setMeta] = useState({});
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ status: '', ref_id: '', ref_ids: '', system_id: '', user_id: '', date_from: '', date_to: '', page: 1, per_page: 20 });
+  const [filters, setFilters] = useState({ status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', user_id: '', date_from: '', date_to: '', page: 1, per_page: 20 });
   const [showRefIdsModal, setShowRefIdsModal] = useState(false);
   const [refIdsInput, setRefIdsInput] = useState('');
   const [selected, setSelected] = useState([]);
@@ -61,6 +61,7 @@ export default function Orders() {
     setLoading(true);
     const params = { page: filters.page, per_page: filters.per_page || 20 };
     if (filters.status !== '') params.status = filters.status;
+    if (filters.paid) params.paid = filters.paid;
     if (filters.ref_id) params.ref_id = filters.ref_id;
     if (filters.ref_ids) params.ref_ids = filters.ref_ids;
     if (filters.system_id) params.system_id = filters.system_id;
@@ -74,7 +75,7 @@ export default function Orders() {
     }).finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page]);
+  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.paid, filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -92,10 +93,11 @@ export default function Orders() {
   const handleBulkPay = async () => {
     if (selected.length === 0) return;
 
-    // Frontend pre-check: sum unpaid amounts of selected orders, compare against wallet.
+    // Frontend pre-check. Sellers always pay from their own wallet, so we can
+    // compare a single balance up front. Admin/staff pay from EACH order's
+    // owner wallet (grouped server-side), so a single-wallet pre-check is
+    // wrong — skip it and let the backend enforce per-owner.
     try {
-      const balanceRes = await api.get('/wallet/balance');
-      const wallet = parseFloat(balanceRes.data.wallet) || 0;
       const required = orders
         .filter(o => selected.includes(o.id))
         .reduce((sum, o) => {
@@ -105,9 +107,15 @@ export default function Orders() {
       if (required <= 0) {
         return notify('All selected orders are already fully paid.', { title: 'Nothing to pay' });
       }
-      if (wallet < required) {
-        return notify(`Insufficient wallet balance.\nRequired: $${required.toFixed(2)}\nWallet: $${wallet.toFixed(2)}\nShort by: $${(required - wallet).toFixed(2)}`, { title: 'Cannot pay', kind: 'error' });
+
+      if (isSeller) {
+        const balanceRes = await api.get('/wallet/balance');
+        const wallet = parseFloat(balanceRes.data.wallet) || 0;
+        if (wallet < required) {
+          return notify(`Insufficient wallet balance.\nRequired: $${required.toFixed(2)}\nWallet: $${wallet.toFixed(2)}\nShort by: $${(required - wallet).toFixed(2)}`, { title: 'Cannot pay', kind: 'error' });
+        }
       }
+
       const ok = await askConfirm(`Pay ${selected.length} order(s) for $${required.toFixed(2)}?`, { title: 'Confirm bulk pay', okText: 'Pay' });
       if (!ok) return;
     } catch {
@@ -122,8 +130,9 @@ export default function Orders() {
       refreshUnpaidBanner();
     } catch (err) {
       const d = err.response?.data;
+      const owner = d?.user_name ? ` (${d.user_name})` : '';
       const msg = d?.required != null && d?.wallet != null
-        ? `${d.message}.\nRequired: $${d.required}\nWallet: $${d.wallet}`
+        ? `${d.message}${owner}.\nRequired: $${d.required}\nWallet: $${d.wallet}`
         : (d?.message || 'Error');
       notify(msg, { title: 'Bulk pay failed', kind: 'error' });
     }
@@ -199,6 +208,7 @@ export default function Orders() {
   const handleExport = async () => {
     const params = {};
     if (filters.status !== '') params.status = filters.status;
+    if (filters.paid) params.paid = filters.paid;
     if (filters.ref_id) params.ref_id = filters.ref_id;
     if (filters.ref_ids) params.ref_ids = filters.ref_ids;
     if (filters.system_id) params.system_id = filters.system_id;
@@ -614,6 +624,17 @@ export default function Orders() {
         >
           <option value="">All Status</option>
           {STATUS_MAP.map((s, i) => <option key={i} value={i}>{s}</option>)}
+        </select>
+
+        <select
+          value={filters.paid}
+          onChange={e => setFilters(f => ({ ...f, paid: e.target.value, page: 1 }))}
+          className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none"
+          title="Filter by pay status"
+        >
+          <option value="">All Pay</option>
+          <option value="paid">Paid</option>
+          <option value="unpaid">Unpaid</option>
         </select>
 
         {isStaff && (

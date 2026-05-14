@@ -45,17 +45,23 @@ export default function OrderDetail() {
   };
 
   const handlePay = async () => {
-    // Frontend pre-check: compare order's unpaid amount to wallet balance.
+    // Frontend pre-check. Sellers pay from their own wallet — compare against
+    // /wallet/balance up front. Admin/staff pay from the ORDER OWNER'S wallet,
+    // so the caller's balance is irrelevant; let the backend enforce.
     try {
-      const balanceRes = await api.get('/wallet/balance');
-      const wallet = parseFloat(balanceRes.data.wallet) || 0;
       const required = (parseFloat(order?.total_cost) || 0) - (parseFloat(order?.paid_cost) || 0);
       if (required <= 0) {
         return notify('Order already fully paid.', { title: 'Nothing to pay' });
       }
-      if (wallet < required) {
-        return notify(`Insufficient wallet balance.\nRequired: $${required.toFixed(2)}\nWallet: $${wallet.toFixed(2)}\nShort by: $${(required - wallet).toFixed(2)}`, { title: 'Cannot pay', kind: 'error' });
+
+      if (hasRole('seller')) {
+        const balanceRes = await api.get('/wallet/balance');
+        const wallet = parseFloat(balanceRes.data.wallet) || 0;
+        if (wallet < required) {
+          return notify(`Insufficient wallet balance.\nRequired: $${required.toFixed(2)}\nWallet: $${wallet.toFixed(2)}\nShort by: $${(required - wallet).toFixed(2)}`, { title: 'Cannot pay', kind: 'error' });
+        }
       }
+
       const ok = await askConfirm(`Pay $${required.toFixed(2)} for this order?`, { title: 'Confirm pay', okText: 'Pay' });
       if (!ok) return;
     } catch {
