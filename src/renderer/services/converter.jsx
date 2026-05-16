@@ -13,6 +13,7 @@ const state = {
   nextTickAt: null,
   pendingCount: 0,
   pending: [], // [{ order_item_id, system_id, key, value }]
+  pendingLabels: [], // [{ order_id, system_id, shipping_label }]
   processedTotal: 0,
   errorTotal: 0,
   log: [], // [{ ts, level, system_id, key, message }]
@@ -30,7 +31,12 @@ export function getConverterState() {
 }
 
 function snapshot() {
-  return { ...state, log: state.log.slice(0, 200), pending: state.pending.slice(0, 200) };
+  return {
+    ...state,
+    log: state.log.slice(0, 200),
+    pending: state.pending.slice(0, 200),
+    pendingLabels: state.pendingLabels.slice(0, 200),
+  };
 }
 
 function emit() {
@@ -83,7 +89,12 @@ async function tick() {
   emit();
   try {
     const res = await api.get('/conversion/pending');
-    const items = res.data || [];
+    // Backwards-compatible response handling: old shape is a bare array of
+    // items; new shape is { items, shipping_label_pending }.
+    const data = res.data || {};
+    const items = Array.isArray(data) ? data : (data.items || []);
+    const labels = Array.isArray(data) ? [] : (data.shipping_label_pending || []);
+
     state.pending = items.flatMap(it =>
       it.pending.map(p => ({
         order_item_id: it.order_item_id,
@@ -96,7 +107,8 @@ async function tick() {
         value: p.source_value,
       }))
     );
-    state.pendingCount = state.pending.length;
+    state.pendingLabels = labels.slice();
+    state.pendingCount = state.pending.length + state.pendingLabels.length;
     emit();
 
     for (const item of items) {
@@ -110,7 +122,7 @@ async function tick() {
           state.processedTotal += 1;
           pushLog('ok', item.system_id, meta.target_key, `Uploaded ${meta.index}/${meta.total}`);
           state.pending = state.pending.filter(p => !(p.order_item_id === item.order_item_id && p.target_key === meta.target_key));
-          state.pendingCount = state.pending.length;
+          state.pendingCount = state.pending.length + state.pendingLabels.length;
           emit();
         } catch (err) {
           state.errorTotal += 1;
@@ -118,6 +130,27 @@ async function tick() {
           emit();
           console.warn('[converter] failed', item.system_id, meta.target_key, err);
         }
+      }
+    }
+
+    // Shipping-label overlays. Same poller, runs after _qr items so the
+    // more time-critical print queue clears first.
+    for (const lbl of labels) {
+      if (state.paused || !state.enabled) break;
+      try {
+        pushLog('info', lbl.system_id, 'shipping_label', 'Composing label overlay…');
+        emit();
+        await processShippingLabel(lbl);
+        state.processedTotal += 1;
+        pushLog('ok', lbl.system_id, 'shipping_label', 'Uploaded overlay');
+        state.pendingLabels = state.pendingLabels.filter(p => p.order_id !== lbl.order_id);
+        state.pendingCount = state.pending.length + state.pendingLabels.length;
+        emit();
+      } catch (err) {
+        state.errorTotal += 1;
+        pushLog('error', lbl.system_id, 'shipping_label', err?.message || String(err));
+        emit();
+        console.warn('[converter] label failed', lbl.system_id, err);
       }
     }
   } catch (err) {
@@ -147,6 +180,66 @@ async function processOne(item, meta) {
   await api.post(`/conversion/${item.order_item_id}/qr-meta`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
+}
+
+async function processShippingLabel(lbl) {
+  const blob = await composeShippingLabel(lbl.shipping_label, lbl.system_id);
+  const formData = new FormData();
+  formData.append('image', blob, `${lbl.system_id}_label.png`);
+  await api.post(`/conversion/order/${lbl.order_id}/shipping-label`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+}
+
+/**
+ * Compose a shipping-label image with `system_id` printed in the top-right
+ * corner. Preserves the source dimensions (we don't know the carrier's
+ * intended print size) and only paints the system_id band on top.
+ */
+async function composeShippingLabel(sourceUrl, systemId) {
+  const id = driveId(sourceUrl);
+  // Drive labels are usually small portrait images. w1600 covers ~4×6"@300dpi
+  // without blow-up. Non-Drive URLs are fetched as-is.
+  const fetchUrl = id ? driveThumb(sourceUrl, 'w1600') : sourceUrl;
+  const sourceImg = await loadImage(fetchUrl);
+  const sourceW = sourceImg.naturalWidth || sourceImg.width;
+  const sourceH = sourceImg.naturalHeight || sourceImg.height;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = sourceW;
+  canvas.height = sourceH;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(sourceImg, 0, 0, sourceW, sourceH);
+
+  // Text band sized as a fraction of the label width so it scales with
+  // different label resolutions (most carriers ship 4×6" at 200–300 dpi).
+  const fontSize = Math.max(28, Math.round(sourceW * 0.045));
+  const padX = Math.round(fontSize * 0.6);
+  const padY = Math.round(fontSize * 0.4);
+  ctx.font = `bold ${fontSize}px sans-serif`;
+  const textWidth = Math.ceil(ctx.measureText(systemId).width);
+  const boxW = textWidth + padX * 2;
+  const boxH = fontSize + padY * 2;
+  const boxMargin = Math.round(fontSize * 0.4);
+  const boxX = sourceW - boxW - boxMargin;
+  const boxY = boxMargin;
+
+  // Solid white background under the text so a busy label (logos, barcodes
+  // crowding the upper-right) stays legible. Black 1px border for contrast.
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(boxX, boxY, boxW, boxH);
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+  ctx.fillStyle = '#000000';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  ctx.fillText(systemId, boxX + boxW / 2, boxY + boxH / 2);
+
+  console.log('[converter] composeShippingLabel', { systemId, sourceW, sourceH, fontSize });
+  const rawBlob = await canvasToBlob(canvas, 'image/png');
+  return await setPngDpi(rawBlob, 300);
 }
 
 /**

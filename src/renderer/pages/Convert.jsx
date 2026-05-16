@@ -79,26 +79,40 @@ export default function Convert() {
         {/* Pending queue */}
         <div className="bg-white rounded-xl border border-neutral-200 shadow-sm">
           <div className="px-4 py-3 border-b border-neutral-100 flex justify-between items-center">
-            <h3 className="text-sm font-semibold text-neutral-700">Queue ({s.pendingCount})</h3>
+            <h3 className="text-sm font-semibold text-neutral-700">
+              Queue ({s.pendingCount})
+              {(s.pendingLabels?.length > 0) && (
+                <span className="ml-2 text-xs font-normal text-neutral-400">
+                  {s.pending.length} _qr + {s.pendingLabels.length} label
+                </span>
+              )}
+            </h3>
           </div>
           <div className="max-h-[420px] overflow-y-auto">
-            {s.pending.length === 0 ? (
+            {s.pending.length === 0 && (!s.pendingLabels || s.pendingLabels.length === 0) ? (
               <p className="text-xs text-neutral-400 p-4">Queue is empty.</p>
             ) : (
               <table className="w-full text-xs">
                 <thead className="text-neutral-500 bg-[#faf8f6]">
                   <tr>
                     <th className="text-left px-3 py-2">System ID</th>
-                    <th className="text-left px-3 py-2">Key</th>
+                    <th className="text-left px-3 py-2">Kind</th>
                     <th className="text-left px-3 py-2">Source</th>
                   </tr>
                 </thead>
                 <tbody>
                   {s.pending.map((p, i) => (
-                    <tr key={`${p.order_item_id}-${p.key}-${i}`} className="border-t border-neutral-50">
+                    <tr key={`qr-${p.order_item_id}-${p.target_key}-${i}`} className="border-t border-neutral-50">
                       <td className="px-3 py-2 font-mono text-orange-500">{p.system_id}</td>
-                      <td className="px-3 py-2 text-neutral-700">{p.key}</td>
+                      <td className="px-3 py-2 text-neutral-700">{p.target_key}</td>
                       <td className="px-3 py-2 text-neutral-500 truncate max-w-[260px]">{p.value}</td>
+                    </tr>
+                  ))}
+                  {(s.pendingLabels || []).map((lbl, i) => (
+                    <tr key={`label-${lbl.order_id}-${i}`} className="border-t border-neutral-50 bg-blue-50/30">
+                      <td className="px-3 py-2 font-mono text-orange-500">{lbl.system_id}</td>
+                      <td className="px-3 py-2 text-blue-700">shipping_label</td>
+                      <td className="px-3 py-2 text-neutral-500 truncate max-w-[260px]">{lbl.shipping_label}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -21,7 +21,7 @@ export default function Orders() {
   const [orders, setOrders] = useState([]);
   const [meta, setMeta] = useState({});
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', user_id: '', date_from: '', date_to: '', page: 1, per_page: 20 });
+  const [filters, setFilters] = useState({ status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', tracking_id: '', user_id: '', date_from: '', date_to: '', page: 1, per_page: 20 });
   const [showRefIdsModal, setShowRefIdsModal] = useState(false);
   const [refIdsInput, setRefIdsInput] = useState('');
   const [selected, setSelected] = useState([]);
@@ -65,6 +65,7 @@ export default function Orders() {
     if (filters.ref_id) params.ref_id = filters.ref_id;
     if (filters.ref_ids) params.ref_ids = filters.ref_ids;
     if (filters.system_id) params.system_id = filters.system_id;
+    if (filters.tracking_id) params.tracking_id = filters.tracking_id;
     if (filters.user_id) params.user_id = filters.user_id;
     if (filters.date_from) params.date_from = filters.date_from;
     if (filters.date_to) params.date_to = filters.date_to;
@@ -212,6 +213,7 @@ export default function Orders() {
     if (filters.ref_id) params.ref_id = filters.ref_id;
     if (filters.ref_ids) params.ref_ids = filters.ref_ids;
     if (filters.system_id) params.system_id = filters.system_id;
+    if (filters.tracking_id) params.tracking_id = filters.tracking_id;
     if (filters.user_id) params.user_id = filters.user_id;
     if (filters.date_from) params.date_from = filters.date_from;
     if (filters.date_to) params.date_to = filters.date_to;
@@ -591,6 +593,13 @@ export default function Orders() {
             value={filters.ref_id}
             onChange={e => setFilters(f => ({ ...f, ref_id: e.target.value }))}
             className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-800 text-sm focus:outline-none focus:border-orange-400 w-44"
+          />
+          <input
+            type="text"
+            placeholder="Search tracking_id..."
+            value={filters.tracking_id}
+            onChange={e => setFilters(f => ({ ...f, tracking_id: e.target.value }))}
+            className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-800 text-sm focus:outline-none focus:border-orange-400 w-44 font-mono"
           />
           <button type="submit" className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Search</button>
           <button
