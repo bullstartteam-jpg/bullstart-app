@@ -293,7 +293,7 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
 
   const PANEL_PAD = Math.round(fontSize * 0.45);
   const TEXT_TO_BAR = Math.round(fontSize * 0.35);
-  const BARCODE_W = Math.round(sourceW * 0.12);
+  const BARCODE_W = Math.round(sourceW * 0.12) + 50;
   const BARCODE_H = Math.round(BARCODE_W * 0.38);
 
   ctx.font = `bold ${fontSize}px sans-serif`;
