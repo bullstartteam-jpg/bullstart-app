@@ -13,6 +13,7 @@ import Users from './pages/Users';
 import Settings from './pages/Settings';
 import Tiers from './pages/Tiers';
 import Convert from './pages/Convert';
+import ConvertLabel from './pages/ConvertLabel';
 import Gangsheet from './pages/Gangsheet';
 import Profile from './pages/Profile';
 import { DialogHost } from './components/Dialog';
@@ -41,6 +42,7 @@ export default function App() {
           <Route path="tiers" element={<Tiers />} />
           <Route path="settings" element={<Settings />} />
           <Route path="convert" element={<Convert />} />
+          <Route path="convert-label" element={<ConvertLabel />} />
           <Route path="gangsheet" element={<Gangsheet />} />
           <Route path="profile" element={<Profile />} />
         </Route>

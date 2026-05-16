@@ -11,6 +11,7 @@ const navItems = [
   { path: '/tiers', label: 'Tiers', icon: '▣', module: 'settings' },
   { path: '/settings', label: 'Settings', icon: '⚙', module: 'settings' },
   { path: '/convert', label: 'Convert', icon: '⟲', requiresConvert: true },
+  { path: '/convert-label', label: 'Convert Label', icon: '🏷', requiresStaff: true, requiresConvert: true },
   { path: '/gangsheet', label: 'Gangsheet', icon: '▦', requiresStaff: true },
 ];
 
@@ -25,8 +26,12 @@ export default function Layout() {
 
   const isStaff = user?.role?.slug === 'admin' || user?.role?.slug === 'support';
   const visibleNav = navItems.filter(item => {
-    if (item.requiresConvert) return !!user?.convert;
-    if (item.requiresStaff) return isStaff;
+    // Both gates must pass when both flags are set (e.g. Convert Label needs
+    // staff + convert mode). Module permission only applies when neither
+    // flag is set on the item.
+    if (item.requiresStaff && !isStaff) return false;
+    if (item.requiresConvert && !user?.convert) return false;
+    if (item.requiresStaff || item.requiresConvert) return true;
     return hasPermission(item.module);
   });
 
