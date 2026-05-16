@@ -514,6 +514,13 @@ async function loadImage(url) {
   if (window.electronAPI?.fetchImage) {
     try {
       const { base64, contentType } = await window.electronAPI.fetchImage(url);
+      // Carriers (e.g. cdn.cotik.app) serve labels as PDF. Render the first
+      // page to a canvas and wrap it in an HTMLImageElement so the rest of
+      // the composer pipeline can drawImage() it unchanged.
+      const isPdf = (contentType || '').includes('pdf') || base64.startsWith('JVBERi');
+      if (isPdf) {
+        return await renderPdfFirstPageAsImage(base64);
+      }
       const dataUrl = `data:${contentType};base64,${base64}`;
       return await loadFromSrc(dataUrl);
     } catch (err) {
@@ -521,6 +528,38 @@ async function loadImage(url) {
     }
   }
   return loadFromSrc(url);
+}
+
+// Lazy-loaded pdfjs module + memoized worker config.
+let _pdfjsPromise = null;
+function getPdfjs() {
+  if (!_pdfjsPromise) {
+    _pdfjsPromise = (async () => {
+      const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
+      const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs')).default;
+      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+      return pdfjs;
+    })();
+  }
+  return _pdfjsPromise;
+}
+
+async function renderPdfFirstPageAsImage(base64) {
+  const pdfjs = await getPdfjs();
+  const data = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const pdf = await pdfjs.getDocument({ data }).promise;
+  const page = await pdf.getPage(1);
+  // Scale 2x for 300 DPI on a 4×6" / 6×4" label rendered at PDF default 72 DPI.
+  const viewport = page.getViewport({ scale: 2 });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const ctx = canvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  // Convert the rendered canvas to a data URL so we can return an
+  // HTMLImageElement (matches the rest of the loadImage contract).
+  const dataUrl = canvas.toDataURL('image/png');
+  return await loadFromSrc(dataUrl);
 }
 
 function loadFromSrc(src) {

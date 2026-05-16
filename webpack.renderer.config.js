@@ -32,6 +32,14 @@ module.exports = {
         test: /\.(png|jpe?g|gif|svg|ico)$/i,
         type: 'asset/resource',
       },
+      // pdfjs-dist's worker — emitted as a separate file and referenced by
+      // GlobalWorkerOptions.workerSrc. Must come before any rule that would
+      // try to parse .mjs as a JS module.
+      {
+        test: /pdf\.worker(?:\.min)?\.mjs$/,
+        type: 'asset/resource',
+        generator: { filename: '[name][ext]' },
+      },
     ],
   },
   resolve: {
