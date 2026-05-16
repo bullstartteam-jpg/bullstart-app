@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import api from '../services/api';
-import { startConverter, stopConverter } from '../services/converter';
+import { autoStartConverters, stopAllConverters } from '../services/converter';
 
 const AuthContext = createContext(null);
 
@@ -25,14 +25,16 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  // Toggle the converter cron based on the user's `convert` flag.
+  // Restore each converter job (QR / Convert Label) based on the user's last
+  // saved auto preference. Stopping is a soft-stop on logout so the next
+  // login can resume whichever jobs were on.
   useEffect(() => {
     if (user && user.convert) {
-      startConverter();
+      autoStartConverters();
     } else {
-      stopConverter();
+      stopAllConverters();
     }
-    return () => stopConverter();
+    return () => stopAllConverters();
   }, [user?.id, user?.convert]);
 
   const login = async (email, password) => {
@@ -48,7 +50,7 @@ export function AuthProvider({ children }) {
     try { await api.post('/logout'); } catch {}
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    stopConverter();
+    stopAllConverters();
     setUser(null);
   };
 

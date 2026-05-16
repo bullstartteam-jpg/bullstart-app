@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react';
-import { subscribeConverter, runNow, pauseConverter, resumeConverter, startConverter } from '../services/converter';
+import {
+  subscribeLabelConverter,
+  startLabelConverter,
+  stopLabelConverter,
+  pauseLabelConverter,
+  resumeLabelConverter,
+  runLabelNow,
+} from '../services/converter';
 import { useAuth } from '../contexts/AuthContext';
 
-// Admin/support-only view focused on the convert_label workflow (carrier
-// label + system_id barcode overlay). The underlying converter service is
-// shared with the seller-facing Convert page; this page just filters the
-// snapshot down to the label queue and the label log.
+// Admin/support-only page that drives the convert_label job, independent of
+// the QR job on /convert. Each page has its own auto on/off persisted in
+// localStorage, its own poll interval, and its own activity log.
 
 const LEVEL_COLOR = {
   info: 'text-neutral-500',
@@ -23,7 +29,7 @@ export default function ConvertLabel() {
   const { user } = useAuth();
   const [s, setS] = useState(null);
 
-  useEffect(() => subscribeConverter(setS), []);
+  useEffect(() => subscribeLabelConverter(setS), []);
 
   const isStaff = user?.role?.slug === 'admin' || user?.role?.slug === 'support';
   if (!isStaff) {
@@ -46,9 +52,6 @@ export default function ConvertLabel() {
   }
   if (!s) return <div className="p-6 text-neutral-400">Loading…</div>;
 
-  const labelLog = (s.log || []).filter(l => l.key === 'convert_label' || l.key === 'shipping_label');
-  const pendingLabels = s.pendingLabels || [];
-
   const statusBadge = !s.enabled
     ? { label: 'Off', cls: 'bg-neutral-100 text-neutral-500' }
     : s.paused
@@ -63,32 +66,35 @@ export default function ConvertLabel() {
         <div>
           <h2 className="text-xl font-bold text-neutral-800">Convert Label</h2>
           <p className="text-xs text-neutral-500 mt-1">
-            Stamps system_id barcode + accessory summary onto each order's shipping label and stores the result in <code className="bg-neutral-100 px-1 rounded">orders.convert_label</code>. Admin-only.
+            Stamps system_id barcode + accessory summary at the bottom-left of each
+            order's shipping label and stores the result in <code className="bg-neutral-100 px-1 rounded">orders.convert_label</code>. Admin-only. Independent of Convert.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <span className={`px-2 py-1 rounded text-xs font-medium ${statusBadge.cls}`}>{statusBadge.label}</span>
-          {!s.enabled && (
-            <button onClick={startConverter} className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white text-sm rounded-lg">Start</button>
+          {!s.enabled ? (
+            <button onClick={startLabelConverter} className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white text-sm rounded-lg">Start auto</button>
+          ) : (
+            <button onClick={stopLabelConverter} className="px-3 py-1.5 bg-neutral-200 hover:bg-neutral-300 text-neutral-700 text-sm rounded-lg">Stop auto</button>
           )}
           <button
-            onClick={runNow}
+            onClick={runLabelNow}
             disabled={s.running || s.paused || !s.enabled}
             className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg"
           >Run now</button>
           {s.enabled && (
             s.paused
-              ? <button onClick={resumeConverter} className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white text-sm rounded-lg">Resume</button>
-              : <button onClick={pauseConverter} className="px-3 py-1.5 bg-yellow-500 hover:bg-yellow-600 text-white text-sm rounded-lg">Pause</button>
+              ? <button onClick={resumeLabelConverter} className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white text-sm rounded-lg">Resume</button>
+              : <button onClick={pauseLabelConverter} className="px-3 py-1.5 bg-yellow-500 hover:bg-yellow-600 text-white text-sm rounded-lg">Pause</button>
           )}
         </div>
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        <Stat label="Pending labels" value={pendingLabels.length} hint="Orders waiting for convert_label" tone="text-orange-600" />
-        <Stat label="Processed" value={s.processedTotal} hint="Successful uploads since login (all keys)" tone="text-green-600" />
-        <Stat label="Errors" value={s.errorTotal} hint="Failed conversions since login (all keys)" tone="text-red-500" />
+        <Stat label="Pending" value={s.pendingCount} hint="Orders waiting for convert_label" tone="text-orange-600" />
+        <Stat label="Processed" value={s.processedTotal} hint="Successful uploads since login" tone="text-green-600" />
+        <Stat label="Errors" value={s.errorTotal} hint="Failed conversions since login" tone="text-red-500" />
         <Stat label="Last poll" value={fmt(s.lastTickAt)} hint={s.nextTickAt ? `Next ~${fmt(s.nextTickAt)}` : '—'} tone="text-neutral-700" />
       </div>
 
@@ -96,10 +102,10 @@ export default function ConvertLabel() {
         {/* Pending queue */}
         <div className="bg-white rounded-xl border border-neutral-200 shadow-sm">
           <div className="px-4 py-3 border-b border-neutral-100">
-            <h3 className="text-sm font-semibold text-neutral-700">Pending convert_label ({pendingLabels.length})</h3>
+            <h3 className="text-sm font-semibold text-neutral-700">Pending convert_label ({s.pendingCount})</h3>
           </div>
           <div className="max-h-[420px] overflow-y-auto">
-            {pendingLabels.length === 0 ? (
+            {s.pending.length === 0 ? (
               <p className="text-xs text-neutral-400 p-4">No orders waiting.</p>
             ) : (
               <table className="w-full text-xs">
@@ -111,7 +117,7 @@ export default function ConvertLabel() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pendingLabels.map((lbl, i) => (
+                  {s.pending.map((lbl, i) => (
                     <tr key={`label-${lbl.order_id}-${i}`} className="border-t border-neutral-50">
                       <td className="px-3 py-2 font-mono text-orange-500">{lbl.system_id}</td>
                       <td className="px-3 py-2 text-neutral-700">{lbl.accessory_summary || '-'}</td>
@@ -126,19 +132,20 @@ export default function ConvertLabel() {
 
         {/* Log */}
         <div className="bg-white rounded-xl border border-neutral-200 shadow-sm">
-          <div className="px-4 py-3 border-b border-neutral-100">
-            <h3 className="text-sm font-semibold text-neutral-700">Recent label activity</h3>
+          <div className="px-4 py-3 border-b border-neutral-100 flex justify-between items-center">
+            <h3 className="text-sm font-semibold text-neutral-700">Activity log</h3>
+            <span className="text-xs text-neutral-400">last {s.log.length}</span>
           </div>
-          <div className="max-h-[420px] overflow-y-auto p-2 space-y-1">
-            {labelLog.length === 0 ? (
-              <p className="text-xs text-neutral-400 p-4">No activity yet.</p>
+          <div className="max-h-[420px] overflow-y-auto p-2 font-mono text-[11px] leading-5">
+            {s.log.length === 0 ? (
+              <p className="text-neutral-400 p-2">No activity yet.</p>
             ) : (
-              labelLog.map((l, i) => (
-                <div key={i} className="flex items-start gap-2 text-xs px-2 py-1">
-                  <span className="text-neutral-400 font-mono whitespace-nowrap">{fmt(l.ts)}</span>
-                  <span className={`font-medium ${LEVEL_COLOR[l.level] || 'text-neutral-500'}`}>[{l.level}]</span>
-                  {l.system_id && <span className="font-mono text-orange-500">{l.system_id}</span>}
-                  <span className="text-neutral-700 break-all">{l.message}</span>
+              s.log.map((e, i) => (
+                <div key={i} className="flex gap-2 px-2 py-0.5 hover:bg-neutral-50 rounded">
+                  <span className="text-neutral-400 shrink-0 w-16">{fmt(e.ts)}</span>
+                  <span className={`shrink-0 w-12 ${LEVEL_COLOR[e.level] || 'text-neutral-500'}`}>{e.level}</span>
+                  {e.system_id && <span className="text-orange-500 shrink-0">{e.system_id}</span>}
+                  <span className="text-neutral-700 truncate">{e.message}</span>
                 </div>
               ))
             )}
@@ -152,9 +159,9 @@ export default function ConvertLabel() {
 function Stat({ label, value, hint, tone }) {
   return (
     <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm">
-      <div className="text-xs uppercase tracking-wider text-neutral-500 mb-1">{label}</div>
-      <div className={`text-2xl font-bold ${tone}`}>{value}</div>
-      {hint && <div className="text-xs text-neutral-400 mt-1">{hint}</div>}
+      <div className="text-xs text-neutral-500">{label}</div>
+      <div className={`text-xl font-bold ${tone || 'text-neutral-800'}`}>{value}</div>
+      {hint && <div className="text-[11px] text-neutral-400 mt-0.5">{hint}</div>}
     </div>
   );
 }

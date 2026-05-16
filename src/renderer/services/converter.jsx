@@ -2,101 +2,125 @@ import bwipjs from 'bwip-js';
 import api from './api';
 import { driveThumb, driveId } from '../utils/drive';
 
-let intervalId = null;
+// Two independent background jobs, each with its own poll interval, state,
+// log, and persisted auto flag. They share the `/conversion/pending` endpoint
+// and the image composition helpers below, but otherwise run separately so
+// the seller-facing Convert page (qr) and admin-only Convert Label page can
+// be toggled without affecting each other.
+
 const POLL_MS = 60_000;
 
-const state = {
-  enabled: false,
-  running: false,
-  paused: false,
-  lastTickAt: null,
-  nextTickAt: null,
-  pendingCount: 0,
-  pending: [], // [{ order_item_id, system_id, key, value }]
-  pendingLabels: [], // [{ order_id, system_id, shipping_label, accessory_summary }]
-  processedTotal: 0,
-  errorTotal: 0,
-  log: [], // [{ ts, level, system_id, key, message }]
-};
-const listeners = new Set();
-
-export function subscribeConverter(fn) {
-  listeners.add(fn);
-  fn(snapshot());
-  return () => listeners.delete(fn);
-}
-
-export function getConverterState() {
-  return snapshot();
-}
-
-function snapshot() {
-  return {
-    ...state,
-    log: state.log.slice(0, 200),
-    pending: state.pending.slice(0, 200),
-    pendingLabels: state.pendingLabels.slice(0, 200),
+function createJob({ name, storageKey, runOnce }) {
+  let intervalId = null;
+  const state = {
+    name,
+    enabled: false,
+    running: false,
+    paused: false,
+    lastTickAt: null,
+    nextTickAt: null,
+    pending: [],
+    pendingCount: 0,
+    processedTotal: 0,
+    errorTotal: 0,
+    log: [],
   };
-}
+  const listeners = new Set();
 
-function emit() {
-  const s = snapshot();
-  listeners.forEach((fn) => { try { fn(s); } catch { /* noop */ } });
-}
-
-function pushLog(level, system_id, key, message) {
-  state.log.unshift({ ts: Date.now(), level, system_id, key, message });
-  if (state.log.length > 200) state.log.length = 200;
-}
-
-export function startConverter() {
-  state.enabled = true;
-  if (!intervalId) {
-    intervalId = setInterval(() => { if (!state.paused) tick(); }, POLL_MS);
+  function snapshot() {
+    return { ...state, log: state.log.slice(0, 200), pending: state.pending.slice(0, 200) };
   }
-  state.nextTickAt = Date.now() + 1500;
-  emit();
-  setTimeout(() => { if (!state.paused) tick(); }, 1500);
+  function emit() {
+    const s = snapshot();
+    listeners.forEach((fn) => { try { fn(s); } catch { /* noop */ } });
+  }
+  function pushLog(level, system_id, key, message) {
+    state.log.unshift({ ts: Date.now(), level, system_id, key, message });
+    if (state.log.length > 200) state.log.length = 200;
+  }
+
+  async function tick() {
+    if (state.running) return;
+    state.running = true;
+    state.lastTickAt = Date.now();
+    emit();
+    try {
+      await runOnce({ state, pushLog, emit });
+    } catch (err) {
+      if (err?.response?.status === 403) {
+        pushLog('error', null, null, 'Convert mode disabled by server (403). Stopping.');
+        stop();
+        return;
+      }
+      pushLog('error', null, null, err?.message || 'Poll error');
+      console.warn(`[${name}] poll error`, err);
+    } finally {
+      state.running = false;
+      state.nextTickAt = state.enabled && !state.paused ? Date.now() + POLL_MS : null;
+      emit();
+    }
+  }
+
+  function softStop() {
+    // Stop timers and reset live state without touching the persisted auto
+    // flag. Used by AuthContext on logout so the next login can restore the
+    // user's previous on/off choice.
+    state.enabled = false;
+    state.paused = false;
+    state.running = false;
+    state.nextTickAt = null;
+    if (intervalId) clearInterval(intervalId);
+    intervalId = null;
+    emit();
+  }
+  function start() {
+    state.enabled = true;
+    try { localStorage.setItem(storageKey, '1'); } catch { /* noop */ }
+    if (!intervalId) {
+      intervalId = setInterval(() => { if (!state.paused) tick(); }, POLL_MS);
+    }
+    state.nextTickAt = Date.now() + 1500;
+    emit();
+    setTimeout(() => { if (!state.paused) tick(); }, 1500);
+  }
+  function stop() {
+    // User-initiated stop — also clears the persisted auto flag so the next
+    // login does NOT auto-start this job.
+    try { localStorage.setItem(storageKey, '0'); } catch { /* noop */ }
+    softStop();
+  }
+  function pause() { state.paused = true; emit(); }
+  function resume() {
+    if (!state.enabled) return;
+    state.paused = false;
+    emit();
+    if (!state.running) tick();
+  }
+  function runNow() {
+    if (!state.enabled || state.running) return;
+    tick();
+  }
+  function isAutoEnabled() {
+    try { return localStorage.getItem(storageKey) === '1'; } catch { return false; }
+  }
+  function subscribe(fn) {
+    listeners.add(fn);
+    fn(snapshot());
+    return () => listeners.delete(fn);
+  }
+
+  return { subscribe, start, stop, softStop, pause, resume, runNow, isAutoEnabled };
 }
 
-export function stopConverter() {
-  state.enabled = false;
-  state.paused = false;
-  state.running = false;
-  state.nextTickAt = null;
-  if (intervalId) clearInterval(intervalId);
-  intervalId = null;
-  emit();
-}
+// ---------------- QR job (seller workflow) ----------------
 
-export function pauseConverter() { state.paused = true; emit(); }
-export function resumeConverter() {
-  if (!state.enabled) return;
-  state.paused = false;
-  emit();
-  if (!state.running) tick();
-}
-
-export function runNow() {
-  if (!state.enabled || state.running) return;
-  tick();
-}
-
-async function tick() {
-  if (state.running) return;
-  state.running = true;
-  state.lastTickAt = Date.now();
-  emit();
-  try {
+const qrJob = createJob({
+  name: 'qr',
+  storageKey: 'converter_qr_auto',
+  async runOnce({ state, pushLog, emit }) {
     const res = await api.get('/conversion/pending');
-    // Backwards-compatible response handling: oldest shape is a bare array of
-    // items; the previous server shape used `shipping_label_pending`; the
-    // current shape uses `convert_label_pending`.
     const data = res.data || {};
     const items = Array.isArray(data) ? data : (data.items || []);
-    const labels = Array.isArray(data)
-      ? []
-      : (data.convert_label_pending || data.shipping_label_pending || []);
 
     state.pending = items.flatMap(it =>
       it.pending.map(p => ({
@@ -110,8 +134,7 @@ async function tick() {
         value: p.source_value,
       }))
     );
-    state.pendingLabels = labels.slice();
-    state.pendingCount = state.pending.length + state.pendingLabels.length;
+    state.pendingCount = state.pending.length;
     emit();
 
     for (const item of items) {
@@ -125,19 +148,35 @@ async function tick() {
           state.processedTotal += 1;
           pushLog('ok', item.system_id, meta.target_key, `Uploaded ${meta.index}/${meta.total}`);
           state.pending = state.pending.filter(p => !(p.order_item_id === item.order_item_id && p.target_key === meta.target_key));
-          state.pendingCount = state.pending.length + state.pendingLabels.length;
+          state.pendingCount = state.pending.length;
           emit();
         } catch (err) {
           state.errorTotal += 1;
           pushLog('error', item.system_id, meta.target_key, err?.message || String(err));
           emit();
-          console.warn('[converter] failed', item.system_id, meta.target_key, err);
+          console.warn('[qr] failed', item.system_id, meta.target_key, err);
         }
       }
     }
+  },
+});
 
-    // Convert-label overlays. Same poller, runs after _qr items so the
-    // more time-critical print queue clears first.
+// ---------------- Convert Label job (admin/support workflow) ----------------
+
+const labelJob = createJob({
+  name: 'label',
+  storageKey: 'converter_label_auto',
+  async runOnce({ state, pushLog, emit }) {
+    const res = await api.get('/conversion/pending');
+    const data = res.data || {};
+    const labels = Array.isArray(data)
+      ? []
+      : (data.convert_label_pending || data.shipping_label_pending || []);
+
+    state.pending = labels.map(l => ({ ...l }));
+    state.pendingCount = state.pending.length;
+    emit();
+
     for (const lbl of labels) {
       if (state.paused || !state.enabled) break;
       try {
@@ -146,30 +185,56 @@ async function tick() {
         await processConvertLabel(lbl);
         state.processedTotal += 1;
         pushLog('ok', lbl.system_id, 'convert_label', 'Uploaded convert label');
-        state.pendingLabels = state.pendingLabels.filter(p => p.order_id !== lbl.order_id);
-        state.pendingCount = state.pending.length + state.pendingLabels.length;
+        state.pending = state.pending.filter(p => p.order_id !== lbl.order_id);
+        state.pendingCount = state.pending.length;
         emit();
       } catch (err) {
         state.errorTotal += 1;
         pushLog('error', lbl.system_id, 'convert_label', err?.message || String(err));
         emit();
-        console.warn('[converter] convert label failed', lbl.system_id, err);
+        console.warn('[label] failed', lbl.system_id, err);
       }
     }
-  } catch (err) {
-    if (err?.response?.status === 403) {
-      pushLog('error', null, null, 'Convert mode disabled by server (403). Stopping.');
-      stopConverter();
-      return;
-    }
-    pushLog('error', null, null, err?.message || 'Poll error');
-    console.warn('[converter] poll error', err);
-  } finally {
-    state.running = false;
-    state.nextTickAt = state.enabled && !state.paused ? Date.now() + POLL_MS : null;
-    emit();
-  }
+  },
+});
+
+// ---------------- Public API ----------------
+
+// QR job (seller _qr conversion).
+export const subscribeQrConverter = qrJob.subscribe;
+export const startQrConverter = qrJob.start;
+export const stopQrConverter = qrJob.stop;
+export const pauseQrConverter = qrJob.pause;
+export const resumeQrConverter = qrJob.resume;
+export const runQrNow = qrJob.runNow;
+export const isQrAutoEnabled = qrJob.isAutoEnabled;
+
+// Convert Label job (admin/support carrier-label overlay).
+export const subscribeLabelConverter = labelJob.subscribe;
+export const startLabelConverter = labelJob.start;
+export const stopLabelConverter = labelJob.stop;
+export const pauseLabelConverter = labelJob.pause;
+export const resumeLabelConverter = labelJob.resume;
+export const runLabelNow = labelJob.runNow;
+export const isLabelAutoEnabled = labelJob.isAutoEnabled;
+
+/**
+ * Restore each job's previously-persisted auto flag. Called by AuthContext
+ * after login so users see whichever jobs they had on resume automatically.
+ */
+export function autoStartConverters() {
+  if (qrJob.isAutoEnabled()) qrJob.start();
+  if (labelJob.isAutoEnabled()) labelJob.start();
 }
+
+/** Stop both jobs (called on logout). Preserves the persisted auto flags so
+ *  the next login resumes whatever each was set to. */
+export function stopAllConverters() {
+  qrJob.softStop();
+  labelJob.softStop();
+}
+
+// ---------------- Image composition + upload (shared) ----------------
 
 async function processOne(item, meta) {
   const blob = await composeImage(
@@ -201,13 +266,11 @@ async function processConvertLabel(lbl) {
 /**
  * Compose a convert-label image: the carrier label with a system_id Code 128
  * barcode + "{system_id}-{accessory_summary}" text band stamped in the
- * top-right corner. Preserves the source dimensions and produces a single
+ * BOTTOM-LEFT corner. Preserves the source dimensions and produces a single
  * image (no per-copy split — one convert_label per order).
  */
 async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   const id = driveId(sourceUrl);
-  // Drive labels are usually small portrait images. w1600 covers ~4×6"@300dpi
-  // without blow-up. Non-Drive URLs are fetched as-is.
   const fetchUrl = id ? driveThumb(sourceUrl, 'w1600') : sourceUrl;
   const sourceImg = await loadImage(fetchUrl);
   const sourceW = sourceImg.naturalWidth || sourceImg.width;
@@ -219,8 +282,6 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   const ctx = canvas.getContext('2d');
   ctx.drawImage(sourceImg, 0, 0, sourceW, sourceH);
 
-  // Layout overlay in the top-right corner. Sizes scale with the label width
-  // so the same code works for 4×6" labels at 200–300 dpi.
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
   const fontSize = Math.max(22, Math.round(sourceW * 0.035));
   const barcodeCanvas = generateBarcodeCanvas(systemId);
@@ -236,24 +297,21 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   const panelW = innerW + PANEL_PAD * 2;
   const panelH = fontSize + TEXT_TO_BAR + BARCODE_H + PANEL_PAD * 2;
   const margin = Math.round(fontSize * 0.5);
-  const panelX = sourceW - panelW - margin;
-  const panelY = margin;
+  // Bottom-left anchor.
+  const panelX = margin;
+  const panelY = sourceH - panelH - margin;
 
-  // White background panel + thin border so a busy carrier label (logos,
-  // existing barcodes) stays legible under the overlay.
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(panelX, panelY, panelW, panelH);
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = 2;
   ctx.strokeRect(panelX, panelY, panelW, panelH);
 
-  // Text label on top of the panel.
   ctx.fillStyle = '#000000';
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
   ctx.fillText(codeText, panelX + PANEL_PAD, panelY + PANEL_PAD);
 
-  // Barcode below the text.
   ctx.drawImage(
     barcodeCanvas,
     panelX + PANEL_PAD,
@@ -262,72 +320,41 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
     BARCODE_H
   );
 
-  console.log('[converter] composeConvertLabel', { systemId, sourceW, sourceH, fontSize, panelW, panelH });
   const rawBlob = await canvasToBlob(canvas, 'image/png');
   return await setPngDpi(rawBlob, 300);
 }
 
-/**
- * Render a Code 128 1D barcode into a fresh canvas. Encodes only the short
- * system_id (e.g. "PS_C115") — universally readable by any 1D/2D scanner
- * without per-device configuration. Background is transparent so the bars sit
- * on the design without an opaque rectangle.
- */
 function generateBarcodeCanvas(value) {
   const c = document.createElement('canvas');
   bwipjs.toCanvas(c, {
     bcid: 'code128',
     text: value,
     scale: 3,
-    height: 14,         // mm — taller bars are easier to scan
+    height: 14,
     includetext: false,
     paddingwidth: 0,
     paddingheight: 0,
-    // No backgroundcolor → transparent gaps between bars.
   });
   return c;
 }
 
-/**
- * Compose the barcode-overlaid image. A Code 128 1D barcode (encoding the
- * short system_id) + a single text label sit directly on the design at the
- * bottom-left corner. No background panel — transparent gaps between bars
- * let the artwork show through.
- */
 async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   const id = driveId(sourceUrl);
-  // Drive thumbnails are capped at the requested width; w3230 covers the full
-  // 3030/3130-px native designs at 300 DPI (10.1×7.1 in landscape) without
-  // downsampling. Direct (non-Drive) URLs are fetched at native resolution.
   const fetchUrl = id ? driveThumb(sourceUrl, 'w3230') : sourceUrl;
 
   const sourceImg = await loadImage(fetchUrl);
   const sourceW = sourceImg.naturalWidth || sourceImg.width;
   const sourceH = sourceImg.naturalHeight || sourceImg.height;
 
-  // _qr output must always be landscape (width >= height). If the source is
-  // portrait (e.g. a 2130×3030 design), rotate it 90° counter-clockwise so the
-  // printed _qr is landscape with the original "top edge" of the design on the right.
   const isPortraitSource = sourceW < sourceH;
-  const aspect = sourceW / Math.max(1, sourceH);
-
-  // Final canvas is always 3000×2100 — slightly smaller than the standard
-  // 3030×2130 design so labels print with built-in inner margin. The source
-  // image (rotated if portrait) is scaled to fill this target before the
-  // barcode/text overlay is drawn on top.
   const TARGET_W = 3000;
   const TARGET_H = 2100;
-  console.log('[converter] composeImage', { systemId, sourceW, sourceH, aspect: aspect.toFixed(4), isPortraitSource, target: `${TARGET_W}x${TARGET_H}` });
 
   const canvas = document.createElement('canvas');
   canvas.width = TARGET_W;
   canvas.height = TARGET_H;
   const ctx = canvas.getContext('2d');
 
-  // 1. Draw source scaled to fill the 3175×2175 canvas. If portrait, rotate
-  //    90° CCW around the canvas centre — after rotation the image's original
-  //    width maps to TARGET_H and height to TARGET_W, so we hand drawImage the
-  //    swapped dimensions.
   if (isPortraitSource) {
     ctx.save();
     ctx.translate(TARGET_W / 2, TARGET_H / 2);
@@ -338,21 +365,17 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
     ctx.drawImage(sourceImg, 0, 0, TARGET_W, TARGET_H);
   }
 
-  // 2. Build content. Code 128 1D barcode encodes only the short system_id.
-  //    The accessory summary lives in the human-readable text label above.
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
   const barcodeCanvas = generateBarcodeCanvas(systemId);
 
-  // 3. Overlay layout — bottom-left corner, original 350×130 slot.
-  const MARGIN_X = 190; // 60 base + 130 horizontal inset
-  const MARGIN_Y = 60;  // bottom margin unchanged
+  const MARGIN_X = 190;
+  const MARGIN_Y = 60;
   const PANEL_PAD = 10;
   const TEXT_H = 22;
   const TEXT_TO_BAR = 6;
   const BARCODE_W = 350;
   const BARCODE_H = 130;
 
-  // Measure text width so the panel always fits both the label and the barcode.
   ctx.font = 'bold 18px sans-serif';
   const textW = Math.ceil(ctx.measureText(codeText).width);
 
@@ -360,20 +383,13 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   const panelW = innerW + PANEL_PAD * 2;
   const panelH = TEXT_H + TEXT_TO_BAR + BARCODE_H + PANEL_PAD * 2;
   const panelX = MARGIN_X;
-  // Use the (possibly rotated) canvas height so the overlay always sits at the
-  // bottom-left of the printed orientation.
   const panelY = canvas.height - MARGIN_Y - panelH;
 
-  // No background panel — the barcode and label are drawn directly onto the
-  // design with transparent gaps so the artwork below shows through.
-
-  // Text label above the barcode.
   ctx.fillStyle = '#000000';
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
   ctx.fillText(codeText, panelX + PANEL_PAD, panelY + PANEL_PAD);
 
-  // Barcode below the label, left-aligned within the layout slot.
   ctx.drawImage(
     barcodeCanvas,
     panelX + PANEL_PAD,
@@ -382,7 +398,6 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
     BARCODE_H
   );
 
-  console.log('[converter] composeImage output canvas', { systemId, canvasW: canvas.width, canvasH: canvas.height });
   const rawBlob = await canvasToBlob(canvas, 'image/png');
   return await setPngDpi(rawBlob, 300);
 }
@@ -396,32 +411,21 @@ function canvasToBlob(canvas, type = 'image/png') {
   });
 }
 
-// Inject a pHYs chunk into a PNG blob so it advertises 300 DPI metadata. The
-// raster pixels are unchanged — this only fixes how viewers (Drive, Photoshop,
-// printers honoring the chunk) report the resolution.
 async function setPngDpi(blob, dpi = 300) {
   const buf = new Uint8Array(await blob.arrayBuffer());
-  // PNG signature (8 bytes) + IHDR chunk header. We insert pHYs right after
-  // IHDR — that's the spec-compliant location.
   const SIG_LEN = 8;
-  // IHDR: 4 length + 4 type + 13 data + 4 CRC = 25 bytes
   const IHDR_END = SIG_LEN + 25;
 
-  // Strip any existing pHYs chunk to avoid duplicates.
   const stripped = stripPhysChunk(buf);
 
-  const ppm = Math.round(dpi / 0.0254); // pixels per meter
+  const ppm = Math.round(dpi / 0.0254);
   const phys = new Uint8Array(4 + 4 + 9 + 4);
-  // length (9)
   phys[0] = 0; phys[1] = 0; phys[2] = 0; phys[3] = 9;
-  // type "pHYs"
   phys[4] = 0x70; phys[5] = 0x48; phys[6] = 0x59; phys[7] = 0x73;
-  // data: ppmX (4), ppmY (4), unit (1=meter)
   const dv = new DataView(phys.buffer);
   dv.setUint32(8, ppm, false);
   dv.setUint32(12, ppm, false);
   phys[16] = 1;
-  // CRC over type + data
   const crc = crc32(phys.subarray(4, 17));
   dv.setUint32(17, crc, false);
 
@@ -450,7 +454,6 @@ function stripPhysChunk(buf) {
   return buf;
 }
 
-// Standard PNG CRC32 (poly 0xEDB88320). Cached table.
 let _crcTable = null;
 function crc32(bytes) {
   if (!_crcTable) {
@@ -466,10 +469,7 @@ function crc32(bytes) {
   return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 
-// Load an image either via direct <img> (works for non-tainted CORS-friendly URLs)
-// or by routing through the main process to bypass renderer CORS for Drive etc.
 async function loadImage(url) {
-  // Always use IPC fetch to avoid tainted canvas issues from cross-origin sources.
   if (window.electronAPI?.fetchImage) {
     try {
       const { base64, contentType } = await window.electronAPI.fetchImage(url);
