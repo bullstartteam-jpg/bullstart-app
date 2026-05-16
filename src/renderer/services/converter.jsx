@@ -257,7 +257,7 @@ async function processConvertLabel(lbl) {
     lbl.accessory_summary || ''
   );
   const formData = new FormData();
-  formData.append('image', blob, `${lbl.system_id}_label.png`);
+  formData.append('image', blob, `${lbl.system_id}_label.jpg`);
   await api.post(`/conversion/order/${lbl.order_id}/convert-label`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
@@ -267,7 +267,10 @@ async function processConvertLabel(lbl) {
  * Compose a convert-label image: the carrier label with a system_id Code 128
  * barcode + "{system_id}-{accessory_summary}" text band stamped in the
  * BOTTOM-LEFT corner. Preserves the source dimensions and produces a single
- * image (no per-copy split — one convert_label per order).
+ * JPEG (smaller files than PNG since labels have busy raster content).
+ *
+ * Overlay is sized at ~40% of the previous version so it doesn't dominate
+ * the carrier label area.
  */
 async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   const id = driveId(sourceUrl);
@@ -283,12 +286,14 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   ctx.drawImage(sourceImg, 0, 0, sourceW, sourceH);
 
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
-  const fontSize = Math.max(22, Math.round(sourceW * 0.035));
+  // Sizes scaled to 40% of the original layout.
+  // fontSize floor lowered to 12 so text stays legible on small labels.
+  const fontSize = Math.max(12, Math.round(sourceW * 0.014));
   const barcodeCanvas = generateBarcodeCanvas(systemId);
 
   const PANEL_PAD = Math.round(fontSize * 0.45);
   const TEXT_TO_BAR = Math.round(fontSize * 0.35);
-  const BARCODE_W = Math.round(sourceW * 0.30);
+  const BARCODE_W = Math.round(sourceW * 0.12);
   const BARCODE_H = Math.round(BARCODE_W * 0.38);
 
   ctx.font = `bold ${fontSize}px sans-serif`;
@@ -320,8 +325,8 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
     BARCODE_H
   );
 
-  const rawBlob = await canvasToBlob(canvas, 'image/png');
-  return await setPngDpi(rawBlob, 300);
+  const rawBlob = await canvasToBlob(canvas, 'image/jpeg', 0.85);
+  return await setJpgDpi(rawBlob, 300);
 }
 
 function generateBarcodeCanvas(value) {
@@ -402,13 +407,49 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   return await setPngDpi(rawBlob, 300);
 }
 
-function canvasToBlob(canvas, type = 'image/png') {
+function canvasToBlob(canvas, type = 'image/png', quality) {
   return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error('Canvas toBlob returned null'))),
-      type
-    );
+    const cb = (b) => (b ? resolve(b) : reject(new Error('Canvas toBlob returned null')));
+    if (typeof quality === 'number') {
+      canvas.toBlob(cb, type, quality);
+    } else {
+      canvas.toBlob(cb, type);
+    }
   });
+}
+
+/**
+ * Patch the JFIF APP0 marker in a canvas-generated JPEG so it advertises the
+ * intended print DPI. Browsers always include a JFIF marker but default the
+ * density to 1:1 (no unit) — we rewrite Xdensity/Ydensity in place.
+ */
+async function setJpgDpi(blob, dpi = 300) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  // Must start with SOI (FFD8).
+  if (buf[0] !== 0xFF || buf[1] !== 0xD8) return blob;
+  let i = 2;
+  while (i + 3 < buf.length) {
+    if (buf[i] !== 0xFF) break;
+    const marker = buf[i + 1];
+    const segLen = (buf[i + 2] << 8) | buf[i + 3];
+    // APP0 + "JFIF\0" header
+    if (
+      marker === 0xE0 &&
+      buf[i + 4] === 0x4A && buf[i + 5] === 0x46 &&
+      buf[i + 6] === 0x49 && buf[i + 7] === 0x46 &&
+      buf[i + 8] === 0x00
+    ) {
+      // Layout per JFIF: ... version (2), units (1), Xdensity (2), Ydensity (2)
+      buf[i + 11] = 1; // 1 = pixels per inch
+      buf[i + 12] = (dpi >> 8) & 0xFF;
+      buf[i + 13] = dpi & 0xFF;
+      buf[i + 14] = (dpi >> 8) & 0xFF;
+      buf[i + 15] = dpi & 0xFF;
+      return new Blob([buf], { type: 'image/jpeg' });
+    }
+    i += 2 + segLen;
+  }
+  return blob;
 }
 
 async function setPngDpi(blob, dpi = 300) {
