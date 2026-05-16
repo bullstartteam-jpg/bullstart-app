@@ -188,6 +188,23 @@ export default function Orders() {
     }
   };
 
+  const handleBulkReconvertLabel = async () => {
+    if (selected.length === 0) return;
+    const ok = await askConfirm(
+      `Reconvert label for ${selected.length} order(s)?\nconvert_label will be cleared. Orders still in new_order status get re-processed by the converter cron; others are skipped.`,
+      { title: 'Confirm reconvert label', okText: 'Reconvert Label' }
+    );
+    if (!ok) return;
+    try {
+      const res = await api.post('/orders/bulk-reconvert-label', { order_ids: selected });
+      await notify(res.data.message, { title: 'Bulk reconvert label', kind: 'success' });
+      setSelected([]);
+      fetchOrders();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Error', { title: 'Reconvert Label failed', kind: 'error' });
+    }
+  };
+
   const [dupRefreshing, setDupRefreshing] = useState(false);
 
   // Tracking-fetch queue — processes orders one at a time like the converter.
@@ -723,6 +740,11 @@ export default function Orders() {
             {isStaff && (
               <button onClick={handleBulkReconvert} className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded-lg">
                 Bulk Reconvert
+              </button>
+            )}
+            {isStaff && (
+              <button onClick={handleBulkReconvertLabel} className="px-3 py-1.5 bg-purple-500 hover:bg-purple-600 text-white text-xs rounded-lg" title="Clear convert_label and let the cron rebuild it">
+                Bulk Reconvert Label
               </button>
             )}
             {isAdmin && (

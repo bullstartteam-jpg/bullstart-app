@@ -103,6 +103,21 @@ export default function OrderDetail() {
     }
   };
 
+  const handleReconvertLabel = async () => {
+    const ok = await askConfirm(
+      'Clear convert_label so the converter cron rebuilds it on the next poll? Only orders still in new_order status will be re-processed.',
+      { title: 'Reconvert Label', okText: 'Reconvert Label' }
+    );
+    if (!ok) return;
+    try {
+      const res = await api.post(`/orders/${id}/reconvert-label`);
+      await notify(res.data.message, { title: 'Reconvert Label', kind: 'success' });
+      fetchOrder();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Error', { title: 'Reconvert Label failed', kind: 'error' });
+    }
+  };
+
   if (loading) return <div className="p-6 text-neutral-400">Loading...</div>;
   if (!order) return <div className="p-6 text-red-500">Order not found</div>;
 
@@ -140,6 +155,9 @@ export default function OrderDetail() {
           </button>
           {(hasRole('admin') || hasRole('support')) && (
             <button onClick={handleReconvert} title="Delete _qr metas so converter rebuilds them" className="px-4 py-2 bg-blue-50 hover:bg-blue-100 text-blue-600 text-sm rounded-lg">Reconvert</button>
+          )}
+          {(hasRole('admin') || hasRole('support')) && order.shipping_label && (
+            <button onClick={handleReconvertLabel} title="Clear convert_label so the cron rebuilds the overlay" className="px-4 py-2 bg-purple-50 hover:bg-purple-100 text-purple-600 text-sm rounded-lg">Reconvert Label</button>
           )}
           {hasRole('admin') && (
             <button onClick={handleDelete} className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-500 text-sm rounded-lg">Delete</button>
