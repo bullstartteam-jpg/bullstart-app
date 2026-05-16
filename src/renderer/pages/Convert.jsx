@@ -83,7 +83,7 @@ export default function Convert() {
               Queue ({s.pendingCount})
               {(s.pendingLabels?.length > 0) && (
                 <span className="ml-2 text-xs font-normal text-neutral-400">
-                  {s.pending.length} _qr + {s.pendingLabels.length} label
+                  {s.pending.length} _qr + {s.pendingLabels.length} convert_label
                 </span>
               )}
             </h3>
@@ -111,7 +111,7 @@ export default function Convert() {
                   {(s.pendingLabels || []).map((lbl, i) => (
                     <tr key={`label-${lbl.order_id}-${i}`} className="border-t border-neutral-50 bg-blue-50/30">
                       <td className="px-3 py-2 font-mono text-orange-500">{lbl.system_id}</td>
-                      <td className="px-3 py-2 text-blue-700">shipping_label</td>
+                      <td className="px-3 py-2 text-blue-700">convert_label</td>
                       <td className="px-3 py-2 text-neutral-500 truncate max-w-[260px]">{lbl.shipping_label}</td>
                     </tr>
                   ))}

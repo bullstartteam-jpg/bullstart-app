@@ -189,6 +189,17 @@ export default function OrderDetail() {
                   <span className="text-neutral-800 font-medium text-sm">{order.shipping_label || '-'}</span>
                 )}
               </div>
+              {/* convert_label is admin/support-only; backend hides it from sellers */}
+              {('convert_label' in order) && (
+                <div className="flex justify-between items-center gap-3">
+                  <span className="text-neutral-500 text-sm">Convert Label</span>
+                  {isPreviewable(order.convert_label) ? (
+                    <UrlPreview url={order.convert_label} onOpen={setPreviewUrl} label="Convert label" size="sm" />
+                  ) : (
+                    <span className="text-neutral-800 font-medium text-sm">{order.convert_label || '-'}</span>
+                  )}
+                </div>
+              )}
               <Row label="Tracking ID" value={order.tracking_id || '-'} />
               <Row label="Print Cost" value={`$${order.print_cost}`} />
               <Row label="Shipping Cost" value={`$${order.shipping_cost}`} />

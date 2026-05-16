@@ -13,7 +13,7 @@ const state = {
   nextTickAt: null,
   pendingCount: 0,
   pending: [], // [{ order_item_id, system_id, key, value }]
-  pendingLabels: [], // [{ order_id, system_id, shipping_label }]
+  pendingLabels: [], // [{ order_id, system_id, shipping_label, accessory_summary }]
   processedTotal: 0,
   errorTotal: 0,
   log: [], // [{ ts, level, system_id, key, message }]
@@ -89,11 +89,14 @@ async function tick() {
   emit();
   try {
     const res = await api.get('/conversion/pending');
-    // Backwards-compatible response handling: old shape is a bare array of
-    // items; new shape is { items, shipping_label_pending }.
+    // Backwards-compatible response handling: oldest shape is a bare array of
+    // items; the previous server shape used `shipping_label_pending`; the
+    // current shape uses `convert_label_pending`.
     const data = res.data || {};
     const items = Array.isArray(data) ? data : (data.items || []);
-    const labels = Array.isArray(data) ? [] : (data.shipping_label_pending || []);
+    const labels = Array.isArray(data)
+      ? []
+      : (data.convert_label_pending || data.shipping_label_pending || []);
 
     state.pending = items.flatMap(it =>
       it.pending.map(p => ({
@@ -133,24 +136,24 @@ async function tick() {
       }
     }
 
-    // Shipping-label overlays. Same poller, runs after _qr items so the
+    // Convert-label overlays. Same poller, runs after _qr items so the
     // more time-critical print queue clears first.
     for (const lbl of labels) {
       if (state.paused || !state.enabled) break;
       try {
-        pushLog('info', lbl.system_id, 'shipping_label', 'Composing label overlay…');
+        pushLog('info', lbl.system_id, 'convert_label', 'Composing convert label…');
         emit();
-        await processShippingLabel(lbl);
+        await processConvertLabel(lbl);
         state.processedTotal += 1;
-        pushLog('ok', lbl.system_id, 'shipping_label', 'Uploaded overlay');
+        pushLog('ok', lbl.system_id, 'convert_label', 'Uploaded convert label');
         state.pendingLabels = state.pendingLabels.filter(p => p.order_id !== lbl.order_id);
         state.pendingCount = state.pending.length + state.pendingLabels.length;
         emit();
       } catch (err) {
         state.errorTotal += 1;
-        pushLog('error', lbl.system_id, 'shipping_label', err?.message || String(err));
+        pushLog('error', lbl.system_id, 'convert_label', err?.message || String(err));
         emit();
-        console.warn('[converter] label failed', lbl.system_id, err);
+        console.warn('[converter] convert label failed', lbl.system_id, err);
       }
     }
   } catch (err) {
@@ -182,21 +185,26 @@ async function processOne(item, meta) {
   });
 }
 
-async function processShippingLabel(lbl) {
-  const blob = await composeShippingLabel(lbl.shipping_label, lbl.system_id);
+async function processConvertLabel(lbl) {
+  const blob = await composeConvertLabel(
+    lbl.shipping_label,
+    lbl.system_id,
+    lbl.accessory_summary || ''
+  );
   const formData = new FormData();
   formData.append('image', blob, `${lbl.system_id}_label.png`);
-  await api.post(`/conversion/order/${lbl.order_id}/shipping-label`, formData, {
+  await api.post(`/conversion/order/${lbl.order_id}/convert-label`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
 }
 
 /**
- * Compose a shipping-label image with `system_id` printed in the top-right
- * corner. Preserves the source dimensions (we don't know the carrier's
- * intended print size) and only paints the system_id band on top.
+ * Compose a convert-label image: the carrier label with a system_id Code 128
+ * barcode + "{system_id}-{accessory_summary}" text band stamped in the
+ * top-right corner. Preserves the source dimensions and produces a single
+ * image (no per-copy split — one convert_label per order).
  */
-async function composeShippingLabel(sourceUrl, systemId) {
+async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   const id = driveId(sourceUrl);
   // Drive labels are usually small portrait images. w1600 covers ~4×6"@300dpi
   // without blow-up. Non-Drive URLs are fetched as-is.
@@ -211,33 +219,50 @@ async function composeShippingLabel(sourceUrl, systemId) {
   const ctx = canvas.getContext('2d');
   ctx.drawImage(sourceImg, 0, 0, sourceW, sourceH);
 
-  // Text band sized as a fraction of the label width so it scales with
-  // different label resolutions (most carriers ship 4×6" at 200–300 dpi).
-  const fontSize = Math.max(28, Math.round(sourceW * 0.045));
-  const padX = Math.round(fontSize * 0.6);
-  const padY = Math.round(fontSize * 0.4);
-  ctx.font = `bold ${fontSize}px sans-serif`;
-  const textWidth = Math.ceil(ctx.measureText(systemId).width);
-  const boxW = textWidth + padX * 2;
-  const boxH = fontSize + padY * 2;
-  const boxMargin = Math.round(fontSize * 0.4);
-  const boxX = sourceW - boxW - boxMargin;
-  const boxY = boxMargin;
+  // Layout overlay in the top-right corner. Sizes scale with the label width
+  // so the same code works for 4×6" labels at 200–300 dpi.
+  const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
+  const fontSize = Math.max(22, Math.round(sourceW * 0.035));
+  const barcodeCanvas = generateBarcodeCanvas(systemId);
 
-  // Solid white background under the text so a busy label (logos, barcodes
-  // crowding the upper-right) stays legible. Black 1px border for contrast.
+  const PANEL_PAD = Math.round(fontSize * 0.45);
+  const TEXT_TO_BAR = Math.round(fontSize * 0.35);
+  const BARCODE_W = Math.round(sourceW * 0.30);
+  const BARCODE_H = Math.round(BARCODE_W * 0.38);
+
+  ctx.font = `bold ${fontSize}px sans-serif`;
+  const textW = Math.ceil(ctx.measureText(codeText).width);
+  const innerW = Math.max(BARCODE_W, textW);
+  const panelW = innerW + PANEL_PAD * 2;
+  const panelH = fontSize + TEXT_TO_BAR + BARCODE_H + PANEL_PAD * 2;
+  const margin = Math.round(fontSize * 0.5);
+  const panelX = sourceW - panelW - margin;
+  const panelY = margin;
+
+  // White background panel + thin border so a busy carrier label (logos,
+  // existing barcodes) stays legible under the overlay.
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(boxX, boxY, boxW, boxH);
+  ctx.fillRect(panelX, panelY, panelW, panelH);
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = 2;
-  ctx.strokeRect(boxX, boxY, boxW, boxH);
+  ctx.strokeRect(panelX, panelY, panelW, panelH);
 
+  // Text label on top of the panel.
   ctx.fillStyle = '#000000';
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'center';
-  ctx.fillText(systemId, boxX + boxW / 2, boxY + boxH / 2);
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.fillText(codeText, panelX + PANEL_PAD, panelY + PANEL_PAD);
 
-  console.log('[converter] composeShippingLabel', { systemId, sourceW, sourceH, fontSize });
+  // Barcode below the text.
+  ctx.drawImage(
+    barcodeCanvas,
+    panelX + PANEL_PAD,
+    panelY + PANEL_PAD + fontSize + TEXT_TO_BAR,
+    BARCODE_W,
+    BARCODE_H
+  );
+
+  console.log('[converter] composeConvertLabel', { systemId, sourceW, sourceH, fontSize, panelW, panelH });
   const rawBlob = await canvasToBlob(canvas, 'image/png');
   return await setPngDpi(rawBlob, 300);
 }
