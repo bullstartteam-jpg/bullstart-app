@@ -109,7 +109,14 @@ function createJob({ name, storageKey, runOnce }) {
     return () => listeners.delete(fn);
   }
 
-  return { subscribe, start, stop, softStop, pause, resume, runNow, isAutoEnabled };
+  return {
+    subscribe, start, stop, softStop, pause, resume, runNow, isAutoEnabled,
+    // Exposed so callers (e.g. manual one-off conversions) can push entries
+    // into the job's activity log without going through tick().
+    pushLog: (level, system_id, key, message) => { pushLog(level, system_id, key, message); emit(); },
+    bumpProcessed: () => { state.processedTotal += 1; emit(); },
+    bumpError: () => { state.errorTotal += 1; emit(); },
+  };
 }
 
 // ---------------- QR job (seller workflow) ----------------
@@ -250,7 +257,7 @@ async function processOne(item, meta) {
   });
 }
 
-async function processConvertLabel(lbl) {
+async function processConvertLabel(lbl, { force = false } = {}) {
   const blob = await composeConvertLabel(
     lbl.shipping_label,
     lbl.system_id,
@@ -258,9 +265,46 @@ async function processConvertLabel(lbl) {
   );
   const formData = new FormData();
   formData.append('image', blob, `${lbl.system_id}_label.jpg`);
+  if (force) formData.append('force', '1');
   await api.post(`/conversion/order/${lbl.order_id}/convert-label`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
+}
+
+/**
+ * Manual one-off convert for any order regardless of status. Used by the
+ * "Convert by ID" input on the Convert Label page. Pushes events into the
+ * label job's activity log so the operator sees progress alongside the
+ * regular cron output.
+ */
+export async function manualConvertLabelById(idOrSystemId) {
+  const needle = String(idOrSystemId || '').trim();
+  if (!needle) throw new Error('Missing id or system_id');
+
+  labelJob.pushLog('info', needle, 'convert_label', 'Manual lookup…');
+  let target;
+  try {
+    const lookup = await api.get(`/conversion/label-lookup/${encodeURIComponent(needle)}`);
+    target = lookup.data;
+  } catch (err) {
+    const msg = err?.response?.data?.message || err?.message || String(err);
+    labelJob.pushLog('error', needle, 'convert_label', `Lookup failed: ${msg}`);
+    labelJob.bumpError();
+    throw err;
+  }
+
+  labelJob.pushLog('info', target.system_id, 'convert_label', `Composing convert label (manual, status=${target.status})…`);
+  try {
+    await processConvertLabel(target, { force: true });
+    labelJob.pushLog('ok', target.system_id, 'convert_label', 'Uploaded convert label (manual)');
+    labelJob.bumpProcessed();
+  } catch (err) {
+    const msg = err?.response?.data?.message || err?.message || String(err);
+    labelJob.pushLog('error', target.system_id, 'convert_label', `Upload failed: ${msg}`);
+    labelJob.bumpError();
+    throw err;
+  }
+  return target;
 }
 
 /**

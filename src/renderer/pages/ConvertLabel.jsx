@@ -6,6 +6,7 @@ import {
   pauseLabelConverter,
   resumeLabelConverter,
   runLabelNow,
+  manualConvertLabelById,
 } from '../services/converter';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -28,8 +29,24 @@ function fmt(ts) {
 export default function ConvertLabel() {
   const { user } = useAuth();
   const [s, setS] = useState(null);
+  const [manualInput, setManualInput] = useState('');
+  const [manualBusy, setManualBusy] = useState(false);
 
   useEffect(() => subscribeLabelConverter(setS), []);
+
+  const handleManualConvert = async () => {
+    const v = manualInput.trim();
+    if (!v || manualBusy) return;
+    setManualBusy(true);
+    try {
+      await manualConvertLabelById(v);
+      setManualInput('');
+    } catch {
+      // Errors are already pushed to the activity log by manualConvertLabelById.
+    } finally {
+      setManualBusy(false);
+    }
+  };
 
   const isStaff = user?.role?.slug === 'admin' || user?.role?.slug === 'support';
   if (!isStaff) {
@@ -96,6 +113,39 @@ export default function ConvertLabel() {
         <Stat label="Processed" value={s.processedTotal} hint="Successful uploads since login" tone="text-green-600" />
         <Stat label="Errors" value={s.errorTotal} hint="Failed conversions since login" tone="text-red-500" />
         <Stat label="Last poll" value={fmt(s.lastTickAt)} hint={s.nextTickAt ? `Next ~${fmt(s.nextTickAt)}` : '—'} tone="text-neutral-700" />
+      </div>
+
+      {/* Manual convert by ID/system_id — bypasses new_order status check */}
+      <div className="bg-white rounded-xl border border-neutral-200 shadow-sm mb-6 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex-1">
+            <label className="text-xs font-semibold text-neutral-600 uppercase tracking-wider block mb-1.5">
+              Convert by ID (force, any status)
+            </label>
+            <p className="text-xs text-neutral-500 mb-2">
+              Enter an order ID (numeric) or system_id (e.g. <code className="bg-neutral-100 px-1 rounded">PS_C605</code>) to compose and upload a convert_label immediately. The new_order status check is skipped.
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={manualInput}
+                onChange={e => setManualInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleManualConvert(); }}
+                disabled={manualBusy}
+                placeholder="Order ID or system_id…"
+                className="flex-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm font-mono focus:outline-none focus:border-orange-400"
+                autoFocus
+              />
+              <button
+                onClick={handleManualConvert}
+                disabled={!manualInput.trim() || manualBusy}
+                className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium whitespace-nowrap"
+              >
+                {manualBusy ? 'Converting…' : 'Convert now'}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
