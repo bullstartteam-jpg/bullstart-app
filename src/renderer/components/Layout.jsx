@@ -13,6 +13,7 @@ const navItems = [
   { path: '/convert', label: 'Convert', icon: '⟲', requiresConvert: true },
   { path: '/convert-label', label: 'Convert Label', icon: '🏷', requiresStaff: true, requiresConvert: true },
   { path: '/gangsheet', label: 'Gangsheet', icon: '▦', requiresStaff: true },
+  { path: '/gangsheet-label', label: 'Gangsheet Label', icon: '📦', requiresStaff: true },
 ];
 
 export default function Layout() {
