@@ -330,7 +330,7 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   ctx.drawImage(sourceImg, 0, 0, sourceW, sourceH);
 
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
-  const fontSize = Math.max(14, Math.round(sourceW * 0.018));
+  const fontSize = Math.max(28, Math.round(sourceW * 0.035));
 
   // Render the Code 128 at the EXACT pixel width we want by calibrating
   // bwipjs `scale` (which is px-per-module). Drawing the barcode at native
