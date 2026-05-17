@@ -377,11 +377,93 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
     BARCODE_H
   );
 
+  // Resize the composed label to a standard 4×6" thermal-label canvas at
+  // 300 DPI. Carrier PDFs are typically A4 (1:1.41) but desktop label
+  // printers (Zebra, Rollo, BarTender etc.) expect 4×6" (1:1.5). We:
+  //   1. Trim outer pure-white margins from the carrier PDF so the actual
+  //      label content uses the whole 4×6 area.
+  //   2. Auto-orient: portrait source → 1200×1800, landscape → 1800×1200.
+  //   3. Scale-to-fit (preserve aspect ratio) and centre on white. Aspect
+  //      mismatches leave at most ~6% padding on the long edge — safer than
+  //      cropping shipping data.
+  const trimmed = cropWhiteMargins(canvas);
+  const LABEL_LONG = 1800;  // 6" @ 300 DPI
+  const LABEL_SHORT = 1200; // 4" @ 300 DPI
+  const isPortrait = trimmed.height >= trimmed.width;
+  const targetW = isPortrait ? LABEL_SHORT : LABEL_LONG;
+  const targetH = isPortrait ? LABEL_LONG : LABEL_SHORT;
+  const finalCanvas = fitOnLabelStock(trimmed, targetW, targetH);
+
   // Quality 0.95 keeps thin Code 128 bars crisp; 0.85 was blurring narrow
-  // bars together and breaking scanners. The file-size penalty is small for
-  // a panel-on-label image.
-  const rawBlob = await canvasToBlob(canvas, 'image/jpeg', 0.95);
+  // bars together and breaking scanners. The file-size penalty is small.
+  const rawBlob = await canvasToBlob(finalCanvas, 'image/jpeg', 0.95);
   return await setJpgDpi(rawBlob, 300);
+}
+
+/**
+ * Trim outer pure-white margins from a canvas. Carrier PDFs frequently
+ * place the actual shipping label inside a larger page (A4 / Letter) with
+ * blank padding around it — when we then resize for a 4×6 label printer
+ * those margins waste real estate and shrink the readable content.
+ *
+ * Scans rows/cols from each edge inward until it hits a non-white pixel
+ * (RGB threshold 240). Adds a tiny 1% bleed so content doesn't kiss the
+ * edge after cropping.
+ */
+function cropWhiteMargins(canvas) {
+  const ctx = canvas.getContext('2d');
+  const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const TH = 240;
+  let minX = width, maxX = -1, minY = height, maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const rowOff = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      const i = rowOff + x * 4;
+      if (data[i] < TH || data[i + 1] < TH || data[i + 2] < TH) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return canvas; // fully white
+  const pad = Math.round(Math.min(width, height) * 0.01);
+  minX = Math.max(0, minX - pad);
+  minY = Math.max(0, minY - pad);
+  maxX = Math.min(width - 1, maxX + pad);
+  maxY = Math.min(height - 1, maxY + pad);
+  const w = maxX - minX + 1;
+  const h = maxY - minY + 1;
+  if (w === width && h === height) return canvas;
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  out.getContext('2d').drawImage(canvas, -minX, -minY);
+  return out;
+}
+
+/**
+ * Scale-fit `src` onto a target canvas of exact label dimensions. White
+ * background, content centred. Uses high-quality smoothing so the
+ * downscale doesn't soften the Code 128 bars more than necessary.
+ */
+function fitOnLabelStock(src, targetW, targetH) {
+  const out = document.createElement('canvas');
+  out.width = targetW;
+  out.height = targetH;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, targetW, targetH);
+  const scale = Math.min(targetW / src.width, targetH / src.height);
+  const drawW = Math.round(src.width * scale);
+  const drawH = Math.round(src.height * scale);
+  const dx = Math.round((targetW - drawW) / 2);
+  const dy = Math.round((targetH - drawH) / 2);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, dx, dy, drawW, drawH);
+  return out;
 }
 
 function generateBarcodeCanvas(value, scale = 3) {
