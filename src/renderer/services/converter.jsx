@@ -293,8 +293,11 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
 
   const PANEL_PAD = Math.round(fontSize * 0.45);
   const TEXT_TO_BAR = Math.round(fontSize * 0.35);
+  // Preserve the barcode's native aspect ratio when scaling — Code 128 bars
+  // become unreliable when stretched/squashed vertically. The +50 boost
+  // applied here matches what the user asked for in v1.0.14.
   const BARCODE_W = Math.round(sourceW * 0.12) + 50;
-  const BARCODE_H = Math.round(BARCODE_W * 0.38);
+  const BARCODE_H = Math.round(BARCODE_W * (barcodeCanvas.height / barcodeCanvas.width));
 
   ctx.font = `bold ${fontSize}px sans-serif`;
   const textW = Math.ceil(ctx.measureText(codeText).width);
@@ -325,7 +328,10 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
     BARCODE_H
   );
 
-  const rawBlob = await canvasToBlob(canvas, 'image/jpeg', 0.85);
+  // Quality 0.95 keeps thin Code 128 bars crisp; 0.85 was blurring narrow
+  // bars together and breaking scanners. The file-size penalty is small for
+  // a panel-on-label image.
+  const rawBlob = await canvasToBlob(canvas, 'image/jpeg', 0.95);
   return await setJpgDpi(rawBlob, 300);
 }
 
@@ -337,8 +343,11 @@ function generateBarcodeCanvas(value) {
     scale: 3,
     height: 14,
     includetext: false,
-    paddingwidth: 0,
-    paddingheight: 0,
+    // Code 128 spec requires a quiet zone of at least 10× the narrowest bar
+    // width on each side. Without it, scanners often miss the start/stop
+    // codes. Vertical padding gives the bars a small lossy-compression buffer.
+    paddingwidth: 10,
+    paddingheight: 4,
   });
   return c;
 }
