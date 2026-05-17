@@ -330,18 +330,23 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   ctx.drawImage(sourceImg, 0, 0, sourceW, sourceH);
 
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
-  // Sizes scaled to 40% of the original layout.
-  // fontSize floor lowered to 12 so text stays legible on small labels.
-  const fontSize = Math.max(12, Math.round(sourceW * 0.014));
-  const barcodeCanvas = generateBarcodeCanvas(systemId);
+  const fontSize = Math.max(14, Math.round(sourceW * 0.018));
+
+  // Render the Code 128 at the EXACT pixel width we want by calibrating
+  // bwipjs `scale` (which is px-per-module). Drawing the barcode at native
+  // size — never shrinking — is the only reliable way to keep thin bars
+  // crisp after JPEG compression.
+  // Module estimate: 11 modules per char (Code 128 Set B) + ~35 modules for
+  // start/stop/checksum/quiet zones (paddingwidth: 10 each side).
+  const targetBarcodeW = Math.max(360, Math.round(sourceW * 0.28));
+  const moduleEstimate = systemId.length * 11 + 35;
+  const barcodeScale = Math.max(2, Math.min(8, Math.round(targetBarcodeW / moduleEstimate)));
+  const barcodeCanvas = generateBarcodeCanvas(systemId, barcodeScale);
 
   const PANEL_PAD = Math.round(fontSize * 0.45);
   const TEXT_TO_BAR = Math.round(fontSize * 0.35);
-  // Preserve the barcode's native aspect ratio when scaling — Code 128 bars
-  // become unreliable when stretched/squashed vertically. The +50 boost
-  // applied here matches what the user asked for in v1.0.14.
-  const BARCODE_W = Math.round(sourceW * 0.12) + 50;
-  const BARCODE_H = Math.round(BARCODE_W * (barcodeCanvas.height / barcodeCanvas.width));
+  const BARCODE_W = barcodeCanvas.width;
+  const BARCODE_H = barcodeCanvas.height;
 
   ctx.font = `bold ${fontSize}px sans-serif`;
   const textW = Math.ceil(ctx.measureText(codeText).width);
@@ -379,12 +384,12 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   return await setJpgDpi(rawBlob, 300);
 }
 
-function generateBarcodeCanvas(value) {
+function generateBarcodeCanvas(value, scale = 3) {
   const c = document.createElement('canvas');
   bwipjs.toCanvas(c, {
     bcid: 'code128',
     text: value,
-    scale: 3,
+    scale,
     height: 14,
     includetext: false,
     // Code 128 spec requires a quiet zone of at least 10× the narrowest bar
@@ -602,8 +607,10 @@ async function renderPdfFirstPageAsImage(base64) {
   const data = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
   const pdf = await pdfjs.getDocument({ data }).promise;
   const page = await pdf.getPage(1);
-  // Scale 2x for 300 DPI on a 4×6" / 6×4" label rendered at PDF default 72 DPI.
-  const viewport = page.getViewport({ scale: 2 });
+  // Scale 4× of PDF default 72 DPI = ~288 DPI raster. Scale 2 produced
+  // sub-300 DPI sources (USPS 4×6" PDF at scale 2 = 596x840) which left
+  // the overlay Code 128 too small to scan after JPG compression.
+  const viewport = page.getViewport({ scale: 4 });
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
