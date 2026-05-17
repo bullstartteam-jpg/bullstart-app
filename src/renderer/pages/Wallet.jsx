@@ -19,6 +19,10 @@ export default function Wallet() {
   const [meta, setMeta] = useState({});
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  // Split deposit vs paid into separate tabs. Each tab paginates independently;
+  // switching tabs resets the page back to 1 so users don't land on an empty
+  // page 5 when the new filter only has 2 results.
+  const [activeTab, setActiveTab] = useState('deposits'); // 'deposits' | 'paid'
   const [showDeposit, setShowDeposit] = useState(false);
   const [depositForm, setDepositForm] = useState({ user_id: '', amount: '', method: '', transaction_id: '', note: '' });
   const [users, setUsers] = useState([]);
@@ -29,7 +33,8 @@ export default function Wallet() {
   const refreshAll = () => {
     api.get('/wallet/balance').then(res => setBalance(res.data));
     setLoading(true);
-    api.get('/wallet/transactions', { params: { page, per_page: 20 } }).then(res => {
+    const params = { page, per_page: 20, type: activeTab === 'paid' ? 'paid' : 'deposit' };
+    api.get('/wallet/transactions', { params }).then(res => {
       setTransactions(res.data.data || []);
       setMeta(res.data);
     }).finally(() => setLoading(false));
@@ -44,11 +49,18 @@ export default function Wallet() {
 
   useEffect(() => {
     setLoading(true);
-    api.get('/wallet/transactions', { params: { page, per_page: 20 } }).then(res => {
+    const params = { page, per_page: 20, type: activeTab === 'paid' ? 'paid' : 'deposit' };
+    api.get('/wallet/transactions', { params }).then(res => {
       setTransactions(res.data.data || []);
       setMeta(res.data);
     }).finally(() => setLoading(false));
-  }, [page]);
+  }, [page, activeTab]);
+
+  const switchTab = (tab) => {
+    if (tab === activeTab) return;
+    setActiveTab(tab);
+    setPage(1);
+  };
 
   const handleDeposit = async (e) => {
     e.preventDefault();
@@ -171,6 +183,16 @@ export default function Wallet() {
         </form>
       )}
 
+      {/* Tabs split deposits and paid transactions */}
+      <div className="flex gap-1 mb-3 border-b border-neutral-200">
+        <TabBtn active={activeTab === 'deposits'} onClick={() => switchTab('deposits')}>
+          Deposits {balance && <span className="ml-1 text-xs opacity-70">${balance.total_deposited}</span>}
+        </TabBtn>
+        <TabBtn active={activeTab === 'paid'} onClick={() => switchTab('paid')}>
+          Paid {balance && <span className="ml-1 text-xs opacity-70">${balance.total_paid}</span>}
+        </TabBtn>
+      </div>
+
       {/* Transactions table */}
       <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden shadow-sm">
         <table className="w-full text-sm">
@@ -265,5 +287,16 @@ export default function Wallet() {
         </div>
       )}
     </div>
+  );
+}
+
+function TabBtn({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+        active ? 'border-orange-500 text-orange-600' : 'border-transparent text-neutral-500 hover:text-neutral-700'
+      }`}
+    >{children}</button>
   );
 }
