@@ -134,6 +134,7 @@ const qrJob = createJob({
         order_item_id: it.order_item_id,
         system_id: it.system_id,
         accessory_summary: it.accessory_summary || '',
+        line_id: it.line_id || '',
         target_key: p.target_key,
         source_key: p.source_key,
         index: p.index,
@@ -247,7 +248,8 @@ async function processOne(item, meta) {
   const blob = await composeImage(
     meta.source_value,
     item.system_id,
-    item.accessory_summary || ''
+    item.accessory_summary || '',
+    { source_key: meta.source_key, line_id: item.line_id }
   );
   const formData = new FormData();
   formData.append('key', meta.target_key);
@@ -483,7 +485,16 @@ function generateBarcodeCanvas(value, scale = 3) {
   return c;
 }
 
-async function composeImage(sourceUrl, systemId, accessorySummary = '') {
+async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {}) {
+  const { source_key, line_id } = opts;
+  // Greeting-card back face: line "GC" + source key "back". The print sits
+  // on the reverse side of the same sheet, so when the card is folded
+  // closed the back design must be upside-down relative to the front. We
+  // also skip the barcode/system_id overlay because nothing on the back
+  // should advertise the internal tracking code.
+  const isGreetingCardBack =
+    String(line_id || '').toUpperCase() === 'GC' && source_key === 'back';
+
   const id = driveId(sourceUrl);
   const fetchUrl = id ? driveThumb(sourceUrl, 'w3230') : sourceUrl;
 
@@ -501,13 +512,29 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '') {
   const ctx = canvas.getContext('2d');
 
   if (isPortraitSource) {
+    // Combine portrait-to-landscape rotation with the optional 180° flip:
+    //   portrait normal      → -90° (CCW)
+    //   portrait + GC back   → -90° + 180° = +90° (CW)
     ctx.save();
     ctx.translate(TARGET_W / 2, TARGET_H / 2);
-    ctx.rotate(-Math.PI / 2);
+    ctx.rotate(isGreetingCardBack ? Math.PI / 2 : -Math.PI / 2);
     ctx.drawImage(sourceImg, -TARGET_H / 2, -TARGET_W / 2, TARGET_H, TARGET_W);
+    ctx.restore();
+  } else if (isGreetingCardBack) {
+    // Landscape source + GC back → straight 180° flip.
+    ctx.save();
+    ctx.translate(TARGET_W / 2, TARGET_H / 2);
+    ctx.rotate(Math.PI);
+    ctx.drawImage(sourceImg, -TARGET_W / 2, -TARGET_H / 2, TARGET_W, TARGET_H);
     ctx.restore();
   } else {
     ctx.drawImage(sourceImg, 0, 0, TARGET_W, TARGET_H);
+  }
+
+  // Skip the barcode + system_id panel for greeting-card backs.
+  if (isGreetingCardBack) {
+    const rawBlob = await canvasToBlob(canvas, 'image/png');
+    return await setPngDpi(rawBlob, 300);
   }
 
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
