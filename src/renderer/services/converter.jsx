@@ -137,6 +137,7 @@ const qrJob = createJob({
         line_id: it.line_id || '',
         target_key: p.target_key,
         source_key: p.source_key,
+        is_greeting_card_back: !!p.is_greeting_card_back,
         index: p.index,
         total: p.total,
         value: p.source_value,
@@ -150,7 +151,8 @@ const qrJob = createJob({
       for (const meta of item.pending) {
         if (state.paused || !state.enabled) break;
         try {
-          pushLog('info', item.system_id, meta.target_key, `Starting (${meta.index}/${meta.total})…`);
+          const gcTag = meta.is_greeting_card_back ? ' [GC back: rotate 180, no overlay]' : '';
+          pushLog('info', item.system_id, meta.target_key, `Starting (${meta.index}/${meta.total})${gcTag}…`);
           emit();
           await processOne(item, meta);
           state.processedTotal += 1;
@@ -249,7 +251,11 @@ async function processOne(item, meta) {
     meta.source_value,
     item.system_id,
     item.accessory_summary || '',
-    { source_key: meta.source_key, line_id: item.line_id }
+    {
+      source_key: meta.source_key,
+      line_id: item.line_id,
+      is_greeting_card_back: !!meta.is_greeting_card_back,
+    }
   );
   const formData = new FormData();
   formData.append('key', meta.target_key);
@@ -487,13 +493,16 @@ function generateBarcodeCanvas(value, scale = 3) {
 
 async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {}) {
   const { source_key, line_id } = opts;
-  // Greeting-card back face: line "GC" + source key "back". The print sits
-  // on the reverse side of the same sheet, so when the card is folded
-  // closed the back design must be upside-down relative to the front. We
-  // also skip the barcode/system_id overlay because nothing on the back
-  // should advertise the internal tracking code.
-  const isGreetingCardBack =
-    String(line_id || '').toUpperCase() === 'GC' && source_key === 'back';
+  // Greeting-card back face: pre-computed server-side (line "GC" OR product
+  // name contains "greeting"/"card", combined with source_key === "back").
+  // Fall back to client-side line_id check for older backends that haven't
+  // deployed the is_greeting_card_back flag yet.
+  const isGreetingCardBack = opts.is_greeting_card_back === true
+    || (String(line_id || '').toUpperCase() === 'GC' && source_key === 'back');
+  console.log('[converter] composeImage opts', {
+    systemId, source_key, line_id, isGreetingCardBack,
+    serverFlag: opts.is_greeting_card_back,
+  });
 
   const id = driveId(sourceUrl);
   const fetchUrl = id ? driveThumb(sourceUrl, 'w3230') : sourceUrl;
