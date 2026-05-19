@@ -188,6 +188,62 @@ export default function Orders() {
     }
   };
 
+  // Import envelopes from CSV — admin/support only.
+  const [showImportEnv, setShowImportEnv] = useState(false);
+  const [envCsv, setEnvCsv] = useState('');
+  const [envBusy, setEnvBusy] = useState(false);
+  const [envResult, setEnvResult] = useState(null);
+
+  const parseEnvelopeCsv = (text) => {
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length);
+    if (lines.length === 0) return { rows: [], error: 'Empty CSV' };
+    // Detect header row by checking if first cell is "ref_id".
+    const first = lines[0].split(',').map(c => c.trim().toLowerCase());
+    let refIdx = 0, codeIdx = 2;
+    let startLine = 0;
+    if (first.includes('ref_id')) {
+      refIdx = first.indexOf('ref_id');
+      const cIdx = first.indexOf('accessory_code');
+      if (cIdx >= 0) codeIdx = cIdx;
+      startLine = 1;
+    }
+    const rows = [];
+    for (let i = startLine; i < lines.length; i++) {
+      const cols = lines[i].split(',');
+      const ref = (cols[refIdx] || '').trim();
+      const code = (cols[codeIdx] || '').trim();
+      if (!ref) continue;
+      rows.push({ ref_id: ref, accessory_code: code });
+    }
+    return { rows };
+  };
+
+  const handleEnvelopeUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setEnvCsv(text);
+    e.target.value = '';
+  };
+
+  const submitEnvelopeImport = async () => {
+    const parsed = parseEnvelopeCsv(envCsv);
+    if (parsed.error || parsed.rows.length === 0) {
+      return notify(parsed.error || 'No valid rows', { title: 'Import envelopes', kind: 'error' });
+    }
+    setEnvBusy(true);
+    setEnvResult(null);
+    try {
+      const res = await api.post('/orders/import-envelopes', { rows: parsed.rows });
+      setEnvResult(res.data);
+      fetchOrders();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Error', { title: 'Import failed', kind: 'error' });
+    } finally {
+      setEnvBusy(false);
+    }
+  };
+
   const handleBulkReconvertLabel = async () => {
     if (selected.length === 0) return;
     const ok = await askConfirm(
@@ -747,6 +803,11 @@ export default function Orders() {
                 Bulk Reconvert Label
               </button>
             )}
+            {isStaff && (
+              <button onClick={() => { setShowImportEnv(true); setEnvCsv(''); setEnvResult(null); }} className="px-3 py-1.5 bg-teal-500 hover:bg-teal-600 text-white text-xs rounded-lg" title="Bulk-update envelope/accessory from CSV (ref_id, accessory_code)">
+                Import Envelopes
+              </button>
+            )}
             {isAdmin && (
               <button
                 onClick={handleBulkMergeDuplicates}
@@ -1083,6 +1144,97 @@ export default function Orders() {
           </div>
         </div>
       )}
+
+      {/* Import envelopes modal — CSV (ref_id, accessory_code) → bulk update */}
+      {showImportEnv && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => !envBusy && setShowImportEnv(false)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-3 border-b border-neutral-200 flex justify-between items-center">
+              <h3 className="font-bold text-neutral-800">Import Envelopes</h3>
+              <button onClick={() => !envBusy && setShowImportEnv(false)} className="text-neutral-400 hover:text-neutral-700">×</button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="text-xs text-neutral-600 bg-[#faf8f6] rounded-lg p-3 border border-neutral-200">
+                CSV/TSV with columns <code className="bg-white px-1 rounded">ref_id</code>, <code className="bg-white px-1 rounded">accessory_code</code> (e.g. <code>W</code>, <code>R</code>, <code>B</code>).
+                The first row is treated as a header if it contains <code>ref_id</code>.
+                When a ref_id appears multiple times, rows apply to items in id-ASC order (1st row → 1st item, …).
+                Orders without a matching ref_id, items without a matching accessory_code+tier, are skipped and reported.
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-sm rounded-lg cursor-pointer">
+                  Choose CSV file…
+                  <input type="file" accept=".csv,.tsv,.txt" onChange={handleEnvelopeUpload} className="hidden" />
+                </label>
+                <span className="text-xs text-neutral-500">or paste the CSV below</span>
+              </div>
+              <textarea
+                value={envCsv}
+                onChange={e => setEnvCsv(e.target.value)}
+                rows={10}
+                placeholder="ref_id,sku,accessory_code,quantity,...\n577393179441992271,PS_GC,W,1,...\n..."
+                className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-xs font-mono focus:outline-none focus:border-teal-400"
+              />
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setShowImportEnv(false)} disabled={envBusy} className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg disabled:opacity-50">Close</button>
+                <button onClick={submitEnvelopeImport} disabled={envBusy || !envCsv.trim()} className="px-4 py-1.5 bg-teal-500 hover:bg-teal-600 text-white text-sm rounded-lg disabled:opacity-50">
+                  {envBusy ? 'Importing…' : 'Apply update'}
+                </button>
+              </div>
+
+              {envResult && (
+                <div className="mt-4">
+                  <div className="grid grid-cols-4 gap-2 mb-3 text-center">
+                    <Stat label="Rows" value={envResult.summary.rows_total} tone="text-neutral-800" />
+                    <Stat label="Updated" value={envResult.summary.updated} tone="text-emerald-600" />
+                    <Stat label="Skipped" value={envResult.summary.skipped} tone="text-neutral-600" />
+                    <Stat label="Errors" value={envResult.summary.errors} tone="text-red-500" />
+                  </div>
+                  <div className="border border-neutral-200 rounded-lg max-h-64 overflow-y-auto">
+                    <table className="w-full text-xs">
+                      <thead className="text-neutral-500 bg-[#faf8f6] sticky top-0">
+                        <tr>
+                          <th className="text-left px-2 py-1.5">ref_id</th>
+                          <th className="text-left px-2 py-1.5">system_id</th>
+                          <th className="text-right px-2 py-1.5">#</th>
+                          <th className="text-left px-2 py-1.5">Status</th>
+                          <th className="text-left px-2 py-1.5">Message</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-100">
+                        {envResult.results.map((r, i) => (
+                          <tr key={i} className={r.status === 'ok' ? 'bg-emerald-50/40' : r.status === 'no_order' || r.status === 'no_accessory' || r.status === 'no_item' ? 'bg-red-50/40' : ''}>
+                            <td className="px-2 py-1 font-mono text-neutral-700">{r.ref_id}</td>
+                            <td className="px-2 py-1 font-mono text-orange-600">{r.system_id || '-'}</td>
+                            <td className="px-2 py-1 text-right text-neutral-500">{r.index + 1}</td>
+                            <td className="px-2 py-1">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                r.status === 'ok' ? 'bg-emerald-100 text-emerald-700' :
+                                r.status === 'no_change' ? 'bg-neutral-100 text-neutral-600' :
+                                r.status === 'skipped' ? 'bg-yellow-100 text-yellow-700' :
+                                'bg-red-100 text-red-700'
+                              }`}>{r.status}</span>
+                            </td>
+                            <td className="px-2 py-1 text-neutral-600">{r.message}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, tone }) {
+  return (
+    <div className="bg-white border border-neutral-200 rounded-lg p-2">
+      <div className="text-[10px] text-neutral-500 uppercase tracking-wider">{label}</div>
+      <div className={`text-xl font-bold ${tone}`}>{value}</div>
     </div>
   );
 }
