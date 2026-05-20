@@ -20,7 +20,10 @@ export default function OrderCreate() {
   const [previewUrl, setPreviewUrl] = useState(null);
 
   const blankItem = () => ({
-    product_variant_id: '', accessory_id: '', accessory_item_id: '',
+    product_variant_id: '',
+    // Multi-accessory: list of { accessory_id, accessory_item_id } rows. Each
+    // row picks an accessory group + a tier-scoped style/price for it.
+    accessories: [],
     mockup_front: '', mockup_back: '', quantity: '1', order_type: 0,
     metas: [{ key: 'front', value: '' }],
   });
@@ -95,18 +98,51 @@ export default function OrderCreate() {
     setForm({ ...form, items: form.items.filter((_, i) => i !== index) });
   };
 
+  const addAccessory = (i) => {
+    setForm(f => {
+      const items = [...f.items];
+      items[i] = { ...items[i], accessories: [...(items[i].accessories || []), { accessory_id: '', accessory_item_id: '' }] };
+      return { ...f, items };
+    });
+  };
+
+  const updateAccessory = (i, ai, patch) => {
+    setForm(f => {
+      const items = [...f.items];
+      const accs = [...(items[i].accessories || [])];
+      accs[ai] = { ...accs[ai], ...patch };
+      items[i] = { ...items[i], accessories: accs };
+      return { ...f, items };
+    });
+  };
+
+  const removeAccessory = (i, ai) => {
+    setForm(f => {
+      const items = [...f.items];
+      items[i] = { ...items[i], accessories: items[i].accessories.filter((_, idx) => idx !== ai) };
+      return { ...f, items };
+    });
+  };
+
   const submitOrder = async ({ force = false, rename = false } = {}) => {
     const payload = {
       ref_id: form.ref_id || null,
-      items: form.items.map(it => ({
-        product_variant_id: it.product_variant_id,
-        accessory_item_id: it.accessory_item_id ? Number(it.accessory_item_id) : null,
-        mockup_front: it.mockup_front,
-        mockup_back: it.mockup_back,
-        order_type: it.order_type,
-        quantity: Math.max(1, parseInt(it.quantity, 10) || 1),
-        metas: (it.metas || []).filter(m => m.key && m.key.trim() !== '').map(m => ({ key: m.key, value: m.value })),
-      })),
+      items: form.items.map(it => {
+        const accessoryIds = (it.accessories || [])
+          .map(a => Number(a.accessory_item_id))
+          .filter(Boolean);
+        return {
+          product_variant_id: it.product_variant_id,
+          // accessory_ids[] is the new multi-accessory payload; the server
+          // also still accepts accessory_item_id for the primary one.
+          accessory_ids: accessoryIds,
+          mockup_front: it.mockup_front,
+          mockup_back: it.mockup_back,
+          order_type: it.order_type,
+          quantity: Math.max(1, parseInt(it.quantity, 10) || 1),
+          metas: (it.metas || []).filter(m => m.key && m.key.trim() !== '').map(m => ({ key: m.key, value: m.value })),
+        };
+      }),
       force,
       rename,
     };
@@ -266,8 +302,6 @@ export default function OrderCreate() {
             {form.items.map((item, i) => {
               const product = productOfVariant(item.product_variant_id);
               const accessories = product?.accessories || [];
-              const selectedAccessory = accessories.find(a => String(a.id) === String(item.accessory_id));
-              const stylePrices = (selectedAccessory?.prices || []).filter(p => userTierId == null || p.tier_id === userTierId);
 
               return (
                 <div key={i} className="border border-neutral-100 rounded-lg p-3 space-y-3">
@@ -276,7 +310,7 @@ export default function OrderCreate() {
                       <label className="text-xs text-neutral-500">Product Variant</label>
                       <select
                         value={item.product_variant_id}
-                        onChange={e => updateItem(i, { product_variant_id: e.target.value, accessory_id: '', accessory_item_id: '' })}
+                        onChange={e => updateItem(i, { product_variant_id: e.target.value, accessories: [] })}
                         className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
                         required
                       >
@@ -310,36 +344,64 @@ export default function OrderCreate() {
                     <button type="button" onClick={() => removeItem(i)} className="px-3 py-2 text-red-500 hover:text-red-600 text-sm">Remove</button>
                   </div>
 
-                  {/* Accessory + Style picker — only when product has accessories */}
+                  {/* Multi-accessory picker — one row per accessory.
+                       Add as many as the product supports (different add-ons
+                       like envelope + thank-you card on the same item). */}
                   {product && accessories.length > 0 && (
-                    <div className="grid grid-cols-2 gap-3 pt-2 border-t border-neutral-100">
-                      <div>
-                        <label className="text-xs text-neutral-500">Accessory</label>
-                        <select
-                          value={item.accessory_id}
-                          onChange={e => updateItem(i, { accessory_id: e.target.value, accessory_item_id: '' })}
-                          className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
-                        >
-                          <option value="">— None —</option>
-                          {accessories.map(a => (
-                            <option key={a.id} value={a.id}>{a.name}</option>
-                          ))}
-                        </select>
+                    <div className="pt-2 border-t border-neutral-100 space-y-2">
+                      <div className="flex justify-between items-center">
+                        <label className="text-xs text-neutral-500">Accessories</label>
+                        <button
+                          type="button"
+                          onClick={() => addAccessory(i)}
+                          className="text-xs text-orange-500 hover:text-orange-600"
+                        >+ Add Accessory</button>
                       </div>
-                      <div>
-                        <label className="text-xs text-neutral-500">Style {selectedAccessory && stylePrices.length === 0 && <span className="text-red-400">(no price for your tier)</span>}</label>
-                        <select
-                          value={item.accessory_item_id}
-                          onChange={e => updateItem(i, { accessory_item_id: e.target.value })}
-                          disabled={!selectedAccessory || stylePrices.length === 0}
-                          className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm disabled:opacity-50"
-                        >
-                          <option value="">Select style...</option>
-                          {stylePrices.map(p => (
-                            <option key={p.id} value={p.id}>{p.style || '(no style)'} — ${p.price}</option>
-                          ))}
-                        </select>
-                      </div>
+                      {(item.accessories || []).length === 0 ? (
+                        <p className="text-xs text-neutral-400">No accessories. Click "+ Add Accessory" to attach one or more.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {(item.accessories || []).map((row, ai) => {
+                            const selectedAcc = accessories.find(a => String(a.id) === String(row.accessory_id));
+                            const stylePrices = (selectedAcc?.prices || []).filter(p => userTierId == null || p.tier_id === userTierId);
+                            return (
+                              <div key={ai} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
+                                <div>
+                                  <select
+                                    value={row.accessory_id}
+                                    onChange={e => updateAccessory(i, ai, { accessory_id: e.target.value, accessory_item_id: '' })}
+                                    className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
+                                  >
+                                    <option value="">— Select accessory —</option>
+                                    {accessories.map(a => (
+                                      <option key={a.id} value={a.id}>{a.name}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div>
+                                  <select
+                                    value={row.accessory_item_id}
+                                    onChange={e => updateAccessory(i, ai, { accessory_item_id: e.target.value })}
+                                    disabled={!selectedAcc || stylePrices.length === 0}
+                                    className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm disabled:opacity-50"
+                                  >
+                                    <option value="">{selectedAcc && stylePrices.length === 0 ? 'no price for your tier' : 'Select style…'}</option>
+                                    {stylePrices.map(p => (
+                                      <option key={p.id} value={p.id}>{p.style || '(no style)'} — ${p.price}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => removeAccessory(i, ai)}
+                                  className="px-2 py-2 text-red-400 hover:text-red-600 text-sm"
+                                  title="Remove this accessory"
+                                >×</button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   )}
 

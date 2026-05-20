@@ -6,6 +6,7 @@ const navItems = [
   { path: '/', label: 'Dashboard', icon: '◉', module: 'dashboard' },
   { path: '/orders', label: 'Orders', icon: '◈', module: 'orders' },
   { path: '/products', label: 'Products', icon: '◇', module: 'products' },
+  { path: '/inventory', label: 'Inventory', icon: '▤', module: 'inventory' },
   { path: '/wallet', label: 'Wallet', icon: '◎', module: 'wallet' },
   { path: '/users', label: 'Users', icon: '◆', module: 'users' },
   { path: '/tiers', label: 'Tiers', icon: '▣', module: 'settings' },

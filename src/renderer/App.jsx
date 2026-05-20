@@ -8,6 +8,7 @@ import OrderDetail from './pages/OrderDetail';
 import OrderCreate from './pages/OrderCreate';
 import Products from './pages/Products';
 import ProductDetail from './pages/ProductDetail';
+import Inventory from './pages/Inventory';
 import Wallet from './pages/Wallet';
 import Users from './pages/Users';
 import Settings from './pages/Settings';
@@ -38,6 +39,7 @@ export default function App() {
           <Route path="orders/:id" element={<OrderDetail />} />
           <Route path="products" element={<Products />} />
           <Route path="products/:id" element={<ProductDetail />} />
+          <Route path="inventory" element={<Inventory />} />
           <Route path="wallet" element={<Wallet />} />
           <Route path="users" element={<Users />} />
           <Route path="tiers" element={<Tiers />} />

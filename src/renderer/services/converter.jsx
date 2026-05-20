@@ -385,18 +385,18 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
     BARCODE_H
   );
 
-  // Resize the composed label to a standard 4×6" thermal-label canvas at
-  // 300 DPI. Carrier PDFs are typically A4 (1:1.41) but desktop label
-  // printers (Zebra, Rollo, BarTender etc.) expect 4×6" (1:1.5). We:
-  //   1. Trim outer pure-white margins from the carrier PDF so the actual
-  //      label content uses the whole 4×6 area.
-  //   2. Auto-orient: portrait source → 1200×1800, landscape → 1800×1200.
-  //   3. Scale-to-fit (preserve aspect ratio) and centre on white. Aspect
-  //      mismatches leave at most ~6% padding on the long edge — safer than
-  //      cropping shipping data.
+  // Resize the composed label to A6 (105 × 148 mm) at 300 DPI. Carrier PDFs
+  // are typically A4 (ratio 1:1.4142) and so is A6 — the source fits the
+  // target canvas almost exactly with no aspect-ratio padding. The 4×6"
+  // thermal-printer ratio (1:1.5) that the previous version used left a
+  // visible white strip on the long edge AND, when operators printed via
+  // browser Ctrl+P (default A4 paper), came out oversized.
+  //   1. Trim outer pure-white margins from the carrier PDF.
+  //   2. Auto-orient: portrait source → 1240×1748, landscape → 1748×1240.
+  //   3. Scale-to-fit on white (effectively no padding for A4 sources).
   const trimmed = cropWhiteMargins(canvas);
-  const LABEL_LONG = 1800;  // 6" @ 300 DPI
-  const LABEL_SHORT = 1200; // 4" @ 300 DPI
+  const LABEL_LONG  = 1748; // 148 mm  @ 300 DPI (A6 long edge)
+  const LABEL_SHORT = 1240; // 105 mm  @ 300 DPI (A6 short edge)
   const isPortrait = trimmed.height >= trimmed.width;
   const targetW = isPortrait ? LABEL_SHORT : LABEL_LONG;
   const targetH = isPortrait ? LABEL_LONG : LABEL_SHORT;

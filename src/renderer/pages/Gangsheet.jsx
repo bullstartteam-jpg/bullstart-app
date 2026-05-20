@@ -527,6 +527,10 @@ function ManageTab({ isAdmin }) {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
   const [downloadedSet, setDownloadedSet] = useState(loadDownloadedSet);
+  // Bulk-select state for the Manage tab. Reset whenever the visible page
+  // changes so a hidden selection can't survive a page flip.
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const markDownloaded = (id) => {
     setDownloadedSet(prev => {
@@ -554,10 +558,35 @@ function ManageTab({ isAdmin }) {
       if (filters.line_id) params.line_id = filters.line_id;
       const res = await api.get('/gangsheets', { params });
       setList(res.data);
+      setSelectedIds(new Set()); // reset on every re-fetch
     } finally { setLoading(false); }
   };
 
   useEffect(() => { fetchList(); }, [filters.page]);
+
+  const toggleSelected = (id) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleSelectAll = () => {
+    if (selectedIds.size === list.data.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(list.data.map(g => g.id)));
+  };
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} gangsheet(s)?\n(Orders/metas remain marked as production.)`)) return;
+    setBulkDeleting(true);
+    try {
+      const res = await api.post('/gangsheets/bulk-delete', { gangsheet_ids: [...selectedIds] });
+      alert(res.data.message || `Deleted ${selectedIds.size}`);
+      fetchList();
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Bulk delete failed');
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
 
   const applyFilters = (e) => {
     e?.preventDefault();
@@ -600,6 +629,16 @@ function ManageTab({ isAdmin }) {
         </div>
         <button type="submit" className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Apply</button>
         <button type="button" onClick={clearFilters} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Clear</button>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={handleBulkDelete}
+            disabled={selectedIds.size === 0 || bulkDeleting}
+            className="px-3 py-1.5 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white text-sm rounded-lg"
+          >
+            {bulkDeleting ? 'Deleting…' : `Delete selected (${selectedIds.size})`}
+          </button>
+        )}
         <span className="text-xs text-neutral-500 ml-auto">
           <span className="font-semibold text-emerald-600">{[...downloadedSet].filter(id => list.data.some(g => g.id === id)).length}</span>
           {' / '}
@@ -614,6 +653,17 @@ function ManageTab({ isAdmin }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-neutral-500 text-xs bg-[#faf8f6] border-b border-neutral-200">
+              {isAdmin && (
+                <th className="px-3 py-2 text-center w-8">
+                  <input
+                    type="checkbox"
+                    onChange={toggleSelectAll}
+                    checked={list.data.length > 0 && selectedIds.size === list.data.length}
+                    className="accent-orange-500"
+                    title="Select all on this page"
+                  />
+                </th>
+              )}
               <th className="px-3 py-2 text-center w-10" title="Click to toggle downloaded mark">✓</th>
               <th className="px-3 py-2 text-left">Filename</th>
               <th className="px-3 py-2 text-left">Range</th>
@@ -627,13 +677,24 @@ function ManageTab({ isAdmin }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan="9" className="p-6 text-center text-neutral-400">Loading…</td></tr>
+              <tr><td colSpan={isAdmin ? 10 : 9} className="p-6 text-center text-neutral-400">Loading…</td></tr>
             ) : list.data.length === 0 ? (
-              <tr><td colSpan="9" className="p-6 text-center text-neutral-400">No gangsheets found.</td></tr>
+              <tr><td colSpan={isAdmin ? 10 : 9} className="p-6 text-center text-neutral-400">No gangsheets found.</td></tr>
             ) : list.data.map(g => {
               const isDl = downloadedSet.has(g.id);
+              const isSel = selectedIds.has(g.id);
               return (
-              <tr key={g.id} className={`border-b border-neutral-100 hover:bg-orange-50/30 ${isDl ? 'bg-green-50/40' : ''}`}>
+              <tr key={g.id} className={`border-b border-neutral-100 hover:bg-orange-50/30 ${isSel ? 'bg-orange-50/60' : isDl ? 'bg-green-50/40' : ''}`}>
+                {isAdmin && (
+                  <td className="px-3 py-2 text-center">
+                    <input
+                      type="checkbox"
+                      checked={isSel}
+                      onChange={() => toggleSelected(g.id)}
+                      className="accent-orange-500"
+                    />
+                  </td>
+                )}
                 <td className="px-3 py-2 text-center">
                   <button
                     onClick={() => toggleDownloaded(g.id)}

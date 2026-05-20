@@ -19,6 +19,14 @@ export default function OrderDetail() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({});
   const [previewUrl, setPreviewUrl] = useState(null);
+  // Catalog used by the per-item accessory editor (only fetched when an
+  // editor opens for the first time — avoids paying the cost on every view).
+  const [products, setProducts] = useState(null);
+  const ensureProducts = () => {
+    if (products) return;
+    api.get('/products', { params: { per_page: 200 } })
+      .then(res => setProducts(res.data.data || []));
+  };
 
   const fetchOrder = () => {
     api.get(`/orders/${id}`).then(res => {
@@ -262,10 +270,15 @@ export default function OrderDetail() {
           </thead>
           <tbody>
             {order.items?.map(item => {
-              const acc = item.accessory_price;
-              const accUnit = acc ? Number(acc.price) : 0;
+              // Prefer the multi-accessory pivot list; fall back to the legacy
+              // single accessory_price for orders created before multi support.
+              const accList = item.accessory_prices && item.accessory_prices.length
+                ? item.accessory_prices
+                : (item.accessory_price ? [item.accessory_price] : []);
+              const accUnit = accList.reduce((s, a) => s + Number(a.price || 0), 0);
               const qty = item.quantity ?? 1;
               const subtotal = (Number(item.price) + accUnit) * qty;
+              const canEditAcc = order.status !== 6 && order.status !== 7; // not shipped / cancelled
               return (
                 <tr key={item.id} className="border-b border-neutral-100">
                   <td className="py-2 text-neutral-800">
@@ -273,13 +286,15 @@ export default function OrderDetail() {
                   </td>
                   <td className="py-2 text-neutral-600">{item.order_type === 0 ? 'Greeting Card' : 'Pass Sleeve'}</td>
                   <td className="py-2 text-neutral-600 text-xs">
-                    {acc ? (
-                      <span>
-                        <span className="text-neutral-800">{acc.accessory?.name || `#${acc.accessory_id}`}</span>
-                        {acc.style && <span className="text-neutral-500"> / {acc.style}</span>}
-                        <span className="text-neutral-400"> (+${acc.price})</span>
-                      </span>
-                    ) : '-'}
+                    <ItemAccessoriesCell
+                      item={item}
+                      accList={accList}
+                      canEdit={canEditAcc}
+                      ownerTierId={order.user?.tier_id ?? null}
+                      products={products}
+                      onOpen={ensureProducts}
+                      onSaved={fetchOrder}
+                    />
                   </td>
                   <td className="py-2">
                     {isPreviewable(item.mockup_front)
@@ -326,6 +341,124 @@ function Row({ label, value }) {
     <div className="flex justify-between">
       <span className="text-neutral-500">{label}</span>
       <span className="text-neutral-800 font-medium">{value}</span>
+    </div>
+  );
+}
+
+function ItemAccessoriesCell({ item, accList, canEdit, ownerTierId, products, onOpen, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [rows, setRows] = useState([]); // [{ accessory_id, accessory_item_id }]
+  const [saving, setSaving] = useState(false);
+
+  const product = (products || []).find(p => p.id === item.product_variant?.product_id);
+  const accessories = product?.accessories || [];
+
+  const startEdit = () => {
+    onOpen?.();
+    setRows(accList.map(a => ({
+      accessory_id: String(a.accessory_id ?? a.accessory?.id ?? ''),
+      accessory_item_id: String(a.id),
+    })));
+    setEditing(true);
+  };
+
+  const addRow = () => setRows(r => [...r, { accessory_id: '', accessory_item_id: '' }]);
+  const updateRow = (ri, patch) => setRows(r => r.map((row, i) => i === ri ? { ...row, ...patch } : row));
+  const removeRow = (ri) => setRows(r => r.filter((_, i) => i !== ri));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const accessory_ids = rows
+        .map(r => Number(r.accessory_item_id))
+        .filter(Boolean);
+      const res = await api.put(`/order-items/${item.id}/accessories`, { accessory_ids });
+      await notify(res.data.message, { title: 'Accessories', kind: 'success' });
+      setEditing(false);
+      onSaved?.();
+    } catch (err) {
+      const errs = err.response?.data?.errors;
+      const msg = err.response?.data?.message || (errs ? Object.values(errs).flat().join('\n') : 'Error');
+      notify(msg, { title: 'Update failed', kind: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <div>
+        {accList.length === 0 ? (
+          <span className="text-neutral-400">-</span>
+        ) : (
+          <div className="space-y-0.5">
+            {accList.map(acc => (
+              <div key={acc.id}>
+                <span className="text-neutral-800">{acc.accessory?.name || `#${acc.accessory_id}`}</span>
+                {acc.style && <span className="text-neutral-500"> / {acc.style}</span>}
+                <span className="text-neutral-400"> (+${acc.price})</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {canEdit && (
+          <button
+            onClick={startEdit}
+            className="mt-1 text-[11px] text-orange-600 hover:text-orange-700"
+          >Edit accessories</button>
+        )}
+      </div>
+    );
+  }
+
+  // Catalog still loading (we called ensureProducts in startEdit but it's async).
+  if (!products) {
+    return <div className="text-[11px] text-neutral-400">Loading catalog…</div>;
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {rows.length === 0 && (
+        <p className="text-[11px] text-neutral-400">No accessories. Click + to add.</p>
+      )}
+      {rows.map((row, ri) => {
+        const selectedAcc = accessories.find(a => String(a.id) === String(row.accessory_id));
+        const stylePrices = (selectedAcc?.prices || []).filter(p => ownerTierId == null || p.tier_id === ownerTierId);
+        return (
+          <div key={ri} className="flex gap-1 items-center">
+            <select
+              value={row.accessory_id}
+              onChange={e => updateRow(ri, { accessory_id: e.target.value, accessory_item_id: '' })}
+              className="px-1.5 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-[11px] flex-1 min-w-0"
+            >
+              <option value="">— Accessory —</option>
+              {accessories.map(a => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+            <select
+              value={row.accessory_item_id}
+              onChange={e => updateRow(ri, { accessory_item_id: e.target.value })}
+              disabled={!selectedAcc || stylePrices.length === 0}
+              className="px-1.5 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-[11px] flex-1 min-w-0 disabled:opacity-50"
+            >
+              <option value="">{selectedAcc && stylePrices.length === 0 ? 'no tier price' : 'Style…'}</option>
+              {stylePrices.map(p => (
+                <option key={p.id} value={p.id}>{p.style || '(no style)'} — ${p.price}</option>
+              ))}
+            </select>
+            <button onClick={() => removeRow(ri)} className="text-red-400 hover:text-red-600 text-xs px-1">×</button>
+          </div>
+        );
+      })}
+      <div className="flex gap-2 pt-1">
+        <button onClick={addRow} className="text-[11px] text-orange-600 hover:text-orange-700">+ Add</button>
+        <span className="text-neutral-300">|</span>
+        <button onClick={save} disabled={saving} className="text-[11px] bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white px-2 py-0.5 rounded">
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button onClick={() => setEditing(false)} disabled={saving} className="text-[11px] text-neutral-500 hover:text-neutral-700">Cancel</button>
+      </div>
     </div>
   );
 }
