@@ -568,8 +568,12 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
 
   ctx.fillStyle = '#000000';
   ctx.textBaseline = 'top';
-  ctx.textAlign = 'left';
-  ctx.fillText(codeText, panelX + PANEL_PAD, panelY + PANEL_PAD);
+  // Center the system_id text horizontally over the barcode below so short
+  // text doesn't visually hug the left edge while the barcode spans the full
+  // BARCODE_W. The reference point is the centre of the barcode area.
+  ctx.textAlign = 'center';
+  const barcodeCenterX = panelX + PANEL_PAD + BARCODE_W / 2;
+  ctx.fillText(codeText, barcodeCenterX, panelY + PANEL_PAD);
 
   ctx.drawImage(
     barcodeCanvas,

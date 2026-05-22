@@ -8,7 +8,7 @@ const MODE_PER_PACKAGE = 'per_package';
 const emptyForm = {
   target: 'variant',           // 'variant' | 'accessory'
   product_variant_id: '',
-  accessory_price_id: '',
+  accessory_id: '',            // unified per-accessory stock (no longer tier-scoped)
   price_mode: MODE_PER_ITEM,
   quantity: '',
   unit_price: '',
@@ -28,6 +28,11 @@ export default function Inventory() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [submitting, setSubmitting] = useState(false);
+  const [resyncing, setResyncing] = useState(false);
+  const [csvFile, setCsvFile] = useState(null);
+  const [csvUploading, setCsvUploading] = useState(false);
+  const [csvResult, setCsvResult] = useState(null);
+  const [showCsv, setShowCsv] = useState(false);
 
   // Used for the variant / accessory pickers in the import form.
   const [products, setProducts] = useState([]);
@@ -78,19 +83,19 @@ export default function Inventory() {
     return out;
   }, [products]);
 
+  // Stock is now per-accessory (unified across tiers). One row per accessory
+  // — codes from any tier-price shown as reference. id = accessories.id.
   const accessoryOptions = useMemo(() => {
     const out = [];
     for (const p of products) {
       for (const a of p.accessories || []) {
-        for (const price of a.prices || []) {
-          const tier = price.tier?.name || `tier ${price.tier_id}`;
-          const style = price.style ? ` (${price.style})` : '';
-          out.push({
-            id: price.id,
-            display: `${p.name} — ${a.name} • ${tier}${style}${price.accessory_code ? ` [${price.accessory_code}]` : ''}`,
-            stock: price.stock ?? 0,
-          });
-        }
+        const codes = [...new Set((a.prices || []).map(pr => pr.accessory_code).filter(Boolean))];
+        const codeRef = codes.length > 0 ? ` [${codes.join('/')}]` : '';
+        out.push({
+          id: a.id,
+          display: `${p.name} — ${a.name}${codeRef}`,
+          stock: a.stock ?? 0,
+        });
       }
     }
     return out;
@@ -122,8 +127,8 @@ export default function Inventory() {
         if (!form.product_variant_id) throw new Error('Please choose a product variant');
         payload.product_variant_id = parseInt(form.product_variant_id, 10);
       } else {
-        if (!form.accessory_price_id) throw new Error('Please choose an accessory');
-        payload.accessory_price_id = parseInt(form.accessory_price_id, 10);
+        if (!form.accessory_id) throw new Error('Please choose an accessory');
+        payload.accessory_id = parseInt(form.accessory_id, 10);
       }
       if (form.price_mode === MODE_PER_PACKAGE) {
         payload.package_size = parseInt(form.package_size, 10);
@@ -146,6 +151,73 @@ export default function Inventory() {
     }
   };
 
+  const handleDownloadTemplate = async () => {
+    try {
+      const res = await api.get('/inventory/imports/template', { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv;charset=utf-8;' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `inventory_import_template_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      notify(err.response?.data?.message || 'Download failed', { title: 'Template', kind: 'error' });
+    }
+  };
+
+  const handleCsvUpload = async (e) => {
+    e.preventDefault();
+    if (!csvFile) return;
+    setCsvUploading(true);
+    setCsvResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', csvFile);
+      const res = await api.post('/inventory/imports/bulk', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setCsvResult(res.data);
+      fetchImports(1);
+      setImportsPage(1);
+      fetchProducts();
+    } catch (err) {
+      const d = err.response?.data;
+      setCsvResult({
+        message: d?.message || 'Upload failed',
+        error_count: d?.errors?.length || 0,
+        errors: d?.errors || [],
+        created: 0,
+      });
+    } finally {
+      setCsvUploading(false);
+    }
+  };
+
+  const handleResync = async () => {
+    const ok = await askConfirm(
+      'Tính lại stock từ lịch sử?\n\n' +
+      'Mỗi variant + accessory: stock = Σ imports − Σ shipped (order item qty).\n' +
+      'Mọi đơn đã shipped sẽ được đánh dấu "đã trừ" để tương lai không trừ lặp.\n\n' +
+      'An toàn để chạy nhiều lần.',
+      { title: 'Resync stock', okText: 'Tính lại' }
+    );
+    if (!ok) return;
+    setResyncing(true);
+    try {
+      const res = await api.post('/inventory/resync');
+      await notify(
+        `Đã resync: ${res.data.variants_updated} variant, ${res.data.accessories_updated} accessory, ${res.data.orders_marked} đơn đánh dấu.`,
+        { title: 'Resync stock', kind: 'success' }
+      );
+      fetchStock();
+      fetchProducts();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Resync failed', { title: 'Resync stock', kind: 'error' });
+    } finally {
+      setResyncing(false);
+    }
+  };
+
   const handleDelete = async (imp) => {
     const ok = await askConfirm(`Delete import #${imp.id}? Stock will be reversed (-${imp.quantity}).`, { title: 'Delete import' });
     if (!ok) return;
@@ -164,9 +236,15 @@ export default function Inventory() {
       const label = [v.color, v.size, v.paper_type].filter(Boolean).join(' / ');
       return `${v.product?.name ?? ''} — ${label || v.sku || `Variant #${v.id}`}`;
     }
+    // New unified accessory target
+    if (imp.accessory) {
+      const a = imp.accessory;
+      return `${a.product?.name ?? ''} — ${a.name}`;
+    }
+    // Legacy row pre-unification — still shows tier for transparency
     if (imp.accessory_price) {
       const ap = imp.accessory_price;
-      return `${ap.accessory?.product?.name ?? ''} — ${ap.accessory?.name ?? ''} • ${ap.tier?.name ?? ''}${ap.style ? ` (${ap.style})` : ''}`;
+      return `${ap.accessory?.product?.name ?? ''} — ${ap.accessory?.name ?? ''} • ${ap.tier?.name ?? ''}${ap.style ? ` (${ap.style})` : ''} (legacy)`;
     }
     return '—';
   };
@@ -175,12 +253,35 @@ export default function Inventory() {
     <div className="p-6">
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl font-bold text-neutral-800">Inventory</h2>
-        <button
-          onClick={() => { showForm ? resetForm() : setShowForm(true); }}
-          className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg"
-        >
-          {showForm ? 'Cancel' : 'New Import'}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleDownloadTemplate}
+            title="Tải file CSV mẫu (có sẵn list variants + accessories)"
+            className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg"
+          >
+            ⬇ Template
+          </button>
+          <button
+            onClick={() => { setShowCsv(v => !v); setCsvResult(null); setCsvFile(null); }}
+            className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-sm rounded-lg border border-emerald-200"
+          >
+            {showCsv ? 'Cancel CSV' : '⤴ Import CSV'}
+          </button>
+          <button
+            onClick={handleResync}
+            disabled={resyncing}
+            title="Tính lại stock từ Σ imports - Σ shipped và đánh dấu đơn cũ"
+            className="px-3 py-2 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 text-blue-700 text-sm rounded-lg border border-blue-200"
+          >
+            {resyncing ? 'Resyncing…' : '↻ Resync stock'}
+          </button>
+          <button
+            onClick={() => { showForm ? resetForm() : setShowForm(true); }}
+            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg"
+          >
+            {showForm ? 'Cancel' : 'New Import'}
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -198,6 +299,50 @@ export default function Inventory() {
         ))}
       </div>
 
+      {/* CSV bulk import panel */}
+      {showCsv && (
+        <form onSubmit={handleCsvUpload} className="mb-4 bg-white rounded-xl border border-emerald-200 p-4 shadow-sm space-y-3">
+          <div className="text-sm text-neutral-700">
+            <div className="font-semibold text-emerald-700 mb-1">Import CSV — nhập kho hàng loạt</div>
+            <ol className="text-xs text-neutral-600 space-y-0.5 list-decimal list-inside">
+              <li>Bấm <b>⬇ Template</b> phía trên để tải file CSV mẫu (đã có sẵn list mọi variant + accessory).</li>
+              <li>Mở file trong Excel/Sheets, điền các cột: <code className="bg-neutral-100 px-1 rounded">price_mode</code> (per_item / per_package), <code className="bg-neutral-100 px-1 rounded">quantity</code> hoặc <code className="bg-neutral-100 px-1 rounded">package_size + package_count</code>, <code className="bg-neutral-100 px-1 rounded">unit_price</code>, <code className="bg-neutral-100 px-1 rounded">notes</code>.</li>
+              <li>Dòng nào <b>để trống <code>price_mode</code></b> sẽ bị bỏ qua — không bắt buộc điền hết file.</li>
+              <li>Save as CSV (UTF-8) rồi upload bên dưới.</li>
+            </ol>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              onChange={e => setCsvFile(e.target.files[0])}
+              className="text-sm text-neutral-700 file:mr-3 file:px-3 file:py-1.5 file:bg-neutral-100 file:border-0 file:rounded file:text-neutral-700 file:cursor-pointer"
+            />
+            <button
+              type="submit"
+              disabled={!csvFile || csvUploading}
+              className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white text-sm rounded-lg"
+            >
+              {csvUploading ? 'Uploading…' : 'Upload + Import'}
+            </button>
+          </div>
+
+          {csvResult && (
+            <div className={`text-xs p-3 rounded ${csvResult.error_count > 0 ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200'}`}>
+              <div className="font-semibold mb-1">{csvResult.message}</div>
+              <div>Tạo: {csvResult.created || 0} · Bỏ qua: {csvResult.skipped || 0} · Lỗi: {csvResult.error_count || 0}</div>
+              {csvResult.errors?.length > 0 && (
+                <ul className="mt-2 space-y-0.5 max-h-40 overflow-y-auto">
+                  {csvResult.errors.slice(0, 50).map((e, i) => <li key={i} className="text-red-600">• {e}</li>)}
+                  {csvResult.errors.length > 50 && <li className="text-neutral-500">… +{csvResult.errors.length - 50} more</li>}
+                </ul>
+              )}
+            </div>
+          )}
+        </form>
+      )}
+
       {/* New import form */}
       {showForm && (
         <form onSubmit={handleSubmit} className="mb-4 bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
@@ -206,7 +351,7 @@ export default function Inventory() {
               <label className="text-xs text-neutral-500">Target</label>
               <select
                 value={form.target}
-                onChange={e => setForm({ ...form, target: e.target.value, product_variant_id: '', accessory_price_id: '' })}
+                onChange={e => setForm({ ...form, target: e.target.value, product_variant_id: '', accessory_id: '' })}
                 className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
               >
                 <option value="variant">Product variant</option>
@@ -231,10 +376,10 @@ export default function Inventory() {
               </div>
             ) : (
               <div className="md:col-span-2">
-                <label className="text-xs text-neutral-500">Accessory (tier-specific row)</label>
+                <label className="text-xs text-neutral-500">Accessory (stock dùng chung mọi tier)</label>
                 <select
-                  value={form.accessory_price_id}
-                  onChange={e => setForm({ ...form, accessory_price_id: e.target.value })}
+                  value={form.accessory_id}
+                  onChange={e => setForm({ ...form, accessory_id: e.target.value })}
                   required
                   className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
                 >
@@ -284,31 +429,36 @@ export default function Inventory() {
             ) : (
               <>
                 <div>
-                  <label className="text-xs text-neutral-500">Package size (units/pkg)</label>
+                  <label className="text-xs text-neutral-500">Số sản phẩm / package</label>
                   <input
                     type="number" min="1" required
                     value={form.package_size}
                     onChange={e => setForm({ ...form, package_size: e.target.value })}
+                    placeholder="vd 50"
                     className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
                   />
+                  <p className="text-[10px] text-neutral-400 mt-0.5">1 package có bao nhiêu cái</p>
                 </div>
                 <div>
-                  <label className="text-xs text-neutral-500">Package count</label>
+                  <label className="text-xs text-neutral-500">Số package</label>
                   <input
                     type="number" min="1" required
                     value={form.package_count}
                     onChange={e => setForm({ ...form, package_count: e.target.value })}
+                    placeholder="vd 10"
                     className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
                   />
+                  <p className="text-[10px] text-neutral-400 mt-0.5">Nhập bao nhiêu package</p>
                 </div>
                 <div>
-                  <label className="text-xs text-neutral-500">Price per package</label>
+                  <label className="text-xs text-neutral-500">Giá / package</label>
                   <input
                     type="number" step="0.01" min="0" required
                     value={form.unit_price}
                     onChange={e => setForm({ ...form, unit_price: e.target.value })}
                     className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
                   />
+                  <p className="text-[10px] text-neutral-400 mt-0.5">Giá cho 1 package</p>
                 </div>
               </>
             )}
@@ -327,8 +477,18 @@ export default function Inventory() {
 
           <div className="flex justify-between items-center pt-2 border-t border-neutral-100">
             <div className="text-xs text-neutral-500">
-              Will add <span className="font-semibold text-neutral-800">{formPreview.qty}</span> unit(s)
-              {' '}for a total cost of <span className="font-semibold text-neutral-800">${formPreview.total.toFixed(2)}</span>
+              {form.price_mode === MODE_PER_PACKAGE && form.package_size && form.package_count ? (
+                <>
+                  <span className="font-mono">{form.package_count} package × {form.package_size} sp = </span>
+                  <span className="font-semibold text-neutral-800">{formPreview.qty}</span> sp,
+                  {' '}tổng tiền <span className="font-semibold text-neutral-800">${formPreview.total.toFixed(2)}</span>
+                </>
+              ) : (
+                <>
+                  Sẽ cộng <span className="font-semibold text-neutral-800">{formPreview.qty}</span> sp vào kho,
+                  {' '}tổng tiền <span className="font-semibold text-neutral-800">${formPreview.total.toFixed(2)}</span>
+                </>
+              )}
             </div>
             <button
               type="submit"
