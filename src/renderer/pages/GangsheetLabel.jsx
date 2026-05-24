@@ -4,6 +4,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import api from '../services/api';
 import { getApiUrl } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { buildMergedLabelPdf } from '../services/mergedLabelBuilder';
 
 // Admin/support-only list of gangsheet labels. Each row links out to the
 // public scan page (/gs/{code}) hosted by hubbullstart so warehouse staff
@@ -16,6 +17,12 @@ export default function GangsheetLabel() {
   const [filters, setFilters] = useState({ status: '', line_id: '', date_from: '', date_to: '', page: 1, per_page: 20 });
   const [openId, setOpenId] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [detailError, setDetailError] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [merging, setMerging] = useState(false);
+  const [mergeProgress, setMergeProgress] = useState(null);   // {done, total, system_id}
+  const [mergeResult, setMergeResult] = useState(null);       // last merged label info
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const fetch = async () => {
     setLoading(true);
@@ -34,8 +41,16 @@ export default function GangsheetLabel() {
   const openDetail = async (label) => {
     setOpenId(label.id);
     setDetail(null);
-    const res = await api.get(`/gangsheet-labels/${label.id}`);
-    setDetail(res.data);
+    setDetailError(null);
+    try {
+      const res = await api.get(`/gangsheet-labels/${label.id}`);
+      setDetail(res.data);
+    } catch (err) {
+      const status = err.response?.status ? ` [HTTP ${err.response.status}]` : '';
+      const msg = err.response?.data?.message || err.message || 'Unknown error';
+      setDetailError(`${msg}${status}`);
+      console.error('[gangsheet-label] detail load failed', err);
+    }
   };
 
   const completeAll = async (id) => {
@@ -44,6 +59,123 @@ export default function GangsheetLabel() {
     alert(res.data.message);
     fetch();
     if (openId === id) openDetail({ id });
+  };
+
+  const toggleSelect = (id) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleSelectAll = () => {
+    if (selectedIds.size === data.data.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(data.data.map(l => l.id)));
+  };
+
+  /**
+   * Bulk delete selected labels. Orders/metas keep production=true so
+   * we don't re-gang the same prints — same semantics as single delete.
+   */
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} gangsheet label(s)?\n(Orders/metas remain marked as production.)`)) return;
+    setBulkDeleting(true);
+    try {
+      const res = await api.post('/gangsheet-labels/bulk-delete', { label_ids: [...selectedIds] });
+      alert(res.data.message || `Deleted ${selectedIds.size}`);
+      setSelectedIds(new Set());
+      fetch();
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Bulk delete failed');
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  /**
+   * Merge selected labels: backend creates a master GSL row, then renderer
+   * fetches each member order's convert_label, builds the merged PDF
+   * (page-per-label + final QR), uploads to B2, and saves file_url back.
+   */
+  const handleMerge = async () => {
+    if (selectedIds.size < 2) {
+      alert('Chọn tối thiểu 2 gangsheet label để merge.');
+      return;
+    }
+    if (!confirm(`Merge ${selectedIds.size} label(s) thành 1 PDF master?`)) return;
+    if (!window.electronAPI?.s3Upload) {
+      alert('Cần mở từ desktop app để upload PDF lên B2.');
+      return;
+    }
+
+    setMerging(true);
+    setMergeProgress(null);
+    setMergeResult(null);
+
+    try {
+      // 1) Backend create merged master + return scan_code + order_ids
+      const mergeRes = await api.post('/gangsheet-labels/merge', {
+        label_ids: [...selectedIds],
+      });
+      const merged = mergeRes.data.merged_label;
+      const scanCode = mergeRes.data.scan_code;
+      const orderIds = mergeRes.data.order_ids;
+      const scanUrl = `${scanBase}/gs/${scanCode}`;
+
+      // 2) Fetch order details (convert_label URLs) preserving order_ids sequence
+      const ordersRes = await api.post('/gangsheets/lookup-orders', {
+        system_ids: [], // we'll filter by id below
+      }).catch(() => null);
+      // Lookup endpoint expects system_ids; easier to use the show endpoint
+      // for the merged label which already returns orders with convert_label.
+      const showRes = await api.get(`/gangsheet-labels/${merged.id}`);
+      const orders = (showRes.data.orders || []).filter(o => orderIds.includes(o.id));
+      if (orders.length === 0) throw new Error('Backend returned 0 orders for merged label');
+
+      // 3) Build PDF
+      const built = await buildMergedLabelPdf({
+        orders,
+        scanUrl,
+        name: merged.name,
+        onProgress: (p) => setMergeProgress(p),
+      });
+
+      // 4) Upload to B2 (reuse gangsheet credentials endpoint)
+      const credsRes = await api.get('/gangsheets/storage-credentials');
+      const creds = credsRes.data;
+      const key = `${creds.folder}/labels/${built.filename}`;
+      const bytes = new Uint8Array(await built.blob.arrayBuffer());
+      await window.electronAPI.s3Upload({
+        credentials: creds,
+        bucket: creds.bucket,
+        key,
+        body: bytes,
+        contentType: 'application/pdf',
+      });
+      const publicUrl = `${creds.public_url_base}/${key}`;
+
+      // 5) Save file_url back to merged label
+      await api.put(`/gangsheet-labels/${merged.id}/file-url`, { file_url: publicUrl });
+
+      setMergeResult({
+        id: merged.id,
+        scanCode,
+        scanUrl,
+        fileUrl: publicUrl,
+        orderCount: orders.length,
+        pageCount: built.pageCount,
+        skipped: built.skipped,
+      });
+      setSelectedIds(new Set());
+      fetch();
+    } catch (err) {
+      const detail = err?.response?.data?.message || err?.message || 'Merge failed';
+      const status = err?.response?.status ? ` [HTTP ${err.response.status}]` : '';
+      console.error('[merge] error', err);
+      alert(`Merge failed${status}:\n${detail}`);
+    } finally {
+      setMerging(false);
+      setMergeProgress(null);
+    }
   };
 
   if (!hasRole('admin') && !hasRole('support')) {
@@ -66,8 +198,62 @@ export default function GangsheetLabel() {
             Auto-created when a <Link to="/gangsheet" className="text-orange-600 hover:underline">_qr gangsheet</Link> is generated. Scan the GSL barcode at the QC station to bulk-complete all orders in the group.
           </p>
         </div>
-        <button onClick={fetch} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-sm rounded-lg">Refresh</button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleMerge}
+            disabled={merging || selectedIds.size < 2}
+            title="Tạo 1 PDF master gồm convert_label của mọi đơn + QR ở trang cuối"
+            className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white text-sm rounded-lg"
+          >
+            {merging ? 'Merging…' : `⤵ Merge selected (${selectedIds.size})`}
+          </button>
+          <button
+            onClick={handleBulkDelete}
+            disabled={bulkDeleting || selectedIds.size === 0}
+            title="Xoá nhiều gangsheet label đã chọn"
+            className="px-3 py-1.5 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white text-sm rounded-lg"
+          >
+            {bulkDeleting ? 'Deleting…' : `🗑 Delete selected (${selectedIds.size})`}
+          </button>
+          <button onClick={fetch} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-sm rounded-lg">Refresh</button>
+        </div>
       </div>
+
+      {/* Merge progress + result */}
+      {mergeProgress && (
+        <div className="bg-white rounded-xl border border-orange-200 p-3 shadow-sm text-sm">
+          <div className="font-medium text-orange-700 mb-1">Building merged PDF…</div>
+          <div className="text-xs text-neutral-600">
+            Page {mergeProgress.done}/{mergeProgress.total}
+            {mergeProgress.system_id && <> · <span className="font-mono text-orange-600">{mergeProgress.system_id}</span></>}
+          </div>
+          <div className="mt-2 h-1.5 bg-neutral-100 rounded overflow-hidden">
+            <div className="h-full bg-orange-500 transition-all" style={{ width: mergeProgress.total ? `${(mergeProgress.done / mergeProgress.total) * 100}%` : '0%' }} />
+          </div>
+        </div>
+      )}
+      {mergeResult && (
+        <div className="bg-white rounded-xl border border-green-200 p-4 shadow-sm text-sm">
+          <div className="font-semibold text-green-700 mb-1">
+            ✓ Merged label GSL{mergeResult.id} created — {mergeResult.orderCount} order(s), {mergeResult.pageCount} page(s)
+          </div>
+          <div className="text-xs text-neutral-600 space-y-1">
+            <div>
+              <span className="text-neutral-500">PDF:</span>{' '}
+              <a href={mergeResult.fileUrl} target="_blank" rel="noreferrer" className="text-orange-600 hover:underline break-all">{mergeResult.fileUrl}</a>
+            </div>
+            <div>
+              <span className="text-neutral-500">Scan URL:</span>{' '}
+              <a href={mergeResult.scanUrl} target="_blank" rel="noreferrer" className="text-orange-600 hover:underline break-all">{mergeResult.scanUrl}</a>
+            </div>
+            {mergeResult.skipped.length > 0 && (
+              <div className="text-yellow-700">
+                Skipped {mergeResult.skipped.length} order(s) (no convert_label): {mergeResult.skipped.slice(0, 5).join(', ')}{mergeResult.skipped.length > 5 ? '…' : ''}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-end bg-white p-3 rounded-xl border border-neutral-200">
@@ -95,6 +281,15 @@ export default function GangsheetLabel() {
         <table className="w-full text-sm">
           <thead className="text-xs uppercase tracking-wider text-neutral-500 bg-[#faf8f6]">
             <tr>
+              <th className="text-center px-3 py-2 w-8">
+                <input
+                  type="checkbox"
+                  onChange={toggleSelectAll}
+                  checked={data.data.length > 0 && selectedIds.size === data.data.length}
+                  className="accent-orange-500"
+                  title="Select all on this page"
+                />
+              </th>
               <th className="text-left px-3 py-2">Scan code</th>
               <th className="text-left px-3 py-2">Name</th>
               <th className="text-left px-3 py-2">Line</th>
@@ -107,12 +302,26 @@ export default function GangsheetLabel() {
           </thead>
           <tbody className="divide-y divide-neutral-100">
             {loading ? (
-              <tr><td colSpan={8} className="px-3 py-6 text-center text-neutral-400">Loading…</td></tr>
+              <tr><td colSpan={9} className="px-3 py-6 text-center text-neutral-400">Loading…</td></tr>
             ) : data.data.length === 0 ? (
-              <tr><td colSpan={8} className="px-3 py-6 text-center text-neutral-400">No gangsheet labels yet.</td></tr>
-            ) : data.data.map(l => (
-              <tr key={l.id} className="hover:bg-orange-50/30 cursor-pointer" onClick={() => openDetail(l)}>
-                <td className="px-3 py-2 font-mono text-orange-600 font-semibold">GSL{l.id}</td>
+              <tr><td colSpan={9} className="px-3 py-6 text-center text-neutral-400">No gangsheet labels yet.</td></tr>
+            ) : data.data.map(l => {
+              const isSel = selectedIds.has(l.id);
+              const isMerged = Array.isArray(l.merged_from_label_ids) && l.merged_from_label_ids.length > 0;
+              return (
+              <tr key={l.id} className={`hover:bg-orange-50/30 cursor-pointer ${isSel ? 'bg-orange-50/60' : ''}`} onClick={() => openDetail(l)}>
+                <td className="px-3 py-2 text-center" onClick={e => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={isSel}
+                    onChange={() => toggleSelect(l.id)}
+                    className="accent-orange-500"
+                  />
+                </td>
+                <td className="px-3 py-2 font-mono text-orange-600 font-semibold">
+                  GSL{l.id}
+                  {isMerged && <span className="ml-1 text-[9px] uppercase tracking-wide px-1 py-0.5 bg-purple-100 text-purple-700 rounded">merged</span>}
+                </td>
                 <td className="px-3 py-2 text-neutral-700 text-xs">{l.name}</td>
                 <td className="px-3 py-2 text-neutral-600 text-xs">{l.line_id || '-'}</td>
                 <td className="px-3 py-2 text-right">{l.orders_count}</td>
@@ -122,12 +331,18 @@ export default function GangsheetLabel() {
                 </td>
                 <td className="px-3 py-2 text-neutral-500 text-xs">{new Date(l.created_at).toLocaleString()}</td>
                 <td className="px-3 py-2 text-right" onClick={e => e.stopPropagation()}>
-                  {l.status !== 'completed' && (
-                    <button onClick={() => completeAll(l.id)} className="px-2 py-1 bg-green-500 hover:bg-green-600 text-white text-xs rounded">Complete all</button>
-                  )}
+                  <div className="flex gap-2 justify-end">
+                    {l.file_url && (
+                      <a href={l.file_url} target="_blank" rel="noreferrer" className="text-xs text-orange-600 hover:text-orange-700">PDF</a>
+                    )}
+                    {l.status !== 'completed' && (
+                      <button onClick={() => completeAll(l.id)} className="px-2 py-1 bg-green-500 hover:bg-green-600 text-white text-xs rounded">Complete all</button>
+                    )}
+                  </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
 
@@ -152,7 +367,13 @@ export default function GangsheetLabel() {
               <button onClick={() => setOpenId(null)} className="text-neutral-400 hover:text-neutral-700">×</button>
             </div>
             <div className="p-5">
-              {!detail ? (
+              {detailError ? (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
+                  <div className="font-semibold mb-1">Không load được detail</div>
+                  <div className="text-xs">{detailError}</div>
+                  <div className="text-xs text-neutral-500 mt-2">Mở DevTools (Ctrl+Shift+I) tab Network để xem response thật.</div>
+                </div>
+              ) : !detail ? (
                 <p className="text-neutral-400 text-sm">Loading…</p>
               ) : (
                 <>
