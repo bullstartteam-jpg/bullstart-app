@@ -97,11 +97,12 @@ export default function GangsheetLabel() {
    * (page-per-label + final QR), uploads to B2, and saves file_url back.
    */
   const handleMerge = async () => {
-    if (selectedIds.size < 2) {
-      alert('Chọn tối thiểu 2 gangsheet label để merge.');
+    if (selectedIds.size === 0) {
+      alert('Chọn tối thiểu 1 gangsheet label để merge.');
       return;
     }
-    if (!confirm(`Merge ${selectedIds.size} label(s) thành 1 PDF master?`)) return;
+    const action = selectedIds.size === 1 ? 'Build PDF cho' : 'Merge';
+    if (!confirm(`${action} ${selectedIds.size} label(s) → 1 PDF master?`)) return;
     if (!window.electronAPI?.s3Upload) {
       alert('Cần mở từ desktop app để upload PDF lên B2.');
       return;
@@ -201,8 +202,8 @@ export default function GangsheetLabel() {
         <div className="flex gap-2">
           <button
             onClick={handleMerge}
-            disabled={merging || selectedIds.size < 2}
-            title="Tạo 1 PDF master gồm convert_label của mọi đơn + QR ở trang cuối"
+            disabled={merging || selectedIds.size === 0}
+            title="Tạo 1 PDF master gồm convert_label của mọi đơn trong các label đã chọn + QR ở trang cuối"
             className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white text-sm rounded-lg"
           >
             {merging ? 'Merging…' : `⤵ Merge selected (${selectedIds.size})`}
