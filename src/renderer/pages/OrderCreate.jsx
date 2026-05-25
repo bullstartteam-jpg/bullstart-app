@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { driveThumb, isPreviewable } from '../utils/drive';
 import { UrlPreview, PreviewModal } from '../components/Preview';
 import { notify, askConfirm } from '../components/Dialog';
+import UploadButton from '../components/UploadButton';
 
 const META_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
 
@@ -282,11 +283,19 @@ export default function OrderCreate() {
           <div className="bg-white rounded-xl border border-neutral-200 p-4 space-y-3 shadow-sm">
             <h3 className="text-sm font-semibold text-neutral-600">Shipping</h3>
             <div>
-              <label className="text-xs text-neutral-500">Shipping Label (URL — Drive supported)</label>
+              <div className="flex items-center justify-between">
+                <label className="text-xs text-neutral-500">Shipping Label (URL — Drive supported)</label>
+                <UploadButton
+                  folder="shipping-labels"
+                  accept="image/*,application/pdf"
+                  onUrl={(url) => setForm(f => ({ ...f, shipping_label: url }))}
+                  title="Upload shipping label to B2"
+                />
+              </div>
               <input
                 value={form.shipping_label}
                 onChange={e => setForm(f => ({ ...f, shipping_label: e.target.value }))}
-                placeholder="Paste label URL..."
+                placeholder="Paste label URL or click Upload..."
                 className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
               />
               <UrlPreview url={form.shipping_label} onOpen={setPreviewUrl} label="Preview shipping label" />
@@ -325,13 +334,29 @@ export default function OrderCreate() {
                       <input type="number" min="1" value={item.quantity} onChange={e => updateItem(i, { quantity: e.target.value })} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
                     </div>
                     <div>
-                      <label className="text-xs text-neutral-500">Mockup Front</label>
-                      <input value={item.mockup_front} onChange={e => updateItem(i, { mockup_front: e.target.value })} placeholder="URL (Drive supported)" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs text-neutral-500">Mockup Front</label>
+                        <UploadButton
+                          folder="mockups"
+                          accept="image/*"
+                          onUrl={(url) => updateItem(i, { mockup_front: url })}
+                          title="Upload mockup front to B2"
+                        />
+                      </div>
+                      <input value={item.mockup_front} onChange={e => updateItem(i, { mockup_front: e.target.value })} placeholder="URL or click Upload" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
                       <UrlPreview url={item.mockup_front} onOpen={setPreviewUrl} label="Preview mockup front" />
                     </div>
                     <div>
-                      <label className="text-xs text-neutral-500">Mockup Back</label>
-                      <input value={item.mockup_back} onChange={e => updateItem(i, { mockup_back: e.target.value })} placeholder="URL (Drive supported)" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs text-neutral-500">Mockup Back</label>
+                        <UploadButton
+                          folder="mockups"
+                          accept="image/*"
+                          onUrl={(url) => updateItem(i, { mockup_back: url })}
+                          title="Upload mockup back to B2"
+                        />
+                      </div>
+                      <input value={item.mockup_back} onChange={e => updateItem(i, { mockup_back: e.target.value })} placeholder="URL or click Upload" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
                       <UrlPreview url={item.mockup_back} onOpen={setPreviewUrl} label="Preview mockup back" />
                     </div>
                     <div>
@@ -416,7 +441,7 @@ export default function OrderCreate() {
                     ) : (
                       <div className="space-y-2">
                         {item.metas.map((m, mi) => (
-                          <div key={mi} className="grid grid-cols-[1fr_2fr_auto_auto] gap-2 items-center">
+                          <div key={mi} className="grid grid-cols-[1fr_2fr_auto_auto_auto] gap-2 items-center">
                             <select
                               value={m.key}
                               onChange={e => updateMeta(i, mi, 'key', e.target.value)}
@@ -430,8 +455,14 @@ export default function OrderCreate() {
                               type="text"
                               value={m.value}
                               onChange={e => updateMeta(i, mi, 'value', e.target.value)}
-                              placeholder="value (URL — Drive supported)"
+                              placeholder="value (URL or click Upload)"
                               className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-neutral-800 text-xs"
+                            />
+                            <UploadButton
+                              folder={`metas/${m.key || 'misc'}`}
+                              accept="image/*"
+                              onUrl={(url) => updateMeta(i, mi, 'value', url)}
+                              title={`Upload meta ${m.key}`}
                             />
                             {isPreviewable(m.value) ? (
                               <UrlPreview url={m.value} onOpen={setPreviewUrl} label="Preview meta" size="sm" />
