@@ -84,17 +84,25 @@ export default function Inventory() {
     return out;
   }, [products]);
 
-  // Stock is per-code (one row per accessory_prices row). id here is the
-  // accessory_price.id so the import targets the chosen code directly.
+  // Stock is per-code (grouped by accessory_code across tiers). For each
+  // accessory we deduplicate the price rows by `accessory_code` and pick the
+  // canonical (lowest id) row — that's where the shared stock lives.
   const accessoryOptions = useMemo(() => {
     const out = [];
     for (const p of products) {
       for (const a of p.accessories || []) {
+        const seen = new Map(); // code → canonical price row
         for (const pr of (a.prices || [])) {
+          const code = pr.accessory_code || `#${pr.id}`;
+          if (!seen.has(code) || seen.get(code).id > pr.id) {
+            seen.set(code, pr);
+          }
+        }
+        for (const pr of seen.values()) {
           out.push({
             id: pr.id,
-            display: `${p.name} — ${a.name}${pr.accessory_code ? ` [${pr.accessory_code}]` : ''}${pr.style ? ` ${pr.style}` : ''}`,
-            stock: pr.stock ?? 0,
+            display: `${p.name} — ${a.name}${pr.accessory_code ? ` [${pr.accessory_code}]` : ''}`,
+            stock: Math.max(0, pr.stock ?? 0),
           });
         }
       }
@@ -627,7 +635,7 @@ function StockTable({ title, rows }) {
                 <td className="px-3 py-1.5 text-neutral-600">{r.product_name || ''}</td>
                 <td className="px-3 py-1.5 text-neutral-800">{r.label}</td>
                 <td className="px-3 py-1.5 text-neutral-500 font-mono">{r.sku || ''}</td>
-                <td className={`px-3 py-1.5 text-right tabular-nums font-medium ${r.stock < 0 ? 'text-red-600' : r.stock === 0 ? 'text-neutral-400' : 'text-neutral-800'}`}>{r.stock}</td>
+                <td className={`px-3 py-1.5 text-right tabular-nums font-medium ${r.stock === 0 ? 'text-neutral-400' : 'text-neutral-800'}`}>{r.stock}</td>
               </tr>
             ))}
           </tbody>
