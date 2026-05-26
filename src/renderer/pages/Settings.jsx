@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import api from '../services/api';
 import UploadButton from '../components/UploadButton';
 import { notify } from '../components/Dialog';
@@ -26,6 +26,7 @@ export default function Settings() {
     { id: 'roles', label: 'Roles & Permissions' },
     { id: 'tiers', label: 'Tiers' },
     { id: 'invoice', label: 'Invoice Payment' },
+    { id: 'telegram', label: 'Telegram' },
   ];
 
   if (loading) return <div className="p-6 text-neutral-400">Loading...</div>;
@@ -45,6 +46,216 @@ export default function Settings() {
       {tab === 'roles' && <RolesTab roles={roles} setRoles={setRoles} modules={modules} />}
       {tab === 'tiers' && <TiersTab tiers={tiers} setTiers={setTiers} />}
       {tab === 'invoice' && <InvoicePaymentTab />}
+      {tab === 'telegram' && <TelegramTab />}
+    </div>
+  );
+}
+
+// localStorage key the renderer cron uses — keep client-only so multiple
+// admins opening the desktop app don't all spam the same chat.
+const CRON_KEY = 'telegram_app_cron_interval';
+
+function TelegramTab() {
+  const [data, setData] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [groups, setGroups] = useState([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [reporting, setReporting] = useState(false);
+
+  // App-side cron — interval persisted per-device in localStorage.
+  const [cronInterval, setCronInterval] = useState(() => localStorage.getItem(CRON_KEY) || 'off');
+  const [lastCron, setLastCron] = useState(null);
+  const cronTimerRef = useRef(null);
+
+  useEffect(() => {
+    api.get('/settings/telegram').then((res) => setData(res.data));
+  }, []);
+
+  // (Re)schedule the in-app cron whenever the interval changes or the
+  // component mounts. Clears any previous timer first.
+  useEffect(() => {
+    if (cronTimerRef.current) clearInterval(cronTimerRef.current);
+    if (cronInterval === 'off') return;
+    const ms = { '1m': 60_000, '30m': 30 * 60_000, '1h': 60 * 60_000 }[cronInterval];
+    if (!ms) return;
+    cronTimerRef.current = setInterval(() => fireReport(true), ms);
+    return () => clearInterval(cronTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cronInterval]);
+
+  if (!data) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const setField = (field, value) => setData(d => ({ ...d, [field]: value }));
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/telegram', data);
+      setData(res.data);
+      notify('Saved Telegram settings', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Telegram', kind: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const refreshGroups = async () => {
+    setGroupsLoading(true);
+    try {
+      const res = await api.get('/settings/telegram/groups');
+      setGroups(res.data.groups || []);
+      if ((res.data.groups || []).length === 0) {
+        notify('No groups found. Add the bot to a group and send a message there, then refresh.', { title: 'Telegram groups', kind: 'info' });
+      }
+    } catch (err) {
+      notify(err.response?.data?.message || 'Refresh failed', { title: 'Telegram groups', kind: 'error' });
+    } finally {
+      setGroupsLoading(false);
+    }
+  };
+
+  const handleTest = async () => {
+    setTesting(true);
+    try {
+      const res = await api.post('/settings/telegram/test', {
+        chat_id: data.default_chat_id || undefined,
+        thread_id: data.default_thread_id || undefined,
+      });
+      notify(`Test sent (message #${res.data.message_id})`, { title: 'Telegram', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Test failed', { title: 'Telegram', kind: 'error' });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const fireReport = async (silent = false) => {
+    setReporting(true);
+    try {
+      const res = await api.post('/settings/telegram/report', {});
+      setLastCron(new Date());
+      if (!silent) notify(`Report sent (${res.data.from} → ${res.data.to})`, { title: 'Telegram', kind: 'success' });
+    } catch (err) {
+      if (!silent) notify(err.response?.data?.message || 'Report failed', { title: 'Telegram', kind: 'error' });
+    } finally {
+      setReporting(false);
+    }
+  };
+
+  const pickChat = (chat) => {
+    setField('default_chat_id', String(chat.id));
+  };
+
+  const pickThread = (chat, thread) => {
+    setField('default_chat_id', String(chat.id));
+    setField('default_thread_id', thread.id);
+  };
+
+  const updateCronInterval = (value) => {
+    setCronInterval(value);
+    localStorage.setItem(CRON_KEY, value);
+  };
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      {/* Bot config */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-3">Telegram Settings</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <TextField label="Bot Token"               value={data.bot_token}         onChange={v => setField('bot_token', v)} full />
+          <TextField label="Default Report Days"     value={String(data.report_days ?? 0)} onChange={v => setField('report_days', parseInt(v || '0', 10))} />
+          <TextField label="Default Chat ID"         value={data.default_chat_id}   onChange={v => setField('default_chat_id', v)} />
+          <TextField label="Default Thread/Topic ID (optional)" value={data.default_thread_id ?? ''} onChange={v => setField('default_thread_id', v === '' ? null : parseInt(v, 10))} full />
+        </div>
+        <label className="flex items-center gap-2 mt-3 text-sm text-neutral-700 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={!!data.daily_cron_enabled}
+            onChange={e => setField('daily_cron_enabled', e.target.checked)}
+            className="w-4 h-4"
+          />
+          Enable Daily Cron (7:00 AM, server-side — requires `php artisan schedule:run` in crontab)
+        </label>
+        <div className="flex gap-2 mt-4">
+          <button onClick={handleSave} disabled={saving} className="px-5 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+          <button onClick={handleTest} disabled={testing || !data.default_chat_id} className="px-5 py-2 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 text-blue-700 text-sm rounded-lg font-medium">
+            {testing ? 'Sending…' : 'Send test message'}
+          </button>
+        </div>
+      </section>
+
+      {/* Group picker */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-neutral-700">Telegram Groups</h3>
+            <p className="text-[11px] text-neutral-500 mt-0.5">Click refresh to load groups the bot has been added to. The bot must have received a recent message in each group to appear.</p>
+          </div>
+          <button onClick={refreshGroups} disabled={groupsLoading} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 disabled:opacity-50 text-neutral-700 text-xs rounded-lg">
+            {groupsLoading ? 'Loading…' : 'Refresh'}
+          </button>
+        </div>
+        {groups.length === 0 ? (
+          <p className="text-xs text-neutral-400">No groups loaded yet.</p>
+        ) : (
+          <ul className="divide-y divide-neutral-100">
+            {groups.map((g) => (
+              <li key={g.id} className="py-2">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <div className="text-sm font-medium text-neutral-800">{g.title || g.username || `Chat ${g.id}`}</div>
+                    <div className="text-[11px] text-neutral-500">{g.type} · id: <span className="font-mono">{g.id}</span></div>
+                  </div>
+                  <button onClick={() => pickChat(g)} className={`text-xs px-2 py-1 rounded ${String(data.default_chat_id) === String(g.id) ? 'bg-orange-100 text-orange-700' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'}`}>
+                    {String(data.default_chat_id) === String(g.id) ? '✓ Selected' : 'Use this chat'}
+                  </button>
+                </div>
+                {(g.threads || []).length > 0 && (
+                  <div className="ml-3 mt-2 flex flex-wrap gap-1.5">
+                    {g.threads.map((t) => (
+                      <button
+                        key={t.id}
+                        onClick={() => pickThread(g, t)}
+                        className={`text-[11px] px-2 py-0.5 rounded border ${String(data.default_chat_id) === String(g.id) && data.default_thread_id === t.id ? 'bg-orange-50 border-orange-300 text-orange-700' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}
+                      >
+                        🧵 {t.title} (#{t.id})
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* App-side cron */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">App-side Cron</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">Schedules a recurring report from this desktop app while it's running. Saved per-device (localStorage) so only the admin who turns it on triggers it.</p>
+        <div className="flex items-center gap-3">
+          <label className="text-xs text-neutral-500">Interval:</label>
+          <select value={cronInterval} onChange={(e) => updateCronInterval(e.target.value)} className="px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-sm">
+            <option value="off">Off</option>
+            <option value="1m">Every 1 minute</option>
+            <option value="30m">Every 30 minutes</option>
+            <option value="1h">Every 1 hour</option>
+          </select>
+          <button onClick={() => fireReport(false)} disabled={reporting || !data.default_chat_id} className="px-4 py-1.5 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 text-emerald-700 text-sm rounded-lg font-medium">
+            {reporting ? 'Sending…' : 'Run cron now'}
+          </button>
+          {lastCron && (
+            <span className="text-[11px] text-neutral-500">Last run: {lastCron.toLocaleTimeString()}</span>
+          )}
+        </div>
+        {cronInterval !== 'off' && (
+          <p className="text-[11px] text-amber-700 mt-2">⚠ Cron runs only while this app window is open.</p>
+        )}
+      </section>
     </div>
   );
 }
