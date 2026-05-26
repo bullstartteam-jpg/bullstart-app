@@ -329,7 +329,7 @@ export default function Orders() {
 
     try {
       const res = await api.get('/orders/invoice-data', { params });
-      const blob = buildInvoicePdf(res.data);
+      const blob = await buildInvoicePdf(res.data);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

@@ -1,46 +1,63 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import logoUrl from '../assets/logo.png';
 
-// Layout constants mirror the Google Sheets template the user supplied.
-// Page is US Letter portrait — easier to print on standard 8.5x11 paper.
+// US Letter portrait, units in pt.
 const PAGE_W = 612;
 const ORANGE = [240, 140, 50];
 const ORANGE_LIGHT = [255, 200, 150];
 
+// Cache the logo data URL so subsequent invoice exports skip the fetch.
+let logoDataUrlCache = null;
+async function loadLogoDataUrl() {
+  if (logoDataUrlCache) return logoDataUrlCache;
+  try {
+    const res = await fetch(logoUrl);
+    const blob = await res.blob();
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    logoDataUrlCache = dataUrl;
+    return dataUrl;
+  } catch {
+    return null; // header still renders without logo
+  }
+}
+
 /**
  * Build a commercial invoice PDF from the JSON payload returned by
- * `GET /api/orders/invoice-data`. Returns a Blob the caller can either save
- * to disk or attach to an upload.
- *
- * Expected payload shape:
- *   {
- *     invoice_number: 'RX2605261430',
- *     date_label: 'May 1 2026 – May 5 2026',
- *     customer: { name, email },
- *     line_items: [{ item, sku, product_name, brand, materials, total_items, print_cost, subtotal }],
- *     totals: { print_cost, shipping_cost, total },
- *   }
+ * `GET /api/orders/invoice-data`. Async because we lazy-load the logo PNG.
  */
-export function buildInvoicePdf(payload, opts = {}) {
+export async function buildInvoicePdf(payload, opts = {}) {
   const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'portrait' });
   const margin = 40;
 
-  // ── Header band — brand block on left, document title on right ──
+  // ── Header band — logo on the far left, brand block right of it ──
+  const logo = await loadLogoDataUrl();
+  const logoSize = 55;
+  const logoY = margin - 8;
+  if (logo) {
+    doc.addImage(logo, 'PNG', margin, logoY, logoSize, logoSize);
+  }
+
   doc.setFont('helvetica', 'bold').setFontSize(13);
   doc.text('BULLSTART- PRINT ON DEMAND SERVICE', PAGE_W / 2, margin, { align: 'center' });
 
   doc.setFont('helvetica', 'normal').setFontSize(9);
+  const brandX = margin + logoSize + 12;
   const brandY = margin + 25;
-  doc.text('Address: 4353 Saddle Horn W, Oceanside CA 92057', margin, brandY);
-  doc.text('Email: bullstartteam@gmail.com', margin, brandY + 12);
-  doc.text('Phone: 619-666-5123', margin, brandY + 24);
+  doc.text('Address: 4353 Saddle Horn W, Oceanside CA 92057', brandX, brandY);
+  doc.text('Email: bullstartteam@gmail.com', brandX, brandY + 12);
+  doc.text('Phone: 619-666-5123', brandX, brandY + 24);
 
   // Document title — orange, underlined center
   doc.setFont('helvetica', 'bold').setFontSize(20);
   doc.setTextColor(...ORANGE);
   const titleY = brandY + 60;
   doc.text('OFFICIAL COMMERCIAL INVOICE', PAGE_W / 2, titleY, { align: 'center' });
-  // Underline by drawing a line just below the baseline
   const titleWidth = doc.getTextWidth('OFFICIAL COMMERCIAL INVOICE');
   doc.setDrawColor(...ORANGE).setLineWidth(1);
   doc.line((PAGE_W - titleWidth) / 2, titleY + 3, (PAGE_W + titleWidth) / 2, titleY + 3);
@@ -76,11 +93,9 @@ export function buildInvoicePdf(payload, opts = {}) {
     formatMoney(row.subtotal),
   ]);
 
-  // Pad to at least 8 rows so the printed invoice looks like the template
-  // even when there are only 1-2 actual lines.
-  while (body.length < 8) {
-    body.push(['', '', '', '', '', '', '', '']);
-  }
+  // Pad to at least 8 rows so the printed invoice keeps the template look
+  // even with only 1-2 actual lines.
+  while (body.length < 8) body.push(['', '', '', '', '', '', '', '']);
 
   autoTable(doc, {
     startY: metaY + 60,
@@ -109,15 +124,21 @@ export function buildInvoicePdf(payload, opts = {}) {
     margin: { left: margin, right: margin },
   });
 
-  // ── Totals block — right-aligned, orange highlight rows ──
+  // ── Totals block — wider so labels + values don't collide ──
+  // Right-aligned, 2 sub-cells: label (60% width) | value (40%).
   const afterTable = doc.lastAutoTable.finalY + 2;
-  const totalsX = margin + 410;
-  const totalsW = PAGE_W - margin - totalsX;
+  const totalsW = 240;
+  const totalsX = PAGE_W - margin - totalsW;
+  const labelW = Math.round(totalsW * 0.6);
+  const valueW = totalsW - labelW;
   const rowH = 22;
 
-  drawTotalRow(doc, totalsX, afterTable,            totalsW, rowH, 'PRINT COST',   formatMoney(payload.totals?.print_cost),   ORANGE_LIGHT);
-  drawTotalRow(doc, totalsX, afterTable + rowH,     totalsW, rowH, 'SHIPPING COST', formatMoney(payload.totals?.shipping_cost), [255, 255, 255]);
-  drawTotalRow(doc, totalsX, afterTable + rowH * 2, totalsW, rowH, 'TOTAL AMOUNT', formatMoney(payload.totals?.total),         ORANGE, true);
+  drawTotalRow(doc, totalsX, afterTable,            labelW, valueW, rowH,
+    'PRINT COST',    formatMoney(payload.totals?.print_cost),    ORANGE_LIGHT);
+  drawTotalRow(doc, totalsX, afterTable + rowH,     labelW, valueW, rowH,
+    'SHIPPING COST', formatMoney(payload.totals?.shipping_cost), [255, 255, 255]);
+  drawTotalRow(doc, totalsX, afterTable + rowH * 2, labelW, valueW, rowH,
+    'TOTAL AMOUNT',  formatMoney(payload.totals?.total),         ORANGE, true);
 
   // ── Footer block ──
   const footY = afterTable + rowH * 3 + 30;
@@ -133,17 +154,19 @@ export function buildInvoicePdf(payload, opts = {}) {
   return doc.output('blob');
 }
 
-function drawTotalRow(doc, x, y, w, h, label, value, fillColor, bold = false) {
+function drawTotalRow(doc, x, y, labelW, valueW, h, label, value, fillColor, bold = false) {
+  const totalW = labelW + valueW;
   doc.setFillColor(...fillColor);
-  doc.rect(x, y, w, h, 'F');
+  doc.rect(x, y, totalW, h, 'F');
   doc.setDrawColor(180, 180, 180).setLineWidth(0.5);
-  doc.rect(x, y, w, h);
+  // Outer border + separator between label and value cells
+  doc.rect(x, y, totalW, h);
+  doc.line(x + labelW, y, x + labelW, y + h);
 
   doc.setFont('helvetica', 'bold').setFontSize(bold ? 11 : 10);
   doc.setTextColor(bold ? 255 : 0, bold ? 255 : 0, bold ? 255 : 0);
-  // Label cell ~ 70% width, value cell ~ 30%
   doc.text(label, x + 8, y + h / 2 + 4);
-  doc.text(value, x + w - 8, y + h / 2 + 4, { align: 'right' });
+  doc.text(value, x + labelW + valueW - 8, y + h / 2 + 4, { align: 'right' });
   doc.setTextColor(0, 0, 0);
 }
 
