@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
+import UploadButton from '../components/UploadButton';
+import { notify } from '../components/Dialog';
 
 export default function Settings() {
   const [tab, setTab] = useState('roles');
@@ -23,6 +25,7 @@ export default function Settings() {
   const tabs = [
     { id: 'roles', label: 'Roles & Permissions' },
     { id: 'tiers', label: 'Tiers' },
+    { id: 'invoice', label: 'Invoice Payment' },
   ];
 
   if (loading) return <div className="p-6 text-neutral-400">Loading...</div>;
@@ -41,6 +44,112 @@ export default function Settings() {
 
       {tab === 'roles' && <RolesTab roles={roles} setRoles={setRoles} modules={modules} />}
       {tab === 'tiers' && <TiersTab tiers={tiers} setTiers={setTiers} />}
+      {tab === 'invoice' && <InvoicePaymentTab />}
+    </div>
+  );
+}
+
+function InvoicePaymentTab() {
+  const [data, setData] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get('/settings/invoice-payment').then((res) => setData(res.data));
+  }, []);
+
+  if (!data) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const setField = (group, field, value) =>
+    setData(d => ({ ...d, [group]: { ...d[group], [field]: value } }));
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/invoice-payment', data);
+      setData(res.data);
+      notify('Saved invoice payment info', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      {/* PingPong section — international USD transfer info shown on the
+          PingPong invoice variant. */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-neutral-700">PingPong (USD transfer)</h3>
+          <span className="text-[11px] text-neutral-400">Shown on Invoice PDF — PingPong variant</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <TextField label="Account name"   value={data.pingpong.account_name}   onChange={v => setField('pingpong', 'account_name', v)} />
+          <TextField label="Account number" value={data.pingpong.account_number} onChange={v => setField('pingpong', 'account_number', v)} />
+          <TextField label="Bank name"      value={data.pingpong.bank_name}      onChange={v => setField('pingpong', 'bank_name', v)} />
+          <TextField label="SWIFT/BIC code" value={data.pingpong.swift_code}     onChange={v => setField('pingpong', 'swift_code', v)} />
+          <TextField label="Bank address"   value={data.pingpong.bank_address}   onChange={v => setField('pingpong', 'bank_address', v)} full />
+          <TextField label="Notes"          value={data.pingpong.notes}          onChange={v => setField('pingpong', 'notes', v)} full />
+        </div>
+      </section>
+
+      {/* VNPay section — QR image + supplementary bank info shown on the
+          VNPay invoice variant. QR comes from B2 (uploaded via the existing
+          UploadButton helper). */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-neutral-700">VNPay (VND QR transfer)</h3>
+          <span className="text-[11px] text-neutral-400">Shown on Invoice PDF — VNPay variant</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="col-span-2">
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs text-neutral-500">QR code image URL</label>
+              <UploadButton
+                folder="invoice/vnpay-qr"
+                accept="image/*"
+                onUrl={(url) => setField('vnpay', 'qr_url', url)}
+                title="Upload VNPay QR to B2"
+              />
+            </div>
+            <input
+              value={data.vnpay.qr_url || ''}
+              onChange={e => setField('vnpay', 'qr_url', e.target.value)}
+              placeholder="https://… (uploaded image or paste a public URL)"
+              className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+            />
+            {data.vnpay.qr_url && (
+              <img src={data.vnpay.qr_url} alt="VNPay QR preview" className="mt-2 h-32 w-32 object-contain border border-neutral-200 rounded" />
+            )}
+          </div>
+          <TextField label="Account name"   value={data.vnpay.account_name}   onChange={v => setField('vnpay', 'account_name', v)} />
+          <TextField label="Account number" value={data.vnpay.account_number} onChange={v => setField('vnpay', 'account_number', v)} />
+          <TextField label="Bank name"      value={data.vnpay.bank_name}      onChange={v => setField('vnpay', 'bank_name', v)} full />
+          <TextField label="Notes"          value={data.vnpay.notes}          onChange={v => setField('vnpay', 'notes', v)} full />
+        </div>
+      </section>
+
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        className="px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium"
+      >
+        {saving ? 'Saving…' : 'Save changes'}
+      </button>
+    </div>
+  );
+}
+
+function TextField({ label, value, onChange, full }) {
+  return (
+    <div className={full ? 'col-span-2' : ''}>
+      <label className="text-xs text-neutral-500">{label}</label>
+      <input
+        value={value || ''}
+        onChange={e => onChange(e.target.value)}
+        className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+      />
     </div>
   );
 }

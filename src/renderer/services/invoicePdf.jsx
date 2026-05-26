@@ -30,8 +30,13 @@ async function loadLogoDataUrl() {
 /**
  * Build a commercial invoice PDF from the JSON payload returned by
  * `GET /api/orders/invoice-data`. Async because we lazy-load the logo PNG.
+ *
+ * opts.variant — 'pingpong' (USD transfer info block) or 'vnpay' (QR image +
+ *   bank info block). Renders the matching payment section below the totals,
+ *   reading payload.payment_settings.{pingpong|vnpay}.
  */
 export async function buildInvoicePdf(payload, opts = {}) {
+  const variant = opts.variant || 'pingpong';
   const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'portrait' });
   const margin = 40;
 
@@ -140,10 +145,16 @@ export async function buildInvoicePdf(payload, opts = {}) {
   drawTotalRow(doc, totalsX, afterTable + rowH * 2, labelW, valueW, rowH,
     'TOTAL AMOUNT',  formatMoney(payload.totals?.total),         ORANGE, true);
 
+  // ── Payment info block (variant-specific) ──
+  const paymentY = afterTable + rowH * 3 + 20;
+  const paymentEndY = variant === 'vnpay'
+    ? await drawVnpayBlock(doc, margin, paymentY, payload.payment_settings?.vnpay || {})
+    : drawPingpongBlock(doc, margin, paymentY, payload.payment_settings?.pingpong || {});
+
   // ── Footer block ──
-  const footY = afterTable + rowH * 3 + 30;
+  const footY = Math.max(paymentEndY + 20, afterTable + rowH * 3 + 80);
   doc.setFont('helvetica', 'normal').setFontSize(10).setTextColor(0, 0, 0);
-  doc.text('Payment Method: ' + (opts.paymentMethod || 'Pipo'), margin, footY);
+  doc.text('Payment Method: ' + (variant === 'vnpay' ? 'VNPay (VND QR)' : 'PingPong (USD)'), margin, footY);
   doc.text('Status: ' + (opts.status || ''), margin, footY + 14);
 
   doc.setFont('helvetica', 'bolditalic').setFontSize(11);
@@ -152,6 +163,106 @@ export async function buildInvoicePdf(payload, opts = {}) {
   doc.text('BULLSTART LLC - PRINT ON DEMAND SERVICE', PAGE_W / 2, footY + 54, { align: 'center' });
 
   return doc.output('blob');
+}
+
+// Render the PingPong (USD international transfer) info block. Returns the
+// y-coordinate of the bottom edge so the footer can position itself below.
+function drawPingpongBlock(doc, x, y, info) {
+  doc.setFont('helvetica', 'bold').setFontSize(11).setTextColor(...ORANGE);
+  doc.text('PingPong — USD International Transfer', x, y);
+  doc.setTextColor(0, 0, 0);
+
+  const lines = [
+    ['Account name',    info.account_name],
+    ['Account number',  info.account_number],
+    ['Bank name',       info.bank_name],
+    ['SWIFT/BIC code',  info.swift_code],
+    ['Bank address',    info.bank_address],
+    ['Notes',           info.notes],
+  ].filter(([, v]) => v && String(v).trim() !== '');
+
+  let cy = y + 16;
+  doc.setFont('helvetica', 'normal').setFontSize(10);
+  for (const [label, val] of lines) {
+    doc.setFont('helvetica', 'bold');
+    doc.text(`${label}:`, x, cy);
+    doc.setFont('helvetica', 'normal');
+    doc.text(String(val), x + 110, cy);
+    cy += 14;
+  }
+  if (lines.length === 0) {
+    doc.setFont('helvetica', 'italic').setTextColor(140, 140, 140);
+    doc.text('(Configure PingPong info in Settings → Invoice Payment)', x, cy);
+    doc.setTextColor(0, 0, 0);
+    cy += 14;
+  }
+  return cy;
+}
+
+// Render the VNPay (VND QR) block: QR image on the right, bank info on the
+// left. Async because the QR image must be fetched + base64'd before
+// addImage. Returns bottom y-coordinate.
+async function drawVnpayBlock(doc, x, y, info) {
+  doc.setFont('helvetica', 'bold').setFontSize(11).setTextColor(...ORANGE);
+  doc.text('VNPay — VND QR Transfer', x, y);
+  doc.setTextColor(0, 0, 0);
+
+  const qrSize = 120;
+  const qrX = PAGE_W - 40 - qrSize;
+  const qrY = y + 8;
+
+  if (info.qr_url) {
+    try {
+      const dataUrl = await fetchAsDataUrl(info.qr_url);
+      const fmt = dataUrl.startsWith('data:image/jpeg') ? 'JPEG' : 'PNG';
+      doc.addImage(dataUrl, fmt, qrX, qrY, qrSize, qrSize);
+      doc.setFont('helvetica', 'normal').setFontSize(8).setTextColor(120, 120, 120);
+      doc.text('Scan to pay', qrX + qrSize / 2, qrY + qrSize + 10, { align: 'center' });
+      doc.setTextColor(0, 0, 0);
+    } catch {
+      doc.setFont('helvetica', 'italic').setFontSize(9).setTextColor(180, 80, 80);
+      doc.text('(QR image failed to load)', qrX, qrY + qrSize / 2, { align: 'left' });
+      doc.setTextColor(0, 0, 0);
+    }
+  }
+
+  const lines = [
+    ['Account name',   info.account_name],
+    ['Account number', info.account_number],
+    ['Bank name',      info.bank_name],
+    ['Notes',          info.notes],
+  ].filter(([, v]) => v && String(v).trim() !== '');
+
+  let cy = y + 24;
+  doc.setFont('helvetica', 'normal').setFontSize(10);
+  for (const [label, val] of lines) {
+    doc.setFont('helvetica', 'bold');
+    doc.text(`${label}:`, x, cy);
+    doc.setFont('helvetica', 'normal');
+    doc.text(String(val), x + 110, cy);
+    cy += 14;
+  }
+  if (lines.length === 0 && !info.qr_url) {
+    doc.setFont('helvetica', 'italic').setTextColor(140, 140, 140);
+    doc.text('(Configure VNPay info in Settings → Invoice Payment)', x, cy);
+    doc.setTextColor(0, 0, 0);
+    cy += 14;
+  }
+
+  // Whichever side is taller decides where the block ends.
+  return Math.max(cy, qrY + qrSize + 16);
+}
+
+async function fetchAsDataUrl(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }
 
 function drawTotalRow(doc, x, y, labelW, valueW, h, label, value, fillColor, bold = false) {

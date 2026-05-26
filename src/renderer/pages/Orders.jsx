@@ -312,7 +312,7 @@ export default function Orders() {
     }
   };
 
-  const handleExportInvoice = async () => {
+  const handleExportInvoice = async (variant) => {
     // Same filter shape as CSV export — reuse current view's selection or
     // filters so admin sees one consistent dataset across both exports.
     const params = {};
@@ -329,15 +329,15 @@ export default function Orders() {
 
     try {
       const res = await api.get('/orders/invoice-data', { params });
-      const blob = await buildInvoicePdf(res.data);
+      const blob = await buildInvoicePdf(res.data, { variant });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `invoice_${res.data.invoice_number || 'BULLSTART'}.pdf`;
+      a.download = `invoice_${variant}_${res.data.invoice_number || 'BULLSTART'}.pdf`;
       a.click();
       window.URL.revokeObjectURL(url);
       notify(
-        `Invoice ${res.data.invoice_number} — ${res.data.order_count} order(s), ${res.data.line_items.length} line(s)`,
+        `Invoice ${res.data.invoice_number} (${variant}) — ${res.data.order_count} order(s), ${res.data.line_items.length} line(s)`,
         { title: 'Invoice exported', kind: 'success' }
       );
     } catch (err) {
@@ -627,14 +627,24 @@ export default function Orders() {
             Export {selected.length > 0 ? `(${selected.length})` : 'CSV'}
           </button>
           <button
-            onClick={handleExportInvoice}
+            onClick={() => handleExportInvoice('pingpong')}
             className="px-4 py-2 bg-orange-100 hover:bg-orange-200 text-orange-700 text-sm rounded-lg transition-colors"
             title={selected.length > 0
-              ? `Build invoice PDF from ${selected.length} selected order(s)`
-              : 'Build invoice PDF from orders matching current filters'
+              ? `PingPong (USD) invoice from ${selected.length} selected order(s)`
+              : 'PingPong (USD) invoice from orders matching current filters'
             }
           >
-            Invoice PDF {selected.length > 0 ? `(${selected.length})` : ''}
+            Invoice PingPong {selected.length > 0 ? `(${selected.length})` : ''}
+          </button>
+          <button
+            onClick={() => handleExportInvoice('vnpay')}
+            className="px-4 py-2 bg-rose-100 hover:bg-rose-200 text-rose-700 text-sm rounded-lg transition-colors"
+            title={selected.length > 0
+              ? `VNPay (VND QR) invoice from ${selected.length} selected order(s)`
+              : 'VNPay (VND QR) invoice from orders matching current filters'
+            }
+          >
+            Invoice VNPay {selected.length > 0 ? `(${selected.length})` : ''}
           </button>
           {isStaff && (
             <button
