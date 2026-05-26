@@ -51,9 +51,10 @@ export default function Settings() {
   );
 }
 
-// localStorage key the renderer cron uses — keep client-only so multiple
+// localStorage keys the renderer cron uses — kept per-device so multiple
 // admins opening the desktop app don't all spam the same chat.
 const CRON_KEY = 'telegram_app_cron_interval';
+const DAILY_LAST_FIRE_KEY = 'telegram_daily_last_fire_date'; // YYYY-MM-DD
 
 function TelegramTab() {
   const [data, setData] = useState(null);
@@ -83,6 +84,25 @@ function TelegramTab() {
     return () => clearInterval(cronTimerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cronInterval]);
+
+  // Daily 7:00 AM trigger — runs in-app while the window is open.
+  // Tick every minute; fire once per local-date when the hour reaches 7.
+  // Tracking in localStorage means re-mounting the tab doesn't re-fire.
+  useEffect(() => {
+    if (!data?.daily_cron_enabled) return;
+    const check = () => {
+      const now = new Date();
+      if (now.getHours() !== 7) return;
+      const today = now.toISOString().slice(0, 10);
+      if (localStorage.getItem(DAILY_LAST_FIRE_KEY) === today) return;
+      localStorage.setItem(DAILY_LAST_FIRE_KEY, today);
+      fireReport(true);
+    };
+    const id = setInterval(check, 60_000);
+    check(); // immediate check in case we mount past 7am
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.daily_cron_enabled]);
 
   if (!data) return <div className="text-neutral-400 text-sm">Loading…</div>;
 
@@ -176,7 +196,7 @@ function TelegramTab() {
             onChange={e => setField('daily_cron_enabled', e.target.checked)}
             className="w-4 h-4"
           />
-          Enable Daily Cron (7:00 AM, server-side — requires `php artisan schedule:run` in crontab)
+          Enable Daily Cron (7:00 AM, app-side — fires once when the app is open and the hour ticks to 7)
         </label>
         <div className="flex gap-2 mt-4">
           <button onClick={handleSave} disabled={saving} className="px-5 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
