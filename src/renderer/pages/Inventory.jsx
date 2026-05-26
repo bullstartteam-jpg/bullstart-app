@@ -84,19 +84,19 @@ export default function Inventory() {
     return out;
   }, [products]);
 
-  // Stock is now per-accessory (unified across tiers). One row per accessory
-  // — codes from any tier-price shown as reference. id = accessories.id.
+  // Stock is per-code (one row per accessory_prices row). id here is the
+  // accessory_price.id so the import targets the chosen code directly.
   const accessoryOptions = useMemo(() => {
     const out = [];
     for (const p of products) {
       for (const a of p.accessories || []) {
-        const codes = [...new Set((a.prices || []).map(pr => pr.accessory_code).filter(Boolean))];
-        const codeRef = codes.length > 0 ? ` [${codes.join('/')}]` : '';
-        out.push({
-          id: a.id,
-          display: `${p.name} — ${a.name}${codeRef}`,
-          stock: a.stock ?? 0,
-        });
+        for (const pr of (a.prices || [])) {
+          out.push({
+            id: pr.id,
+            display: `${p.name} — ${a.name}${pr.accessory_code ? ` [${pr.accessory_code}]` : ''}${pr.style ? ` ${pr.style}` : ''}`,
+            stock: pr.stock ?? 0,
+          });
+        }
       }
     }
     return out;
@@ -129,7 +129,8 @@ export default function Inventory() {
         payload.product_variant_id = parseInt(form.product_variant_id, 10);
       } else if (form.target === 'accessory') {
         if (!form.accessory_id) throw new Error('Please choose an accessory');
-        payload.accessory_id = parseInt(form.accessory_id, 10);
+        // form.accessory_id now holds accessory_price.id (per-code target).
+        payload.accessory_price_id = parseInt(form.accessory_id, 10);
       } else {
         if (!form.supply_id) throw new Error('Please choose a supply');
         payload.supply_id = parseInt(form.supply_id, 10);
@@ -603,28 +604,8 @@ export default function Inventory() {
 }
 
 function StockTable({ title, rows }) {
-  // Accessories carry a `codes` array (multiple tier-codes share one stock
-  // pool). Expand each accessory into N visual rows — first row owns the
-  // product/item/stock, subsequent rows blank out those cells and tag the
-  // stock cell as "(shared)" so the operator can scan codes without
-  // assuming each code has its own stock.
-  const expandedRows = rows.flatMap((r) => {
-    if (r.kind === 'accessory' && Array.isArray(r.codes) && r.codes.length > 1) {
-      return r.codes.map((code, i) => ({
-        ...r,
-        _displayKey: `${r.kind}-${r.id}-${i}`,
-        _displayCode: code,
-        _isFirstOfGroup: i === 0,
-      }));
-    }
-    return [{
-      ...r,
-      _displayKey: `${r.kind}-${r.id}`,
-      _displayCode: r.sku || '',
-      _isFirstOfGroup: true,
-    }];
-  });
-
+  // Backend now returns one row per accessory_price (per-code stock), so
+  // we don't need to expand here anymore — render rows as-is.
   return (
     <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
       <div className="px-3 py-2 text-sm font-medium text-neutral-800 border-b border-neutral-100 bg-[#faf8f6]">{title}</div>
@@ -639,16 +620,14 @@ function StockTable({ title, rows }) {
             </tr>
           </thead>
           <tbody>
-            {expandedRows.length === 0 ? (
+            {rows.length === 0 ? (
               <tr><td colSpan={4} className="px-3 py-4 text-center text-neutral-400">No items</td></tr>
-            ) : expandedRows.map(r => (
-              <tr key={r._displayKey} className={`border-t border-neutral-100 ${!r._isFirstOfGroup ? 'border-t-0' : ''}`}>
-                <td className="px-3 py-1.5 text-neutral-600">{r._isFirstOfGroup ? (r.product_name || '') : ''}</td>
-                <td className="px-3 py-1.5 text-neutral-800">{r._isFirstOfGroup ? r.label : ''}</td>
-                <td className="px-3 py-1.5 text-neutral-500 font-mono">{r._displayCode}</td>
-                <td className={`px-3 py-1.5 text-right tabular-nums font-medium ${r._isFirstOfGroup ? (r.stock < 0 ? 'text-red-600' : r.stock === 0 ? 'text-neutral-400' : 'text-neutral-800') : 'text-neutral-400 italic'}`}>
-                  {r._isFirstOfGroup ? r.stock : '(shared)'}
-                </td>
+            ) : rows.map(r => (
+              <tr key={`${r.kind}-${r.id}`} className="border-t border-neutral-100">
+                <td className="px-3 py-1.5 text-neutral-600">{r.product_name || ''}</td>
+                <td className="px-3 py-1.5 text-neutral-800">{r.label}</td>
+                <td className="px-3 py-1.5 text-neutral-500 font-mono">{r.sku || ''}</td>
+                <td className={`px-3 py-1.5 text-right tabular-nums font-medium ${r.stock < 0 ? 'text-red-600' : r.stock === 0 ? 'text-neutral-400' : 'text-neutral-800'}`}>{r.stock}</td>
               </tr>
             ))}
           </tbody>
