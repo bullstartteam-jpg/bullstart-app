@@ -6,9 +6,10 @@ const MODE_PER_ITEM = 'per_item';
 const MODE_PER_PACKAGE = 'per_package';
 
 const emptyForm = {
-  target: 'variant',           // 'variant' | 'accessory'
+  target: 'variant',           // 'variant' | 'accessory' | 'supply'
   product_variant_id: '',
   accessory_id: '',            // unified per-accessory stock (no longer tier-scoped)
+  supply_id: '',               // consumables (label paper, etc.) — 1 ship = 1 trừ default label
   price_mode: MODE_PER_ITEM,
   quantity: '',
   unit_price: '',
@@ -22,7 +23,7 @@ export default function Inventory() {
   const [imports, setImports] = useState([]);
   const [importsMeta, setImportsMeta] = useState({});
   const [importsPage, setImportsPage] = useState(1);
-  const [stock, setStock] = useState({ variants: [], accessories: [] });
+  const [stock, setStock] = useState({ variants: [], accessories: [], supplies: [] });
   const [loading, setLoading] = useState(false);
 
   const [showForm, setShowForm] = useState(false);
@@ -126,9 +127,12 @@ export default function Inventory() {
       if (form.target === 'variant') {
         if (!form.product_variant_id) throw new Error('Please choose a product variant');
         payload.product_variant_id = parseInt(form.product_variant_id, 10);
-      } else {
+      } else if (form.target === 'accessory') {
         if (!form.accessory_id) throw new Error('Please choose an accessory');
         payload.accessory_id = parseInt(form.accessory_id, 10);
+      } else {
+        if (!form.supply_id) throw new Error('Please choose a supply');
+        payload.supply_id = parseInt(form.supply_id, 10);
       }
       if (form.price_mode === MODE_PER_PACKAGE) {
         payload.package_size = parseInt(form.package_size, 10);
@@ -351,11 +355,12 @@ export default function Inventory() {
               <label className="text-xs text-neutral-500">Target</label>
               <select
                 value={form.target}
-                onChange={e => setForm({ ...form, target: e.target.value, product_variant_id: '', accessory_id: '' })}
+                onChange={e => setForm({ ...form, target: e.target.value, product_variant_id: '', accessory_id: '', supply_id: '' })}
                 className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
               >
                 <option value="variant">Product variant</option>
                 <option value="accessory">Accessory</option>
+                <option value="supply">Supply (label paper, etc.)</option>
               </select>
             </div>
 
@@ -374,7 +379,7 @@ export default function Inventory() {
                   ))}
                 </select>
               </div>
-            ) : (
+            ) : form.target === 'accessory' ? (
               <div className="md:col-span-2">
                 <label className="text-xs text-neutral-500">Accessory (stock dùng chung mọi tier)</label>
                 <select
@@ -388,6 +393,24 @@ export default function Inventory() {
                     <option key={a.id} value={a.id}>{a.display} (stock {a.stock})</option>
                   ))}
                 </select>
+              </div>
+            ) : (
+              <div className="md:col-span-2">
+                <label className="text-xs text-neutral-500">Supply (vật tư tiêu hao)</label>
+                <select
+                  value={form.supply_id}
+                  onChange={e => setForm({ ...form, supply_id: e.target.value })}
+                  required
+                  className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+                >
+                  <option value="">— pick a supply —</option>
+                  {(stock.supplies || []).map(s => (
+                    <option key={s.id} value={s.id}>{s.label} (stock {s.stock})</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-neutral-400 mt-1">
+                  Default label supply tự trừ 1 mỗi khi đơn ship.
+                </p>
               </div>
             )}
           </div>
@@ -565,9 +588,14 @@ export default function Inventory() {
       )}
 
       {tab === 'stock' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <StockTable title="Product variants" rows={stock.variants} />
-          <StockTable title="Accessories" rows={stock.accessories} />
+        <div className="space-y-4">
+          {stock.supplies?.length > 0 && (
+            <StockTable title="Supplies (vật tư tiêu hao)" rows={stock.supplies} />
+          )}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <StockTable title="Product variants" rows={stock.variants} />
+            <StockTable title="Accessories" rows={stock.accessories} />
+          </div>
         </div>
       )}
     </div>
@@ -575,6 +603,28 @@ export default function Inventory() {
 }
 
 function StockTable({ title, rows }) {
+  // Accessories carry a `codes` array (multiple tier-codes share one stock
+  // pool). Expand each accessory into N visual rows — first row owns the
+  // product/item/stock, subsequent rows blank out those cells and tag the
+  // stock cell as "(shared)" so the operator can scan codes without
+  // assuming each code has its own stock.
+  const expandedRows = rows.flatMap((r) => {
+    if (r.kind === 'accessory' && Array.isArray(r.codes) && r.codes.length > 1) {
+      return r.codes.map((code, i) => ({
+        ...r,
+        _displayKey: `${r.kind}-${r.id}-${i}`,
+        _displayCode: code,
+        _isFirstOfGroup: i === 0,
+      }));
+    }
+    return [{
+      ...r,
+      _displayKey: `${r.kind}-${r.id}`,
+      _displayCode: r.sku || '',
+      _isFirstOfGroup: true,
+    }];
+  });
+
   return (
     <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
       <div className="px-3 py-2 text-sm font-medium text-neutral-800 border-b border-neutral-100 bg-[#faf8f6]">{title}</div>
@@ -589,14 +639,16 @@ function StockTable({ title, rows }) {
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 ? (
+            {expandedRows.length === 0 ? (
               <tr><td colSpan={4} className="px-3 py-4 text-center text-neutral-400">No items</td></tr>
-            ) : rows.map(r => (
-              <tr key={`${r.kind}-${r.id}`} className="border-t border-neutral-100">
-                <td className="px-3 py-1.5 text-neutral-600">{r.product_name || ''}</td>
-                <td className="px-3 py-1.5 text-neutral-800">{r.label}</td>
-                <td className="px-3 py-1.5 text-neutral-500 font-mono">{r.sku || ''}</td>
-                <td className={`px-3 py-1.5 text-right tabular-nums font-medium ${r.stock < 0 ? 'text-red-600' : r.stock === 0 ? 'text-neutral-400' : 'text-neutral-800'}`}>{r.stock}</td>
+            ) : expandedRows.map(r => (
+              <tr key={r._displayKey} className={`border-t border-neutral-100 ${!r._isFirstOfGroup ? 'border-t-0' : ''}`}>
+                <td className="px-3 py-1.5 text-neutral-600">{r._isFirstOfGroup ? (r.product_name || '') : ''}</td>
+                <td className="px-3 py-1.5 text-neutral-800">{r._isFirstOfGroup ? r.label : ''}</td>
+                <td className="px-3 py-1.5 text-neutral-500 font-mono">{r._displayCode}</td>
+                <td className={`px-3 py-1.5 text-right tabular-nums font-medium ${r._isFirstOfGroup ? (r.stock < 0 ? 'text-red-600' : r.stock === 0 ? 'text-neutral-400' : 'text-neutral-800') : 'text-neutral-400 italic'}`}>
+                  {r._isFirstOfGroup ? r.stock : '(shared)'}
+                </td>
               </tr>
             ))}
           </tbody>
