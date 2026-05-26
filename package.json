@@ -72,6 +72,8 @@
     "bwip-js": "^4.10.1",
     "electron-updater": "^6.8.3",
     "jsbarcode": "^3.12.3",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.7.284",
     "qrcode": "^1.5.4",

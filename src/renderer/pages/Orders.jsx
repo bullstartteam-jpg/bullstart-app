@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { notify, askConfirm } from '../components/Dialog';
+import { buildInvoicePdf } from '../services/invoicePdf';
 
 const STATUS_MAP = ['new_order', 'processing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
@@ -311,6 +312,40 @@ export default function Orders() {
     }
   };
 
+  const handleExportInvoice = async () => {
+    // Same filter shape as CSV export — reuse current view's selection or
+    // filters so admin sees one consistent dataset across both exports.
+    const params = {};
+    if (filters.status !== '') params.status = filters.status;
+    if (filters.paid) params.paid = filters.paid;
+    if (filters.ref_id) params.ref_id = filters.ref_id;
+    if (filters.ref_ids) params.ref_ids = filters.ref_ids;
+    if (filters.system_id) params.system_id = filters.system_id;
+    if (filters.tracking_id) params.tracking_id = filters.tracking_id;
+    if (filters.user_id) params.user_id = filters.user_id;
+    if (filters.date_from) params.date_from = filters.date_from;
+    if (filters.date_to) params.date_to = filters.date_to;
+    if (selected.length > 0) params.order_ids = selected.join(',');
+
+    try {
+      const res = await api.get('/orders/invoice-data', { params });
+      const blob = buildInvoicePdf(res.data);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `invoice_${res.data.invoice_number || 'BULLSTART'}.pdf`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      notify(
+        `Invoice ${res.data.invoice_number} — ${res.data.order_count} order(s), ${res.data.line_items.length} line(s)`,
+        { title: 'Invoice exported', kind: 'success' }
+      );
+    } catch (err) {
+      const msg = err.response?.data?.message || err.message || 'Invoice export failed';
+      notify(msg, { title: 'Invoice failed', kind: 'error' });
+    }
+  };
+
   const handleRefreshDuplicates = async () => {
     setDupRefreshing(true);
     try {
@@ -590,6 +625,16 @@ export default function Orders() {
             }
           >
             Export {selected.length > 0 ? `(${selected.length})` : 'CSV'}
+          </button>
+          <button
+            onClick={handleExportInvoice}
+            className="px-4 py-2 bg-orange-100 hover:bg-orange-200 text-orange-700 text-sm rounded-lg transition-colors"
+            title={selected.length > 0
+              ? `Build invoice PDF from ${selected.length} selected order(s)`
+              : 'Build invoice PDF from orders matching current filters'
+            }
+          >
+            Invoice PDF {selected.length > 0 ? `(${selected.length})` : ''}
           </button>
           {isStaff && (
             <button
