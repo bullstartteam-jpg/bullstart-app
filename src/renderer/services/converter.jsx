@@ -341,10 +341,10 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
   const fontSize = Math.max(28, Math.round(sourceW * 0.035));
 
-  // QR is square — render at the same target width the Code 128 used so the
-  // overall panel footprint stays comparable. Error correction M is the
-  // sweet spot for scanner reliability vs payload density at this size.
-  const qrSize = Math.max(280, Math.round(sourceW * 0.22));
+  // QR is square. ~11% of source width with a 140px floor keeps it small
+  // enough to not dominate the label but still scannable from a phone at
+  // arm's length (operator feedback 2026-05-27: previous 22% was too big).
+  const qrSize = Math.max(140, Math.round(sourceW * 0.11));
   const qrCanvas = await generateQrCanvas(systemId, qrSize);
 
   const PANEL_PAD = Math.round(fontSize * 0.45);
