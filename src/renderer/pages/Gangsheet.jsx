@@ -49,6 +49,69 @@ function TabBtn({ active, onClick, children }) {
   );
 }
 
+// Pill-style sub-tab chip (used inside ComposeTab for One/Two/Scratch filters).
+function SubChip({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-full transition-colors ${
+        active
+          ? 'bg-orange-500 text-white'
+          : 'bg-neutral-100 text-neutral-600 hover:bg-orange-50 hover:text-orange-700'
+      }`}
+    >{children}</button>
+  );
+}
+
+function CountBadge({ n }) {
+  // Translucent over orange (active chip) AND looks fine on gray (inactive)
+  // because background opacity adapts.
+  return (
+    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-black/10">{n}</span>
+  );
+}
+
+// Scratch Card accessory ID — admin-configurable so we identify the
+// accessory by id (stable across name edits) not by name string. Stored in
+// localStorage so the setting survives reloads without backend.
+const SCRATCH_CARD_KEY = 'gangsheet_scratch_card_accessory_id';
+
+function loadScratchCardId() {
+  const raw = localStorage.getItem(SCRATCH_CARD_KEY);
+  const n = parseInt(raw || '0', 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Pull every accessory_id linked to an order's items, from both the multi-acc
+ * pivot (item.accessory_prices[]) and the legacy single accessory_price.
+ */
+function orderAccessoryIds(order) {
+  const ids = new Set();
+  for (const it of order.items || []) {
+    for (const ap of it.accessory_prices || []) {
+      const aid = ap.accessory_id ?? ap.accessory?.id;
+      if (aid) ids.add(aid);
+    }
+    const legacy = it.accessory_price?.accessory_id ?? it.accessory_price?.accessory?.id;
+    if (legacy) ids.add(legacy);
+  }
+  return ids;
+}
+
+function orderSideCount(order) {
+  let hasFront = false, hasBack = false;
+  for (const it of order.items || []) {
+    for (const m of it.metas || []) {
+      if (m.production) continue;
+      if (m.key === 'front_qr' || /^front_qr(_\d+)?$/.test(m.key)) hasFront = true;
+      if (m.key === 'back_qr'  || /^back_qr(_\d+)?$/.test(m.key))  hasBack  = true;
+      if (hasFront && hasBack) return 'two';
+    }
+  }
+  return hasFront || hasBack ? 'one' : 'none';
+}
+
 function ComposeTab() {
   const [pending, setPending] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -57,6 +120,19 @@ function ComposeTab() {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
   const [results, setResults] = useState([]);
+  // Sub-tab filter: all / one-side / two-side / scratch-card
+  const [subTab, setSubTab] = useState('all');
+  const [scratchCardId, setScratchCardId] = useState(loadScratchCardId);
+  const saveScratchCardId = (val) => {
+    const n = parseInt(val, 10);
+    if (Number.isFinite(n) && n > 0) {
+      localStorage.setItem(SCRATCH_CARD_KEY, String(n));
+      setScratchCardId(n);
+    } else {
+      localStorage.removeItem(SCRATCH_CARD_KEY);
+      setScratchCardId(0);
+    }
+  };
 
   const fetchPending = async () => {
     setLoading(true);
@@ -72,9 +148,32 @@ function ComposeTab() {
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
+
+  // Buckets cached for tab counters + filtered render. Recomputed when
+  // pending list or scratchCardId changes.
+  const buckets = (() => {
+    const out = { all: pending, one: [], two: [], scratch: [] };
+    for (const o of pending) {
+      const side = orderSideCount(o);
+      if (side === 'two') out.two.push(o);
+      else if (side === 'one') out.one.push(o);
+      if (scratchCardId && orderAccessoryIds(o).has(scratchCardId)) out.scratch.push(o);
+    }
+    return out;
+  })();
+  const filteredPending = buckets[subTab] || pending;
+
   const toggleAll = () => {
-    if (selectedIds.size === pending.length) setSelectedIds(new Set());
-    else setSelectedIds(new Set(pending.map(o => o.id)));
+    // Toggle-all operates on the CURRENTLY VISIBLE filter only — clicking
+    // the header checkbox in "Scratch Card" tab selects only scratch orders.
+    const visibleIds = new Set(filteredPending.map(o => o.id));
+    const allSelected = filteredPending.length > 0 && filteredPending.every(o => selectedIds.has(o.id));
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (allSelected) visibleIds.forEach(id => next.delete(id));
+      else visibleIds.forEach(id => next.add(id));
+      return next;
+    });
   };
 
   const countQrMetas = (order) => {
@@ -194,15 +293,46 @@ function ComposeTab() {
           </div>
         </div>
 
+        {/* Sub-tabs: All / One-side / Two-side / Scratch Card */}
+        <div className="flex flex-wrap items-end gap-3 border-b border-neutral-100 pb-2">
+          <div className="flex gap-1">
+            <SubChip active={subTab === 'all'}     onClick={() => setSubTab('all')}    >All <CountBadge n={buckets.all.length} /></SubChip>
+            <SubChip active={subTab === 'one'}     onClick={() => setSubTab('one')}    >1 mặt <CountBadge n={buckets.one.length} /></SubChip>
+            <SubChip active={subTab === 'two'}     onClick={() => setSubTab('two')}    >2 mặt <CountBadge n={buckets.two.length} /></SubChip>
+            <SubChip active={subTab === 'scratch'} onClick={() => setSubTab('scratch')}>Scratch Card <CountBadge n={buckets.scratch.length} /></SubChip>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-semibold">Scratch Card accessory ID</label>
+            <input
+              type="number"
+              min="0"
+              value={scratchCardId || ''}
+              onChange={e => saveScratchCardId(e.target.value)}
+              placeholder="vd 42"
+              title="ID của accessory Scratch Card (lưu localStorage). Để trống = tab Scratch Card sẽ rỗng."
+              className="w-24 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-sm"
+            />
+          </div>
+        </div>
+
         {loading ? (
           <p className="text-neutral-400 text-sm">Loading…</p>
-        ) : pending.length === 0 ? (
-          <p className="text-neutral-400 text-sm">No pending orders.</p>
+        ) : filteredPending.length === 0 ? (
+          <p className="text-neutral-400 text-sm">
+            {subTab === 'scratch' && !scratchCardId
+              ? 'Chưa nhập Scratch Card accessory ID (góc phải trên).'
+              : `Không có đơn nào trong tab "${subTab}".`}
+          </p>
         ) : (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-neutral-500 text-xs border-b border-neutral-200">
-                <th className="py-2 text-left w-8"><input type="checkbox" onChange={toggleAll} checked={selectedIds.size === pending.length && pending.length > 0} className="accent-orange-500" /></th>
+                <th className="py-2 text-left w-8"><input
+                  type="checkbox"
+                  onChange={toggleAll}
+                  checked={filteredPending.length > 0 && filteredPending.every(o => selectedIds.has(o.id))}
+                  className="accent-orange-500"
+                /></th>
                 <th className="py-2 text-left">System ID</th>
                 <th className="py-2 text-left">Ref</th>
                 <th className="py-2 text-left">Line</th>
@@ -211,7 +341,7 @@ function ComposeTab() {
               </tr>
             </thead>
             <tbody>
-              {pending.map(o => {
+              {filteredPending.map(o => {
                 const li = o.items?.[0]?.product_variant?.product?.line_id;
                 return (
                   <tr key={o.id} className="border-b border-neutral-100 hover:bg-orange-50/40">
@@ -531,6 +661,7 @@ function ManageTab({ isAdmin }) {
   // changes so a hidden selection can't survive a page flip.
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [reconvertingId, setReconvertingId] = useState(null);
 
   const markDownloaded = (id) => {
     setDownloadedSet(prev => {
@@ -605,6 +736,28 @@ function ManageTab({ isAdmin }) {
       fetchList();
     } catch (err) {
       alert(err?.response?.data?.message || 'Delete failed');
+    }
+  };
+
+  // Re-fetch source images + regenerate the _qr metas for every order in
+  // this gangsheet. Reuses POST /orders/bulk-reconvert — it deletes the
+  // existing _qr metas and unsets `production`, so the converter cron
+  // picks them up and rebuilds from the mockup URLs on next run.
+  const handleReconvertGang = async (g) => {
+    const ids = g.order_ids || [];
+    if (ids.length === 0) {
+      alert('Gangsheet này không có order_ids để reconvert.');
+      return;
+    }
+    if (!confirm(`Reconvert ${ids.length} đơn trong gangsheet ${g.filename}?\nCác meta _qr sẽ bị xoá và converter cron sẽ build lại.`)) return;
+    setReconvertingId(g.id);
+    try {
+      const res = await api.post('/orders/bulk-reconvert', { order_ids: ids });
+      alert(res?.data?.message || `Reconvert queued for ${ids.length} order(s)`);
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Reconvert failed');
+    } finally {
+      setReconvertingId(null);
     }
   };
 
@@ -729,6 +882,16 @@ function ManageTab({ isAdmin }) {
                     >
                       Download
                     </a>
+                    {isAdmin && (
+                      <button
+                        onClick={() => handleReconvertGang(g)}
+                        disabled={reconvertingId === g.id}
+                        className="text-xs text-blue-600 hover:text-blue-700 disabled:opacity-40"
+                        title="Xoá meta _qr của các đơn trong gang này; cron build lại từ mockup URL"
+                      >
+                        {reconvertingId === g.id ? 'Reconverting…' : 'Reconvert'}
+                      </button>
+                    )}
                     {isAdmin && (
                       <button onClick={() => handleDelete(g)} className="text-xs text-red-500 hover:text-red-600">Delete</button>
                     )}
