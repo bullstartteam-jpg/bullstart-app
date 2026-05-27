@@ -27,6 +27,7 @@ export default function Settings() {
     { id: 'tiers', label: 'Tiers' },
     { id: 'invoice', label: 'Invoice Payment' },
     { id: 'telegram', label: 'Telegram' },
+    { id: 'vnpay', label: 'VNPay Merchant' },
   ];
 
   if (loading) return <div className="p-6 text-neutral-400">Loading...</div>;
@@ -47,6 +48,90 @@ export default function Settings() {
       {tab === 'tiers' && <TiersTab tiers={tiers} setTiers={setTiers} />}
       {tab === 'invoice' && <InvoicePaymentTab />}
       {tab === 'telegram' && <TelegramTab />}
+      {tab === 'vnpay' && <VnpayMerchantTab />}
+    </div>
+  );
+}
+
+function VnpayMerchantTab() {
+  const [data, setData] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get('/settings/vnpay-merchant').then((res) => setData(res.data));
+  }, []);
+
+  if (!data) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const setMerchant = (field, value) =>
+    setData(d => ({ ...d, merchant: { ...d.merchant, [field]: value } }));
+  const setRate = (value) =>
+    setData(d => ({ ...d, rate: { vnd_per_usd: parseFloat(value) || 0 } }));
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/vnpay-merchant', data);
+      setData(res.data);
+      notify('Saved VNPay settings', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-3">VNPay Merchant Gateway</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-neutral-500">Environment</label>
+            <select
+              value={data.merchant.env || 'sandbox'}
+              onChange={(e) => setMerchant('env', e.target.value)}
+              className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+            >
+              <option value="sandbox">Sandbox (test)</option>
+              <option value="production">Production (live)</option>
+            </select>
+          </div>
+          <TextField label="vnp_TmnCode" value={data.merchant.tmn_code} onChange={v => setMerchant('tmn_code', v)} />
+          <TextField label="vnp_HashSecret" value={data.merchant.hash_secret} onChange={v => setMerchant('hash_secret', v)} full />
+          <TextField label="Return URL (browser)" value={data.merchant.return_url} onChange={v => setMerchant('return_url', v)} full />
+        </div>
+        <div className="mt-3 p-3 bg-blue-50 border border-blue-100 rounded text-xs text-blue-800 space-y-1">
+          <p><b>IPN URL</b> (set ở VNPay merchant portal): <code>https://your-hub-domain/api/payments/vnpay/ipn</code></p>
+          <p><b>Return URL</b> (set ở merchant portal + tab này): URL trang Wallet kết quả ở app bạn</p>
+          <p>Sandbox dashboard: https://sandbox.vnpayment.vn/merchantv2/</p>
+        </div>
+      </section>
+
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-3">Exchange Rate</h3>
+        <p className="text-[11px] text-neutral-500 mb-2">Số VND để credit $1 vào wallet. VD: 25000 = 25,000,000 VND nạp → $1,000 wallet.</p>
+        <div className="flex items-center gap-3">
+          <input
+            type="number"
+            min="1000"
+            max="100000"
+            step="100"
+            value={data.rate?.vnd_per_usd || 25000}
+            onChange={e => setRate(e.target.value)}
+            className="w-40 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+          />
+          <span className="text-xs text-neutral-500">VND per $1</span>
+        </div>
+      </section>
+
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        className="px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium"
+      >
+        {saving ? 'Saving…' : 'Save changes'}
+      </button>
     </div>
   );
 }
