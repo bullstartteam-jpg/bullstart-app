@@ -1,4 +1,5 @@
 import bwipjs from 'bwip-js';
+import QRCode from 'qrcode';
 import api from './api';
 import { driveThumb, driveId } from '../utils/drive';
 
@@ -316,13 +317,13 @@ export async function manualConvertLabelById(idOrSystemId) {
 }
 
 /**
- * Compose a convert-label image: the carrier label with a system_id Code 128
- * barcode + "{system_id}-{accessory_summary}" text band stamped in the
- * BOTTOM-LEFT corner. Preserves the source dimensions and produces a single
- * JPEG (smaller files than PNG since labels have busy raster content).
+ * Compose a convert-label image: the carrier label with a system_id QR code
+ * + "{system_id}-{accessory_summary}" text band stamped in the BOTTOM-LEFT
+ * corner. Preserves the source dimensions and produces a single JPEG.
  *
- * Overlay is sized at ~40% of the previous version so it doesn't dominate
- * the carrier label area.
+ * Switched from Code 128 to QR (2026-05-27): QR scans reliably from any
+ * angle/distance and survives thermal-printer drift better than thin
+ * Code 128 bars after JPEG compression.
  */
 async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   const id = driveId(sourceUrl);
@@ -340,27 +341,22 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
   const fontSize = Math.max(28, Math.round(sourceW * 0.035));
 
-  // Render the Code 128 at the EXACT pixel width we want by calibrating
-  // bwipjs `scale` (which is px-per-module). Drawing the barcode at native
-  // size — never shrinking — is the only reliable way to keep thin bars
-  // crisp after JPEG compression.
-  // Module estimate: 11 modules per char (Code 128 Set B) + ~35 modules for
-  // start/stop/checksum/quiet zones (paddingwidth: 10 each side).
-  const targetBarcodeW = Math.max(360, Math.round(sourceW * 0.28));
-  const moduleEstimate = systemId.length * 11 + 35;
-  const barcodeScale = Math.max(2, Math.min(8, Math.round(targetBarcodeW / moduleEstimate)));
-  const barcodeCanvas = generateBarcodeCanvas(systemId, barcodeScale);
+  // QR is square — render at the same target width the Code 128 used so the
+  // overall panel footprint stays comparable. Error correction M is the
+  // sweet spot for scanner reliability vs payload density at this size.
+  const qrSize = Math.max(280, Math.round(sourceW * 0.22));
+  const qrCanvas = await generateQrCanvas(systemId, qrSize);
 
   const PANEL_PAD = Math.round(fontSize * 0.45);
-  const TEXT_TO_BAR = Math.round(fontSize * 0.35);
-  const BARCODE_W = barcodeCanvas.width;
-  const BARCODE_H = barcodeCanvas.height;
+  const TEXT_TO_QR = Math.round(fontSize * 0.35);
+  const QR_W = qrCanvas.width;
+  const QR_H = qrCanvas.height;
 
   ctx.font = `bold ${fontSize}px sans-serif`;
   const textW = Math.ceil(ctx.measureText(codeText).width);
-  const innerW = Math.max(BARCODE_W, textW);
+  const innerW = Math.max(QR_W, textW);
   const panelW = innerW + PANEL_PAD * 2;
-  const panelH = fontSize + TEXT_TO_BAR + BARCODE_H + PANEL_PAD * 2;
+  const panelH = fontSize + TEXT_TO_QR + QR_H + PANEL_PAD * 2;
   const margin = Math.round(fontSize * 0.5);
   // Bottom-left anchor.
   const panelX = margin;
@@ -378,11 +374,11 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   ctx.fillText(codeText, panelX + PANEL_PAD, panelY + PANEL_PAD);
 
   ctx.drawImage(
-    barcodeCanvas,
+    qrCanvas,
     panelX + PANEL_PAD,
-    panelY + PANEL_PAD + fontSize + TEXT_TO_BAR,
-    BARCODE_W,
-    BARCODE_H
+    panelY + PANEL_PAD + fontSize + TEXT_TO_QR,
+    QR_W,
+    QR_H
   );
 
   // Resize the composed label to A6 (105 × 148 mm) at 300 DPI. Carrier PDFs
@@ -402,10 +398,21 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   const targetH = isPortrait ? LABEL_LONG : LABEL_SHORT;
   const finalCanvas = fitOnLabelStock(trimmed, targetW, targetH);
 
-  // Quality 0.95 keeps thin Code 128 bars crisp; 0.85 was blurring narrow
-  // bars together and breaking scanners. The file-size penalty is small.
+  // Quality 0.95 keeps QR modules sharp at small sizes; 0.85 was blurring
+  // the smallest modules and tripping scanners on heavy compression.
   const rawBlob = await canvasToBlob(finalCanvas, 'image/jpeg', 0.95);
   return await setJpgDpi(rawBlob, 300);
+}
+
+async function generateQrCanvas(value, size = 280) {
+  const c = document.createElement('canvas');
+  await QRCode.toCanvas(c, value, {
+    width: size,
+    margin: 1,                       // quiet zone in modules
+    errorCorrectionLevel: 'M',       // ~15% recovery — enough for label print
+    color: { dark: '#000000', light: '#FFFFFF' },
+  });
+  return c;
 }
 
 /**
