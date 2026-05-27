@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { notify, askConfirm } from '../components/Dialog';
+import Pagination from '../components/Pagination';
 
 const STATUS_BADGE = {
   pending: 'bg-yellow-100 text-yellow-700',
@@ -23,6 +24,9 @@ export default function Wallet() {
   // switching tabs resets the page back to 1 so users don't land on an empty
   // page 5 when the new filter only has 2 results.
   const [activeTab, setActiveTab] = useState('deposits'); // 'deposits' | 'paid'
+  // Filter state — applies to both the table view and the CSV export.
+  // Admin can pick a specific user; sellers only see their own (server enforces).
+  const [filters, setFilters] = useState({ user_id: '', date_from: '', date_to: '' });
 
   // VNPay deposit — admin uses this to credit their OWN wallet via VNPay.
   // The backend forces user_id to the authenticated user, so this is not a
@@ -82,14 +86,23 @@ export default function Wallet() {
   const [editForm, setEditForm] = useState({ user_id: '', amount: '', method: '', transaction_id: '', note: '' });
   const { hasRole, user: authUser } = useAuth();
 
+  const buildParams = (extra = {}) => {
+    const p = { type: activeTab === 'paid' ? 'paid' : 'deposit', ...extra };
+    if (filters.user_id)   p.user_id   = filters.user_id;
+    if (filters.date_from) p.date_from = filters.date_from;
+    if (filters.date_to)   p.date_to   = filters.date_to;
+    return p;
+  };
+
   const refreshAll = () => {
     api.get('/wallet/balance').then(res => setBalance(res.data));
     setLoading(true);
-    const params = { page, per_page: 20, type: activeTab === 'paid' ? 'paid' : 'deposit' };
-    api.get('/wallet/transactions', { params }).then(res => {
-      setTransactions(res.data.data || []);
-      setMeta(res.data);
-    }).finally(() => setLoading(false));
+    api.get('/wallet/transactions', { params: buildParams({ page, per_page: 20 }) })
+      .then(res => {
+        setTransactions(res.data.data || []);
+        setMeta(res.data);
+      })
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => {
@@ -101,12 +114,14 @@ export default function Wallet() {
 
   useEffect(() => {
     setLoading(true);
-    const params = { page, per_page: 20, type: activeTab === 'paid' ? 'paid' : 'deposit' };
-    api.get('/wallet/transactions', { params }).then(res => {
-      setTransactions(res.data.data || []);
-      setMeta(res.data);
-    }).finally(() => setLoading(false));
-  }, [page, activeTab]);
+    api.get('/wallet/transactions', { params: buildParams({ page, per_page: 20 }) })
+      .then(res => {
+        setTransactions(res.data.data || []);
+        setMeta(res.data);
+      })
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, activeTab, filters.user_id, filters.date_from, filters.date_to]);
 
   const switchTab = (tab) => {
     if (tab === activeTab) return;
@@ -174,11 +189,51 @@ export default function Wallet() {
     return tx.user_id === authUser?.id;
   };
 
+  // Streaming CSV export of transactions matching the current tab's filter.
+  // Filename encodes tab + date stamp so downloads don't collide.
+  const [exporting, setExporting] = useState(false);
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      // Export uses the same filter state as the table — what you see is
+      // what you get. Drops pagination (export is full-set).
+      const params = buildParams();
+      const res = await api.get('/wallet/transactions/export', { params, responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'text/csv;charset=utf-8;' }));
+      const a = document.createElement('a');
+      a.href = url;
+      const stamp = new Date().toISOString().slice(0, 10);
+      // Encode active filter slugs in the filename for traceability.
+      const slug = [
+        params.type,
+        params.user_id ? `u${params.user_id}` : null,
+        params.date_from || null,
+        params.date_to || null,
+      ].filter(Boolean).join('_');
+      a.download = `wallet_${slug}_${stamp}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      notify(`Exported ${params.type} transactions`, { title: 'Export', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Export failed', { title: 'Export failed', kind: 'error' });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="p-6">
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-xl font-bold text-neutral-800">Wallet</h2>
         <div className="flex gap-2">
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="px-3 py-2 bg-purple-100 hover:bg-purple-200 disabled:opacity-50 text-purple-700 text-sm rounded-lg"
+            title={`Export tab "${activeTab}" sang CSV`}
+          >
+            {exporting ? 'Exporting…' : `⬇ Export ${activeTab === 'paid' ? 'Paid' : 'Deposits'}`}
+          </button>
           <button
             onClick={() => { setShowVnpay(true); setShowDeposit(false); }}
             className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-sm rounded-lg"
@@ -313,6 +368,54 @@ export default function Wallet() {
         </form>
       )}
 
+      {/* Filter bar — applies to both table view and CSV export */}
+      <div className="mb-3 flex flex-wrap gap-2 items-end bg-white border border-neutral-200 rounded-xl p-3 shadow-sm">
+        {hasRole('admin') && (
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-neutral-500 font-semibold mb-1">User</label>
+            <select
+              value={filters.user_id}
+              onChange={e => { setFilters(f => ({ ...f, user_id: e.target.value })); setPage(1); }}
+              className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-sm min-w-[200px]"
+            >
+              <option value="">— all users —</option>
+              {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
+            </select>
+          </div>
+        )}
+        <div>
+          <label className="block text-[10px] uppercase tracking-wider text-neutral-500 font-semibold mb-1">From</label>
+          <input
+            type="date"
+            value={filters.date_from}
+            onChange={e => { setFilters(f => ({ ...f, date_from: e.target.value })); setPage(1); }}
+            className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-sm"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] uppercase tracking-wider text-neutral-500 font-semibold mb-1">To</label>
+          <input
+            type="date"
+            value={filters.date_to}
+            onChange={e => { setFilters(f => ({ ...f, date_to: e.target.value })); setPage(1); }}
+            className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-sm"
+          />
+        </div>
+        {(filters.user_id || filters.date_from || filters.date_to) && (
+          <button
+            onClick={() => { setFilters({ user_id: '', date_from: '', date_to: '' }); setPage(1); }}
+            className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded"
+          >
+            Clear filters
+          </button>
+        )}
+        <span className="text-xs text-neutral-500 ml-auto">
+          {meta.total != null && (
+            <>Showing <span className="font-semibold">{meta.total}</span> {activeTab}</>
+          )}
+        </span>
+      </div>
+
       {/* Tabs split deposits and paid transactions */}
       <div className="flex gap-1 mb-3 border-b border-neutral-200">
         <TabBtn active={activeTab === 'deposits'} onClick={() => switchTab('deposits')}>
@@ -426,13 +529,7 @@ export default function Wallet() {
         </table>
       </div>
 
-      {meta.last_page > 1 && (
-        <div className="flex justify-center gap-2 mt-4">
-          {Array.from({ length: Math.min(meta.last_page, 10) }, (_, i) => i + 1).map(p => (
-            <button key={p} onClick={() => setPage(p)} className={`px-3 py-1 rounded text-sm ${page === p ? 'bg-orange-500 text-white' : 'bg-white border border-neutral-200 text-neutral-600'}`}>{p}</button>
-          ))}
-        </div>
-      )}
+      <Pagination page={page} lastPage={meta.last_page} onChange={setPage} />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount } from '../services/gangsheetBuilder';
+import Pagination from '../components/Pagination';
 
 export default function Gangsheet() {
   const { hasRole } = useAuth();
@@ -905,16 +906,11 @@ function ManageTab({ isAdmin }) {
       </div>
 
       {/* Pagination */}
-      {list.last_page > 1 && (
-        <div className="flex justify-center gap-2">
-          {Array.from({ length: Math.min(list.last_page, 10) }, (_, i) => i + 1).map(p => (
-            <button key={p} onClick={() => setFilters(f => ({ ...f, page: p }))}
-              className={`px-3 py-1 rounded text-sm ${filters.page === p ? 'bg-orange-500 text-white' : 'bg-white border border-neutral-200 text-neutral-600'}`}>
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
+      <Pagination
+        page={filters.page}
+        lastPage={list.last_page}
+        onChange={(p) => setFilters(f => ({ ...f, page: p }))}
+      />
 
       {detail && <DetailModal gs={detail} onClose={() => setDetail(null)} />}
     </div>
