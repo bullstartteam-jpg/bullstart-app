@@ -189,6 +189,55 @@ export default function Wallet() {
     return tx.user_id === authUser?.id;
   };
 
+  // Multi-select on the transactions table for admin bulk-refund-delete.
+  // Selection clears on tab/page/filter change so a hidden row can't be
+  // refunded by mistake.
+  const [selectedTxIds, setSelectedTxIds] = useState(new Set());
+  const [bulkRefunding, setBulkRefunding] = useState(false);
+  useEffect(() => { setSelectedTxIds(new Set()); }, [page, activeTab, filters.user_id, filters.date_from, filters.date_to]);
+
+  const toggleSelectTx = (id) => setSelectedTxIds(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleSelectAllTx = () => {
+    const eligible = transactions.filter(t => t.type === 'paid').map(t => t.id);
+    if (eligible.every(id => selectedTxIds.has(id))) {
+      setSelectedTxIds(new Set());
+    } else {
+      setSelectedTxIds(new Set(eligible));
+    }
+  };
+
+  const handleBulkRefundDelete = async () => {
+    const ids = [...selectedTxIds];
+    if (ids.length === 0) return;
+    const ok = await askConfirm(
+      `Refund + DELETE ${ids.length} transaction(s)?\n\n` +
+      `Số tiền sẽ được cộng lại vào wallet user, paid_cost của đơn liên quan trừ về như chưa pay, và bản ghi transaction sẽ bị xoá vĩnh viễn.\n\n` +
+      `Hành động này không thể undo.`,
+      { title: 'Confirm refund + delete', okText: 'Refund + Delete' }
+    );
+    if (!ok) return;
+    setBulkRefunding(true);
+    try {
+      const res = await api.post('/wallet/transactions/bulk-refund-delete', { transaction_ids: ids });
+      const errs = res.data.errors || [];
+      const tone = errs.length ? 'warning' : 'success';
+      notify(
+        `${res.data.message}${errs.length ? `\n\nSkipped: ${errs.length}\n• ${errs.slice(0, 5).join('\n• ')}` : ''}`,
+        { title: 'Bulk refund + delete', kind: tone }
+      );
+      setSelectedTxIds(new Set());
+      refreshAll();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Bulk refund failed', { title: 'Bulk refund failed', kind: 'error' });
+    } finally {
+      setBulkRefunding(false);
+    }
+  };
+
   // Streaming CSV export of transactions matching the current tab's filter.
   // Filename encodes tab + date stamp so downloads don't collide.
   const [exporting, setExporting] = useState(false);
@@ -226,6 +275,16 @@ export default function Wallet() {
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-xl font-bold text-neutral-800">Wallet</h2>
         <div className="flex gap-2">
+          {hasRole('admin') && activeTab === 'paid' && selectedTxIds.size > 0 && (
+            <button
+              onClick={handleBulkRefundDelete}
+              disabled={bulkRefunding}
+              className="px-3 py-2 bg-red-100 hover:bg-red-200 disabled:opacity-50 text-red-700 text-sm rounded-lg"
+              title="Hoàn tiền các transaction đã chọn + xoá bản ghi + reset paid_cost của đơn"
+            >
+              {bulkRefunding ? 'Refunding…' : `↩ Refund + Delete (${selectedTxIds.size})`}
+            </button>
+          )}
           <button
             onClick={handleExport}
             disabled={exporting}
@@ -431,6 +490,20 @@ export default function Wallet() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-neutral-200 text-neutral-500 text-xs bg-[#faf8f6]">
+              {hasRole('admin') && activeTab === 'paid' && (
+                <th className="p-3 text-center w-10">
+                  <input
+                    type="checkbox"
+                    onChange={toggleSelectAllTx}
+                    checked={
+                      transactions.filter(t => t.type === 'paid').length > 0 &&
+                      transactions.filter(t => t.type === 'paid').every(t => selectedTxIds.has(t.id))
+                    }
+                    className="accent-orange-500"
+                    title="Select all paid on this page"
+                  />
+                </th>
+              )}
               <th className="p-3 text-left">Date</th>
               <th className="p-3 text-left">User</th>
               <th className="p-3 text-left">Type</th>
@@ -447,13 +520,27 @@ export default function Wallet() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan="12" className="p-6 text-center text-neutral-400">Loading...</td></tr>
+              <tr><td colSpan={hasRole('admin') && activeTab === 'paid' ? 13 : 12} className="p-6 text-center text-neutral-400">Loading...</td></tr>
             ) : transactions.length === 0 ? (
-              <tr><td colSpan="12" className="p-6 text-center text-neutral-400">No transactions</td></tr>
+              <tr><td colSpan={hasRole('admin') && activeTab === 'paid' ? 13 : 12} className="p-6 text-center text-neutral-400">No transactions</td></tr>
             ) : transactions.map(t => {
               const editing = editingTxId === t.id;
+              const eligible = hasRole('admin') && activeTab === 'paid' && t.type === 'paid';
+              const isSel = selectedTxIds.has(t.id);
               return (
-                <tr key={t.id} className="border-b border-neutral-100">
+                <tr key={t.id} className={`border-b border-neutral-100 ${isSel ? 'bg-orange-50/60' : ''}`}>
+                  {hasRole('admin') && activeTab === 'paid' && (
+                    <td className="p-3 text-center">
+                      {eligible ? (
+                        <input
+                          type="checkbox"
+                          checked={isSel}
+                          onChange={() => toggleSelectTx(t.id)}
+                          className="accent-orange-500"
+                        />
+                      ) : <span className="text-neutral-300">—</span>}
+                    </td>
+                  )}
                   <td className="p-3 text-neutral-600 text-xs">{new Date(t.created_at).toLocaleString()}</td>
                   <td className="p-3 text-xs">
                     {editing && hasRole('admin') ? (
