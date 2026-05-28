@@ -135,6 +135,10 @@ function ComposeTab() {
     }
   };
 
+  // Full accessory catalog for the Scratch Card picker — lets admin choose
+  // by name instead of memorising the numeric id.
+  const [accessoryList, setAccessoryList] = useState([]);
+
   const fetchPending = async () => {
     setLoading(true);
     try {
@@ -143,6 +147,20 @@ function ComposeTab() {
     } finally { setLoading(false); }
   };
   useEffect(() => { fetchPending(); }, []);
+
+  useEffect(() => {
+    // Flatten accessories across all products into a single picker list.
+    api.get('/products', { params: { per_page: 200 } }).then(res => {
+      const rows = res.data?.data || res.data || [];
+      const accs = [];
+      for (const p of rows) {
+        for (const a of p.accessories || []) {
+          accs.push({ id: a.id, label: `${p.name} — ${a.name}` });
+        }
+      }
+      setAccessoryList(accs);
+    }).catch(() => {});
+  }, []);
 
   const toggle = (id) => setSelectedIds(prev => {
     const next = new Set(prev);
@@ -303,16 +321,23 @@ function ComposeTab() {
             <SubChip active={subTab === 'scratch'} onClick={() => setSubTab('scratch')}>Scratch Card <CountBadge n={buckets.scratch.length} /></SubChip>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-semibold">Scratch Card accessory ID</label>
-            <input
-              type="number"
-              min="0"
+            <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-semibold">Scratch Card accessory</label>
+            <select
               value={scratchCardId || ''}
               onChange={e => saveScratchCardId(e.target.value)}
-              placeholder="vd 42"
-              title="ID của accessory Scratch Card (lưu localStorage). Để trống = tab Scratch Card sẽ rỗng."
-              className="w-24 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-sm"
-            />
+              title="Chọn accessory dùng cho tab Scratch Card (lưu localStorage). Để trống = tab Scratch Card rỗng."
+              className="px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-sm max-w-[220px]"
+            >
+              <option value="">— Chọn accessory —</option>
+              {accessoryList.map(a => (
+                <option key={a.id} value={a.id}>{a.label} (#{a.id})</option>
+              ))}
+              {/* Keep a stale saved id selectable even if it's not in the
+                  current catalog so the filter doesn't silently reset. */}
+              {scratchCardId > 0 && !accessoryList.some(a => a.id === scratchCardId) && (
+                <option value={scratchCardId}>#{scratchCardId} (not in catalog)</option>
+              )}
+            </select>
           </div>
         </div>
 
