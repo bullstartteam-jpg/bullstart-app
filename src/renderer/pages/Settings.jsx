@@ -81,30 +81,60 @@ function VnpayMerchantTab() {
     }
   };
 
+  const copy = (text) => { navigator.clipboard?.writeText(text); notify('Đã copy', { title: 'Copied', kind: 'success' }); };
+
   return (
     <div className="space-y-6 max-w-3xl">
       <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
-        <h3 className="text-sm font-semibold text-neutral-700 mb-3">VNPay Merchant Gateway</h3>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs text-neutral-500">Environment</label>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-neutral-700">VNPay Merchant Gateway</h3>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-neutral-500">Active env:</label>
             <select
               value={data.merchant.env || 'sandbox'}
               onChange={(e) => setMerchant('env', e.target.value)}
-              className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+              className="px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
             >
               <option value="sandbox">Sandbox (test)</option>
               <option value="production">Production (live)</option>
             </select>
           </div>
-          <TextField label="vnp_TmnCode" value={data.merchant.tmn_code} onChange={v => setMerchant('tmn_code', v)} />
-          <TextField label="vnp_HashSecret" value={data.merchant.hash_secret} onChange={v => setMerchant('hash_secret', v)} full />
-          <TextField label="Return URL (browser)" value={data.merchant.return_url} onChange={v => setMerchant('return_url', v)} full />
         </div>
-        <div className="mt-3 p-3 bg-blue-50 border border-blue-100 rounded text-xs text-blue-800 space-y-1">
-          <p><b>IPN URL</b> (set ở VNPay merchant portal): <code>https://your-hub-domain/api/payments/vnpay/ipn</code></p>
-          <p><b>Return URL</b> (set ở merchant portal + tab này): URL trang Wallet kết quả ở app bạn</p>
-          <p>Sandbox dashboard: https://sandbox.vnpayment.vn/merchantv2/</p>
+
+        {/* Sandbox creds */}
+        <div className={`rounded-lg border p-3 mb-3 ${data.merchant.env === 'sandbox' ? 'border-orange-300 bg-orange-50/40' : 'border-neutral-200'}`}>
+          <div className="text-xs font-semibold text-neutral-600 mb-2">Sandbox {data.merchant.env === 'sandbox' && <span className="text-orange-600">(đang dùng)</span>}</div>
+          <div className="grid grid-cols-2 gap-3">
+            <TextField label="vnp_TmnCode" value={data.merchant.sandbox_tmn_code} onChange={v => setMerchant('sandbox_tmn_code', v)} />
+            <TextField label="vnp_HashSecret" value={data.merchant.sandbox_hash_secret} onChange={v => setMerchant('sandbox_hash_secret', v)} />
+          </div>
+        </div>
+
+        {/* Production creds */}
+        <div className={`rounded-lg border p-3 mb-3 ${data.merchant.env === 'production' ? 'border-orange-300 bg-orange-50/40' : 'border-neutral-200'}`}>
+          <div className="text-xs font-semibold text-neutral-600 mb-2">Production {data.merchant.env === 'production' && <span className="text-orange-600">(đang dùng — tiền thật)</span>}</div>
+          <div className="grid grid-cols-2 gap-3">
+            <TextField label="vnp_TmnCode" value={data.merchant.production_tmn_code} onChange={v => setMerchant('production_tmn_code', v)} />
+            <TextField label="vnp_HashSecret" value={data.merchant.production_hash_secret} onChange={v => setMerchant('production_hash_secret', v)} />
+          </div>
+        </div>
+
+        <TextField label="Return URL (browser redirect)" value={data.merchant.return_url} onChange={v => setMerchant('return_url', v)} full />
+
+        {/* URLs to register at VNPay portal */}
+        <div className="mt-3 p-3 bg-blue-50 border border-blue-100 rounded text-xs text-blue-800 space-y-2">
+          <p className="font-semibold">Khai báo 2 URL này ở VNPay merchant portal:</p>
+          <div className="flex items-center gap-2">
+            <span className="w-16 shrink-0">IPN URL:</span>
+            <code className="flex-1 truncate bg-white px-2 py-1 rounded border border-blue-200">{data.ipn_url}</code>
+            <button onClick={() => copy(data.ipn_url)} className="shrink-0 px-2 py-1 bg-blue-100 hover:bg-blue-200 rounded">Copy</button>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="w-16 shrink-0">Return:</span>
+            <code className="flex-1 truncate bg-white px-2 py-1 rounded border border-blue-200">{data.return_url}</code>
+            <button onClick={() => copy(data.return_url)} className="shrink-0 px-2 py-1 bg-blue-100 hover:bg-blue-200 rounded">Copy</button>
+          </div>
+          <p className="text-[11px] opacity-75">Sandbox portal: sandbox.vnpayment.vn/merchantv2/ · Production: doitac.vnpay.vn</p>
         </div>
       </section>
 
