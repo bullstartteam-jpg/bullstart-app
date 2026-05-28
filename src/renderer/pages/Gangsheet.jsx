@@ -152,17 +152,20 @@ function ComposeTab() {
       else if (side === 'one') sideBuckets.one.push(o);
 
       // Collect accessory id+name from the order's items (pivot + legacy).
+      // Only accessories with gangsheet_split=true get a chip — physical-only
+      // add-ons (e.g. envelope) are flagged off in the DB and skipped here.
       for (const it of o.items || []) {
         const seen = new Set();
-        const add = (id, name) => {
+        const add = (acc) => {
+          const id = acc?.id;
           if (!id || seen.has(id)) return;
+          if (acc.gangsheet_split === false) return; // physical-only — no chip
           seen.add(id);
           (accBuckets[id] ||= []).push(o);
-          if (name && !accMeta[id]) accMeta[id] = { name };
+          if (acc.name && !accMeta[id]) accMeta[id] = { name: acc.name };
         };
-        for (const ap of it.accessory_prices || []) add(ap.accessory_id ?? ap.accessory?.id, ap.accessory?.name);
-        const lap = it.accessory_price;
-        if (lap) add(lap.accessory_id ?? lap.accessory?.id, lap.accessory?.name);
+        for (const ap of it.accessory_prices || []) add(ap.accessory);
+        if (it.accessory_price) add(it.accessory_price.accessory);
       }
     }
     return { sideBuckets, accBuckets, accMeta };

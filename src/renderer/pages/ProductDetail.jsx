@@ -666,6 +666,20 @@ function AccessoryRow({ accessory, tiers, isAdmin, onDeleteAccessory, onDeletePr
     }
   };
 
+  // Toggle whether this accessory gets a Gangsheet Compose chip + filename
+  // tag. Off = physical-only add-on (e.g. envelope) that needs no gangsheet.
+  const toggleGangsheetSplit = async () => {
+    try {
+      await api.put(`/accessories/${accessory.id}`, {
+        name: accessory.name,
+        gangsheet_split: !(accessory.gangsheet_split ?? true),
+      });
+      onSaved();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error');
+    }
+  };
+
   return (
     <div className="border border-neutral-200 rounded-lg p-3">
       <div className="flex justify-between items-center mb-2">
@@ -679,7 +693,16 @@ function AccessoryRow({ accessory, tiers, isAdmin, onDeleteAccessory, onDeletePr
           <div className="text-neutral-800 font-medium text-sm">{accessory.name}</div>
         )}
         {isAdmin && !editingName && (
-          <div className="flex gap-3">
+          <div className="flex gap-3 items-center">
+            <label className="flex items-center gap-1 text-xs text-neutral-500 cursor-pointer" title="Hiện chip + tag tên gangsheet riêng cho accessory này (tắt với add-on vật lý như envelope)">
+              <input
+                type="checkbox"
+                checked={accessory.gangsheet_split ?? true}
+                onChange={toggleGangsheetSplit}
+                className="accent-orange-500"
+              />
+              Gangsheet chip
+            </label>
             <button onClick={() => { setName(accessory.name); setEditingName(true); }} className="text-xs text-orange-500 hover:text-orange-600">Edit</button>
             <button onClick={onDeleteAccessory} className="text-xs text-red-500 hover:text-red-600">Delete</button>
           </div>
