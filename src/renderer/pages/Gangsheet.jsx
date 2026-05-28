@@ -72,17 +72,6 @@ function CountBadge({ n }) {
   );
 }
 
-// Scratch Card accessory ID — admin-configurable so we identify the
-// accessory by id (stable across name edits) not by name string. Stored in
-// localStorage so the setting survives reloads without backend.
-const SCRATCH_CARD_KEY = 'gangsheet_scratch_card_accessory_id';
-
-function loadScratchCardId() {
-  const raw = localStorage.getItem(SCRATCH_CARD_KEY);
-  const n = parseInt(raw || '0', 10);
-  return Number.isFinite(n) && n > 0 ? n : 0;
-}
-
 /**
  * Pull every accessory_id linked to an order's items, from both the multi-acc
  * pivot (item.accessory_prices[]) and the legacy single accessory_price.
@@ -121,23 +110,8 @@ function ComposeTab() {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
   const [results, setResults] = useState([]);
-  // Sub-tab filter: all / one-side / two-side / scratch-card
+  // Sub-tab filter: 'all' | 'one' | 'two' | 'acc:<accessoryId>'.
   const [subTab, setSubTab] = useState('all');
-  const [scratchCardId, setScratchCardId] = useState(loadScratchCardId);
-  const saveScratchCardId = (val) => {
-    const n = parseInt(val, 10);
-    if (Number.isFinite(n) && n > 0) {
-      localStorage.setItem(SCRATCH_CARD_KEY, String(n));
-      setScratchCardId(n);
-    } else {
-      localStorage.removeItem(SCRATCH_CARD_KEY);
-      setScratchCardId(0);
-    }
-  };
-
-  // Full accessory catalog for the Scratch Card picker — lets admin choose
-  // by name instead of memorising the numeric id.
-  const [accessoryList, setAccessoryList] = useState([]);
 
   const fetchPending = async () => {
     setLoading(true);
@@ -148,39 +122,46 @@ function ComposeTab() {
   };
   useEffect(() => { fetchPending(); }, []);
 
-  useEffect(() => {
-    // Flatten accessories across all products into a single picker list.
-    api.get('/products', { params: { per_page: 200 } }).then(res => {
-      const rows = res.data?.data || res.data || [];
-      const accs = [];
-      for (const p of rows) {
-        for (const a of p.accessories || []) {
-          accs.push({ id: a.id, label: `${p.name} — ${a.name}` });
-        }
-      }
-      setAccessoryList(accs);
-    }).catch(() => {});
-  }, []);
-
   const toggle = (id) => setSelectedIds(prev => {
     const next = new Set(prev);
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
 
-  // Buckets cached for tab counters + filtered render. Recomputed when
-  // pending list or scratchCardId changes.
-  const buckets = (() => {
-    const out = { all: pending, one: [], two: [], scratch: [] };
+  // Side-count buckets (all / one / two) + a dynamic per-accessory bucket
+  // auto-built from whatever accessories actually appear in the pending
+  // orders — no manual config. Each distinct accessory becomes its own
+  // filter chip so e.g. Scratch Card orders split out automatically.
+  const { sideBuckets, accBuckets, accMeta } = (() => {
+    const sideBuckets = { all: pending, one: [], two: [] };
+    const accBuckets = {};   // accId → orders[]
+    const accMeta = {};      // accId → { name }
     for (const o of pending) {
       const side = orderSideCount(o);
-      if (side === 'two') out.two.push(o);
-      else if (side === 'one') out.one.push(o);
-      if (scratchCardId && orderAccessoryIds(o).has(scratchCardId)) out.scratch.push(o);
+      if (side === 'two') sideBuckets.two.push(o);
+      else if (side === 'one') sideBuckets.one.push(o);
+
+      // Collect accessory id+name from the order's items (pivot + legacy).
+      for (const it of o.items || []) {
+        const seen = new Set();
+        const add = (id, name) => {
+          if (!id || seen.has(id)) return;
+          seen.add(id);
+          (accBuckets[id] ||= []).push(o);
+          if (name && !accMeta[id]) accMeta[id] = { name };
+        };
+        for (const ap of it.accessory_prices || []) add(ap.accessory_id ?? ap.accessory?.id, ap.accessory?.name);
+        const lap = it.accessory_price;
+        if (lap) add(lap.accessory_id ?? lap.accessory?.id, lap.accessory?.name);
+      }
     }
-    return out;
+    return { sideBuckets, accBuckets, accMeta };
   })();
-  const filteredPending = buckets[subTab] || pending;
+
+  // subTab is 'all' | 'one' | 'two' | 'acc:<id>'.
+  const filteredPending = subTab.startsWith('acc:')
+    ? (accBuckets[subTab.slice(4)] || [])
+    : (sideBuckets[subTab] || pending);
 
   const toggleAll = () => {
     // Toggle-all operates on the CURRENTLY VISIBLE filter only — clicking
@@ -312,41 +293,27 @@ function ComposeTab() {
           </div>
         </div>
 
-        {/* Sub-tabs: All / One-side / Two-side / Scratch Card */}
-        <div className="flex flex-wrap items-end gap-3 border-b border-neutral-100 pb-2">
-          <div className="flex gap-1">
-            <SubChip active={subTab === 'all'}     onClick={() => setSubTab('all')}    >All <CountBadge n={buckets.all.length} /></SubChip>
-            <SubChip active={subTab === 'one'}     onClick={() => setSubTab('one')}    >1 mặt <CountBadge n={buckets.one.length} /></SubChip>
-            <SubChip active={subTab === 'two'}     onClick={() => setSubTab('two')}    >2 mặt <CountBadge n={buckets.two.length} /></SubChip>
-            <SubChip active={subTab === 'scratch'} onClick={() => setSubTab('scratch')}>Scratch Card <CountBadge n={buckets.scratch.length} /></SubChip>
-          </div>
-          <div className="ml-auto flex items-center gap-2">
-            <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-semibold">Scratch Card accessory</label>
-            <select
-              value={scratchCardId || ''}
-              onChange={e => saveScratchCardId(e.target.value)}
-              title="Chọn accessory dùng cho tab Scratch Card (lưu localStorage). Để trống = tab Scratch Card rỗng."
-              className="px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-sm max-w-[220px]"
-            >
-              <option value="">— Chọn accessory —</option>
-              {accessoryList.map(a => (
-                <option key={a.id} value={a.id}>{a.label} (#{a.id})</option>
-              ))}
-              {/* Keep a stale saved id selectable even if it's not in the
-                  current catalog so the filter doesn't silently reset. */}
-              {scratchCardId > 0 && !accessoryList.some(a => a.id === scratchCardId) && (
-                <option value={scratchCardId}>#{scratchCardId} (not in catalog)</option>
-              )}
-            </select>
-          </div>
+        {/* Sub-tabs: All / 1 mặt / 2 mặt + một chip cho mỗi accessory
+            xuất hiện trong pending orders (auto, không cần config). */}
+        <div className="flex flex-wrap items-center gap-1 border-b border-neutral-100 pb-2">
+          <SubChip active={subTab === 'all'} onClick={() => setSubTab('all')}>All <CountBadge n={sideBuckets.all.length} /></SubChip>
+          <SubChip active={subTab === 'one'} onClick={() => setSubTab('one')}>1 mặt <CountBadge n={sideBuckets.one.length} /></SubChip>
+          <SubChip active={subTab === 'two'} onClick={() => setSubTab('two')}>2 mặt <CountBadge n={sideBuckets.two.length} /></SubChip>
+          {Object.keys(accBuckets)
+            .sort((a, b) => accBuckets[b].length - accBuckets[a].length)
+            .map(id => (
+              <SubChip key={id} active={subTab === `acc:${id}`} onClick={() => setSubTab(`acc:${id}`)}>
+                {accMeta[id]?.name || `Accessory #${id}`} <CountBadge n={accBuckets[id].length} />
+              </SubChip>
+            ))}
         </div>
 
         {loading ? (
           <p className="text-neutral-400 text-sm">Loading…</p>
         ) : filteredPending.length === 0 ? (
           <p className="text-neutral-400 text-sm">
-            {subTab === 'scratch' && !scratchCardId
-              ? 'Chưa nhập Scratch Card accessory ID (góc phải trên).'
+            {subTab.startsWith('acc:')
+              ? `Không có đơn nào dùng accessory này.`
               : `Không có đơn nào trong tab "${subTab}".`}
           </p>
         ) : (
