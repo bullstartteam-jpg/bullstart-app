@@ -72,6 +72,16 @@ function CountBadge({ n }) {
   );
 }
 
+// Turn an accessory name into a filename-safe token: "Scratch Card" → "scratch-card".
+function slugifyAccessory(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24);
+}
+
 /**
  * Pull every accessory_id linked to an order's items, from both the multi-acc
  * pivot (item.accessory_prices[]) and the legacy single accessory_price.
@@ -197,12 +207,22 @@ function ComposeTab() {
   const handleGenerate = async () => {
     const selected = pending.filter(o => selectedIds.has(o.id));
     if (selected.length === 0) { alert('Select at least 1 order'); return; }
+
+    // When generating from an accessory chip (e.g. Scratch Card), tag the
+    // filename with the accessory name so the press operator can tell the
+    // batch apart from regular card gangsheets. Combined with the two_size
+    // suffix → e.g. GC_..._scratch-card or GC_..._scratch-card_two_size.
+    const accTag = subTab.startsWith('acc:')
+      ? slugifyAccessory(accMeta[subTab.slice(4)]?.name)
+      : '';
+    const withTag = (s) => [accTag, s].filter(Boolean).join('_');
+
     // Split two-sided orders out so they get their own gangsheet (named with
     // `_two_size` suffix). One-side orders ship in the normal sheets.
     const { oneSide, twoSide } = splitOrdersBySideCount(selected);
     const chunks = [
-      ...chunkArray(oneSide, batchSize).map(chunk => ({ chunk, suffix: '' })),
-      ...chunkArray(twoSide, batchSize).map(chunk => ({ chunk, suffix: 'two_size' })),
+      ...chunkArray(oneSide, batchSize).map(chunk => ({ chunk, suffix: withTag('') })),
+      ...chunkArray(twoSide, batchSize).map(chunk => ({ chunk, suffix: withTag('two_size') })),
     ];
     setRunning(true); setResults([]);
     const out = [];
