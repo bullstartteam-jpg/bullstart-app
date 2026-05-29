@@ -22,6 +22,7 @@ export default function OrderCreate() {
 
   const blankItem = () => ({
     product_variant_id: '',
+    material_id: '',
     // Multi-accessory: list of { accessory_id, accessory_item_id } rows. Each
     // row picks an accessory group + a tier-scoped style/price for it.
     accessories: [],
@@ -90,6 +91,13 @@ export default function OrderCreate() {
     return products.find(p => p.variants?.some(v => String(v.id) === String(variantId))) || null;
   };
 
+  const materialsOfVariant = (variantId) => productOfVariant(variantId)?.materials || [];
+  const defaultMaterialId = (variantId) => {
+    const mats = materialsOfVariant(variantId);
+    const def = mats.find(m => m.is_default) || mats[0];
+    return def ? String(def.id) : '';
+  };
+
   const updateItem = (index, patch) => {
     setForm(f => {
       const items = [...f.items];
@@ -146,6 +154,8 @@ export default function OrderCreate() {
           .filter(Boolean);
         return {
           product_variant_id: it.product_variant_id,
+
+          material_id: it.material_id || null,
           // accessory_ids[] is the new multi-accessory payload; the server
           // also still accepts accessory_item_id for the primary one.
           accessory_ids: accessoryIds,
@@ -371,7 +381,7 @@ export default function OrderCreate() {
                       <label className="text-xs text-neutral-500">Product Variant</label>
                       <select
                         value={item.product_variant_id}
-                        onChange={e => updateItem(i, { product_variant_id: e.target.value, accessories: [] })}
+                        onChange={e => updateItem(i, { product_variant_id: e.target.value, accessories: [], material_id: defaultMaterialId(e.target.value) })}
                         className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
                         required
                       >
@@ -420,6 +430,23 @@ export default function OrderCreate() {
                     </div>
                     <button type="button" onClick={() => removeItem(i)} className="px-3 py-2 text-red-500 hover:text-red-600 text-sm">Remove</button>
                   </div>
+
+                  {/* Material (chất liệu) — default auto-picked when variant chosen */}
+                  {materialsOfVariant(item.product_variant_id).length > 0 && (
+                    <div>
+                      <label className="text-xs text-neutral-500">Material (chất liệu)</label>
+                      <select
+                        value={item.material_id || ''}
+                        onChange={e => updateItem(i, { material_id: e.target.value })}
+                        className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
+                      >
+                        <option value="">— Chọn chất liệu —</option>
+                        {materialsOfVariant(item.product_variant_id).map(m => (
+                          <option key={m.id} value={m.id}>{m.name}{m.is_default ? ' (default)' : ''}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
                   {/* Multi-accessory picker — one row per accessory.
                        Add as many as the product supports (different add-ons

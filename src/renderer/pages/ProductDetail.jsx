@@ -56,6 +56,30 @@ export default function ProductDetail() {
     fetchProduct();
   };
 
+  // --- Materials ---
+  const [materialForm, setMaterialForm] = useState({ name: '', description: '', is_default: false });
+  const [showMaterialForm, setShowMaterialForm] = useState(false);
+
+  const handleAddMaterial = async (e) => {
+    e.preventDefault();
+    if (!materialForm.name.trim()) return;
+    await api.post(`/products/${id}/materials`, materialForm);
+    setMaterialForm({ name: '', description: '', is_default: false });
+    setShowMaterialForm(false);
+    fetchProduct();
+  };
+
+  const handleDeleteMaterial = async (materialId) => {
+    if (!confirm('Delete this material?')) return;
+    await api.delete(`/materials/${materialId}`);
+    fetchProduct();
+  };
+
+  const handleSetDefaultMaterial = async (m) => {
+    await api.put(`/materials/${m.id}`, { name: m.name, is_default: true });
+    fetchProduct();
+  };
+
   const handleUpdateProduct = async () => {
     await api.put(`/products/${id}`, editForm);
     setEditing(false);
@@ -276,6 +300,58 @@ export default function ProductDetail() {
               />
             ))}
           </div>
+        )}
+      </div>
+
+      {/* Materials (chất liệu) */}
+      <div className="bg-white rounded-xl border border-neutral-200 p-4 mt-6 shadow-sm">
+        <div className="flex justify-between items-center mb-3">
+          <h3 className="text-sm font-semibold text-neutral-600">Materials (chất liệu)</h3>
+          {hasRole('admin') && (
+            <button onClick={() => setShowMaterialForm(!showMaterialForm)} className="text-xs text-orange-500 hover:text-orange-600">
+              {showMaterialForm ? 'Cancel' : '+ Add Material'}
+            </button>
+          )}
+        </div>
+
+        {showMaterialForm && hasRole('admin') && (
+          <form onSubmit={handleAddMaterial} className="mb-4 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <input value={materialForm.name} onChange={e => setMaterialForm(f => ({ ...f, name: e.target.value }))} required placeholder="Tên chất liệu (vd Linen 300gsm)" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+              <input value={materialForm.description} onChange={e => setMaterialForm(f => ({ ...f, description: e.target.value }))} placeholder="Thông tin (optional)" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+            </div>
+            <label className="flex items-center gap-2 text-xs text-neutral-600">
+              <input type="checkbox" checked={materialForm.is_default} onChange={e => setMaterialForm(f => ({ ...f, is_default: e.target.checked }))} className="accent-orange-500" />
+              Đặt làm mặc định (tự chọn khi thêm item)
+            </label>
+            <button type="submit" className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Add</button>
+          </form>
+        )}
+
+        {(!product.materials || product.materials.length === 0) ? (
+          <p className="text-neutral-400 text-xs">Chưa có chất liệu nào.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead><tr className="text-neutral-500 text-xs border-b border-neutral-100">
+              <th className="py-1 text-left">Name</th><th className="py-1 text-left">Info</th><th className="py-1 text-center">Default</th><th className="py-1 text-right">Actions</th>
+            </tr></thead>
+            <tbody>
+              {product.materials.map(m => (
+                <tr key={m.id} className="border-b border-neutral-50">
+                  <td className="py-1.5 text-neutral-800">{m.name}</td>
+                  <td className="py-1.5 text-neutral-500 text-xs">{m.description || '-'}</td>
+                  <td className="py-1.5 text-center">
+                    {m.is_default
+                      ? <span className="text-xs px-2 py-0.5 bg-orange-100 text-orange-600 rounded">Default</span>
+                      : (hasRole('admin') && <button onClick={() => handleSetDefaultMaterial(m)} className="text-xs text-neutral-400 hover:text-orange-500">Set default</button>)}
+                  </td>
+                  <td className="py-1.5 text-right">
+                    {hasRole('admin') && <button onClick={() => handleDeleteMaterial(m.id)} className="text-xs text-red-500 hover:text-red-600">Delete</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
 
