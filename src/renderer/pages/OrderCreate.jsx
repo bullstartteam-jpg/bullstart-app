@@ -376,7 +376,7 @@ export default function OrderCreate() {
 
               return (
                 <div key={i} className="border border-neutral-100 rounded-lg p-3 space-y-3">
-                  <div className="grid grid-cols-6 gap-3 items-end">
+                  <div className="grid grid-cols-5 gap-3 items-end">
                     <div>
                       <label className="text-xs text-neutral-500">Product Variant</label>
                       <select
@@ -420,13 +420,6 @@ export default function OrderCreate() {
                       </div>
                       <input value={item.mockup_back} onChange={e => updateItem(i, { mockup_back: e.target.value })} placeholder="URL or click Upload" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
                       <UrlPreview url={item.mockup_back} onOpen={setPreviewUrl} label="Preview mockup back" />
-                    </div>
-                    <div>
-                      <label className="text-xs text-neutral-500">Type</label>
-                      <select value={item.order_type} onChange={e => updateItem(i, { order_type: parseInt(e.target.value) })} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm">
-                        <option value={0}>Greeting Card</option>
-                        <option value={1}>Pass Sleeve</option>
-                      </select>
                     </div>
                     <button type="button" onClick={() => removeItem(i)} className="px-3 py-2 text-red-500 hover:text-red-600 text-sm">Remove</button>
                   </div>
