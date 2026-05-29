@@ -4,6 +4,40 @@ import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { notify, askConfirm } from '../components/Dialog';
 import { buildInvoicePdf } from '../services/invoicePdf';
+import { PreviewModal } from '../components/Preview';
+import { driveThumb, isPreviewable } from '../utils/drive';
+
+// Collect inline thumbnails for an order's items: design artwork (item metas,
+// excluding _qr overlays) + mockup_front + mockup_back. Data is already
+// eager-loaded by the orders index, so this adds no extra hub queries.
+function orderThumbs(order) {
+  const out = [];
+  for (const it of (order.items || [])) {
+    if (it.mockup_front) out.push({ url: it.mockup_front, label: 'mockup front' });
+    if (it.mockup_back) out.push({ url: it.mockup_back, label: 'mockup back' });
+    for (const m of (it.metas || [])) {
+      const key = m?.key || '';
+      if (m?.value && isPreviewable(m.value) && !/_qr(_[0-9]+)?$/.test(key)) {
+        out.push({ url: m.value, label: `design ${key}` });
+      }
+    }
+  }
+  return out;
+}
+
+function OrderThumb({ url, label, onOpen }) {
+  if (!isPreviewable(url)) return null;
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onOpen(url); }}
+      title={label}
+      className="h-9 w-9 rounded border border-neutral-200 bg-neutral-100 overflow-hidden hover:ring-2 hover:ring-orange-400 shrink-0"
+    >
+      <img src={driveThumb(url, 'w200')} alt="" loading="lazy" className="h-full w-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+    </button>
+  );
+}
 
 const STATUS_MAP = ['new_order', 'processing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
@@ -26,6 +60,7 @@ export default function Orders() {
   const [showRefIdsModal, setShowRefIdsModal] = useState(false);
   const [refIdsInput, setRefIdsInput] = useState('');
   const [selected, setSelected] = useState([]);
+  const [previewUrl, setPreviewUrl] = useState(null);
   const { hasPermission, hasRole, user: authUser } = useAuth();
   const isStaff = hasRole('admin') || hasRole('support');
   const isAdmin = hasRole('admin');
@@ -906,6 +941,7 @@ export default function Orders() {
               </th>
               <th className="p-3 text-left">System ID</th>
               <th className="p-3 text-left">Ref ID</th>
+              <th className="p-3 text-left">Images</th>
               {isStaff && <th className="p-3 text-left">User</th>}
               <th className="p-3 text-left">Status</th>
               <th className="p-3 text-left">Ship Type</th>
@@ -917,9 +953,9 @@ export default function Orders() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={isStaff ? 10 : 9} className="p-6 text-center text-neutral-400">Loading...</td></tr>
+              <tr><td colSpan={isStaff ? 11 : 10} className="p-6 text-center text-neutral-400">Loading...</td></tr>
             ) : orders.length === 0 ? (
-              <tr><td colSpan={isStaff ? 10 : 9} className="p-6 text-center text-neutral-400">No orders found</td></tr>
+              <tr><td colSpan={isStaff ? 11 : 10} className="p-6 text-center text-neutral-400">No orders found</td></tr>
             ) : orders.map(order => (
               <tr key={order.id} className="border-b border-neutral-100 hover:bg-orange-50/50 cursor-pointer transition-colors" onClick={() => navigate(`/orders/${order.id}`)}>
                 <td className="p-3" onClick={e => e.stopPropagation()}>
@@ -933,6 +969,18 @@ export default function Orders() {
                       {order.is_duplicate_ref && <span className="ml-1 text-[10px] uppercase tracking-wide">dup</span>}
                     </span>
                   ) : <span className="text-neutral-400">-</span>}
+                </td>
+                <td className="p-3" onClick={e => e.stopPropagation()}>
+                  {(() => {
+                    const thumbs = orderThumbs(order);
+                    if (thumbs.length === 0) return <span className="text-neutral-300 text-xs">—</span>;
+                    return (
+                      <div className="flex items-center gap-1 flex-wrap max-w-[150px]">
+                        {thumbs.slice(0, 8).map((t, idx) => <OrderThumb key={idx} url={t.url} label={t.label} onOpen={setPreviewUrl} />)}
+                        {thumbs.length > 8 && <span className="text-[10px] text-neutral-400">+{thumbs.length - 8}</span>}
+                      </div>
+                    );
+                  })()}
                 </td>
                 {isStaff && (
                   <td className="p-3 text-neutral-700 text-xs">
@@ -992,6 +1040,8 @@ export default function Orders() {
           </div>
         );
       })()}
+
+      <PreviewModal url={previewUrl} onClose={() => setPreviewUrl(null)} />
 
       {/* Pay-All preview modal */}
       {showPayAll && (
