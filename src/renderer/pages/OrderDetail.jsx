@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { UrlPreview, PreviewModal } from '../components/Preview';
 import { isPreviewable } from '../utils/drive';
 import { notify, askConfirm } from '../components/Dialog';
+import UploadButton from '../components/UploadButton';
 
 const STATUS_MAP = ['new_order', 'processing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
@@ -36,6 +37,7 @@ export default function OrderDetail() {
         shipping_label: res.data.order.shipping_label || '',
         tracking_id: res.data.order.tracking_id || '',
         shipping_cost: res.data.order.shipping_cost ?? '',
+        proof_image: res.data.order.proof_image || '',
       });
     }).finally(() => setLoading(false));
   };
@@ -47,6 +49,8 @@ export default function OrderDetail() {
       ...form,
       shipping_cost: form.shipping_cost === '' ? 0 : Number(form.shipping_cost),
     };
+    // Backend validates proof_image as a URL — drop it when blank.
+    if (!payload.proof_image) delete payload.proof_image;
     await api.put(`/orders/${id}`, payload);
     setEditing(false);
     fetchOrder();
@@ -198,9 +202,21 @@ export default function OrderDetail() {
                 <input value={form.tracking_id} onChange={e => setForm(f => ({ ...f, tracking_id: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
               </div>
               <div>
-                <label className="text-xs text-neutral-500">Shipping Cost</label>
+                <label className="text-xs text-neutral-500">{order.ship_type === 'stamp' ? 'Handling Fee' : 'Shipping Cost'}</label>
                 <input type="number" step="0.01" value={form.shipping_cost} onChange={e => setForm(f => ({ ...f, shipping_cost: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
               </div>
+              {/* Stamp proof photo — fulfiller uploads the stamped envelope as
+                  evidence (stamp has no tracking). Staff only. */}
+              {order.ship_type === 'stamp' && (hasRole('admin') || hasRole('support')) && (
+                <div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-neutral-500">Proof image (stamped envelope)</label>
+                    <UploadButton folder="stamp-proof" accept="image/*" onUrl={(url) => setForm(f => ({ ...f, proof_image: url }))} title="Upload proof" />
+                  </div>
+                  <input value={form.proof_image} onChange={e => setForm(f => ({ ...f, proof_image: e.target.value }))} placeholder="URL or Upload" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                  {isPreviewable(form.proof_image) && <UrlPreview url={form.proof_image} onOpen={setPreviewUrl} label="Proof" size="sm" />}
+                </div>
+              )}
               <button onClick={handleUpdate} className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Save</button>
             </div>
           ) : (
@@ -226,9 +242,19 @@ export default function OrderDetail() {
                   )}
                 </div>
               )}
-              <Row label="Tracking ID" value={order.tracking_id || '-'} />
+              {order.ship_type === 'stamp' && (
+                <div className="flex justify-between items-center gap-3">
+                  <span className="text-neutral-500 text-sm">Proof (stamp)</span>
+                  {isPreviewable(order.proof_image) ? (
+                    <UrlPreview url={order.proof_image} onOpen={setPreviewUrl} label="Proof" size="sm" />
+                  ) : (
+                    <span className="text-neutral-800 font-medium text-sm">{order.proof_image || '-'}</span>
+                  )}
+                </div>
+              )}
+              <Row label="Tracking ID" value={order.ship_type === 'stamp' ? 'No tracking (stamp)' : (order.tracking_id || '-')} />
               <Row label="Print Cost" value={`$${order.print_cost}`} />
-              <Row label="Shipping Cost" value={`$${order.shipping_cost}`} />
+              <Row label={order.ship_type === 'stamp' ? 'Handling Fee' : 'Shipping Cost'} value={`$${order.shipping_cost}`} />
               <Row label="Total Cost" value={`$${order.total_cost}`} />
               <Row label="Paid" value={`$${order.paid_cost}`} />
               <Row label="Created" value={new Date(order.created_at).toLocaleString()} />

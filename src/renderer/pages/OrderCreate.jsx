@@ -56,7 +56,7 @@ export default function OrderCreate() {
   };
 
   const [form, setForm] = useState({
-    method: 'label', // 'label' | 'address'
+    method: 'label', // 'label' | 'stamp'
     ref_id: '',
     shipping_label: '',
     address: {
@@ -65,10 +65,18 @@ export default function OrderCreate() {
     },
     items: [blankItem()],
   });
+  const [stampAck, setStampAck] = useState(false);
+  const [stampCfg, setStampCfg] = useState({ fee: 1, handling_fee: 0, base_items: 2, max_items: 4 });
+  useEffect(() => { api.get('/settings/stamp-config').then(res => setStampCfg(res.data)).catch(() => {}); }, []);
 
   const updateAddress = (field, value) => {
     setForm(f => ({ ...f, address: { ...f.address, [field]: value } }));
   };
+
+  const stampQty = form.items.reduce((s, it) => s + Math.max(1, parseInt(it.quantity || 1, 10)), 0);
+  const STAMP_MAX = stampCfg.max_items;
+  // base fee covers base_items; each item beyond adds fee; + flat handling.
+  const stampFee = stampCfg.fee + Math.max(0, stampQty - stampCfg.base_items) * stampCfg.fee + stampCfg.handling_fee;
 
   useEffect(() => {
     api.get('/products', { params: { per_page: 100 } }).then(res => setProducts(res.data.data || []));
@@ -91,6 +99,10 @@ export default function OrderCreate() {
   };
 
   const addItem = () => {
+    if (form.method === 'stamp' && stampQty >= STAMP_MAX) {
+      notify(`Ship bằng stamp tối đa ${STAMP_MAX} thiệp.`, { title: 'Stamp', kind: 'error' });
+      return;
+    }
     setForm(f => ({ ...f, items: [...f.items, blankItem()] }));
   };
 
@@ -147,10 +159,11 @@ export default function OrderCreate() {
       force,
       rename,
     };
-    if (form.method === 'label') {
-      payload.shipping_label = form.shipping_label;
-    } else {
+    if (form.method === 'stamp') {
+      payload.ship_by_stamp = true;
       payload.address = form.address;
+    } else {
+      payload.shipping_label = form.shipping_label;
     }
     return api.post('/orders', payload);
   };
@@ -224,19 +237,21 @@ export default function OrderCreate() {
     }
   };
 
-  const handleDownloadTemplate = async () => {
+  const downloadTemplate = async (endpoint, filename) => {
     try {
-      const res = await api.get('/orders/export-csv-template', { responseType: 'blob' });
+      const res = await api.get(endpoint, { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'order_template.csv';
+      a.download = filename;
       a.click();
       window.URL.revokeObjectURL(url);
     } catch (err) {
       notify('Download failed', { title: 'Error', kind: 'error' });
     }
   };
+  const handleDownloadTemplate = () => downloadTemplate('/orders/export-csv-template', 'order_template.csv');
+  const handleDownloadStampTemplate = () => downloadTemplate('/orders/export-stamp-csv-template', 'order_stamp_template.csv');
 
   return (
     <div className="p-6">
@@ -250,7 +265,10 @@ export default function OrderCreate() {
 
       {csvMode ? (
         <div className="bg-white rounded-xl border border-neutral-200 p-6 space-y-4 shadow-sm">
-          <button onClick={handleDownloadTemplate} className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Download Template</button>
+          <div className="flex gap-2">
+            <button onClick={handleDownloadTemplate} className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Download Template</button>
+            <button onClick={handleDownloadStampTemplate} className="px-4 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 text-sm rounded-lg">Download Stamp Template</button>
+          </div>
           <div>
             <input type="file" accept=".csv,.txt" onChange={e => setCsvFile(e.target.files[0])} className="text-sm text-neutral-600" />
           </div>
@@ -281,32 +299,66 @@ export default function OrderCreate() {
 
           {/* Shipping */}
           <div className="bg-white rounded-xl border border-neutral-200 p-4 space-y-3 shadow-sm">
-            <h3 className="text-sm font-semibold text-neutral-600">Shipping</h3>
-            <div>
-              <div className="flex items-center justify-between">
-                <label className="text-xs text-neutral-500">Shipping Label (URL — Drive supported)</label>
-                <UploadButton
-                  folder="shipping-labels"
-                  accept="image/*,application/pdf"
-                  onUrl={(url) => setForm(f => ({ ...f, shipping_label: url }))}
-                  title="Upload shipping label to B2"
-                />
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-neutral-600">Shipping</h3>
+              <div className="flex gap-1">
+                <button type="button" onClick={() => setForm(f => ({ ...f, method: 'label' }))}
+                  className={`px-3 py-1 text-xs rounded-lg ${form.method === 'label' ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600'}`}>Label</button>
+                <button type="button" onClick={() => setForm(f => ({ ...f, method: 'stamp' }))}
+                  className={`px-3 py-1 text-xs rounded-lg ${form.method === 'stamp' ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600'}`}>Ship by Stamp</button>
               </div>
-              <input
-                value={form.shipping_label}
-                onChange={e => setForm(f => ({ ...f, shipping_label: e.target.value }))}
-                placeholder="Paste label URL or click Upload..."
-                className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
-              />
-              <UrlPreview url={form.shipping_label} onOpen={setPreviewUrl} label="Preview shipping label" />
             </div>
+
+            {form.method === 'label' ? (
+              <div>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-neutral-500">Shipping Label (URL — Drive supported)</label>
+                  <UploadButton
+                    folder="shipping-labels"
+                    accept="image/*,application/pdf"
+                    onUrl={(url) => setForm(f => ({ ...f, shipping_label: url }))}
+                    title="Upload shipping label to B2"
+                  />
+                </div>
+                <input
+                  value={form.shipping_label}
+                  onChange={e => setForm(f => ({ ...f, shipping_label: e.target.value }))}
+                  placeholder="Paste label URL or click Upload..."
+                  className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
+                />
+                <UrlPreview url={form.shipping_label} onOpen={setPreviewUrl} label="Preview shipping label" />
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <label className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 cursor-pointer">
+                  <input type="checkbox" checked={stampAck} onChange={e => setStampAck(e.target.checked)} className="mt-0.5 accent-amber-500" />
+                  <span>⚠️ Ship bằng <b>tem (stamp)</b> sẽ <b>KHÔNG có tracking</b>. Tối đa {STAMP_MAX} thiệp/đơn. Tôi đồng ý ship bằng stamp.</span>
+                </label>
+                <div className="flex items-center justify-between text-xs px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg">
+                  <span className="text-neutral-500">Handling Fee (stamp) · {stampQty} thiệp</span>
+                  <span className={`font-semibold ${stampQty > STAMP_MAX ? 'text-red-500' : 'text-neutral-800'}`}>
+                    {stampQty > STAMP_MAX ? `Quá ${STAMP_MAX} thiệp — dùng label thường` : `$${stampFee.toFixed(2)}`}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input value={form.address.first_name} onChange={e => updateAddress('first_name', e.target.value)} placeholder="First name" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.last_name} onChange={e => updateAddress('last_name', e.target.value)} placeholder="Last name" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.address_1} onChange={e => updateAddress('address_1', e.target.value)} placeholder="Address line 1" className="col-span-2 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.address_2} onChange={e => updateAddress('address_2', e.target.value)} placeholder="Address line 2 (optional)" className="col-span-2 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.city} onChange={e => updateAddress('city', e.target.value)} placeholder="City" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.state} onChange={e => updateAddress('state', e.target.value)} placeholder="State" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.zipcode} onChange={e => updateAddress('zipcode', e.target.value)} placeholder="Zipcode" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.country} onChange={e => updateAddress('country', e.target.value)} placeholder="Country" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Items */}
           <div className="bg-white rounded-xl border border-neutral-200 p-4 space-y-3 shadow-sm">
             <div className="flex justify-between items-center">
               <h3 className="text-sm font-semibold text-neutral-600">Items</h3>
-              <button type="button" onClick={addItem} className="text-xs text-orange-500 hover:text-orange-600">+ Add Item</button>
+              <button type="button" onClick={addItem} disabled={form.method === 'stamp' && stampQty >= STAMP_MAX} className="text-xs text-orange-500 hover:text-orange-600 disabled:opacity-40 disabled:cursor-not-allowed">+ Add Item</button>
             </div>
             {form.items.map((item, i) => {
               const product = productOfVariant(item.product_variant_id);
@@ -478,7 +530,12 @@ export default function OrderCreate() {
             })}
           </div>
 
-          <button type="submit" disabled={loading} className="px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+          <button
+            type="submit"
+            disabled={loading || (form.method === 'stamp' && (!stampAck || stampQty > STAMP_MAX))}
+            title={form.method === 'stamp' && !stampAck ? 'Cần đồng ý điều kiện ship stamp' : (form.method === 'stamp' && stampQty > STAMP_MAX ? `Quá ${STAMP_MAX} thiệp` : '')}
+            className="px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium"
+          >
             {loading ? 'Creating...' : 'Create Order'}
           </button>
         </form>

@@ -28,6 +28,7 @@ export default function Settings() {
     { id: 'invoice', label: 'Invoice Payment' },
     { id: 'telegram', label: 'Telegram' },
     { id: 'vnpay', label: 'VNPay Merchant' },
+    { id: 'stamp', label: 'Stamp Shipping' },
   ];
 
   if (loading) return <div className="p-6 text-neutral-400">Loading...</div>;
@@ -49,6 +50,72 @@ export default function Settings() {
       {tab === 'invoice' && <InvoicePaymentTab />}
       {tab === 'telegram' && <TelegramTab />}
       {tab === 'vnpay' && <VnpayMerchantTab />}
+      {tab === 'stamp' && <StampConfigTab />}
+    </div>
+  );
+}
+
+function StampConfigTab() {
+  const [c, setC] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { api.get('/settings/stamp-config').then(res => setC(res.data)); }, []);
+  if (!c) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const set = (k, v) => setC(prev => ({ ...prev, [k]: v }));
+  const num = (v) => v === '' ? '' : Number(v);
+
+  // Live preview using the same formula as the backend.
+  const fee = Number(c.fee) || 0;
+  const handling = Number(c.handling_fee) || 0;
+  const base = Number(c.base_items) || 1;
+  const preview = (qty) => (fee + Math.max(0, qty - base) * fee + handling).toFixed(2);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/stamp-config', {
+        fee: num(c.fee), handling_fee: num(c.handling_fee),
+        base_items: num(c.base_items), max_items: num(c.max_items),
+      });
+      setC(res.data);
+      notify('Saved stamp config', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Stamp Shipping</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">Phí ship bằng tem (handling fee). Base fee phủ {base} item đầu; mỗi item vượt cộng thêm fee.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <NumField label="Fee per stamp/item ($)" value={c.fee} onChange={v => set('fee', v)} step="0.01" />
+          <NumField label="Handling fee ($, flat)" value={c.handling_fee} onChange={v => set('handling_fee', v)} step="0.01" />
+          <NumField label="Base items (covered by base fee)" value={c.base_items} onChange={v => set('base_items', v)} step="1" />
+          <NumField label="Max items (limit)" value={c.max_items} onChange={v => set('max_items', v)} step="1" />
+        </div>
+        <div className="mt-3 p-3 bg-[#faf8f6] border border-neutral-200 rounded text-xs text-neutral-600 space-y-0.5">
+          <div className="font-semibold mb-1">Preview</div>
+          <div>1-{base} item: <b>${preview(base)}</b></div>
+          <div>{base + 1} item: <b>${preview(base + 1)}</b></div>
+          <div>{Number(c.max_items) || base + 2} item (max): <b>${preview(Number(c.max_items) || base + 2)}</b></div>
+        </div>
+        <button onClick={save} disabled={saving} className="mt-4 px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function NumField({ label, value, onChange, step }) {
+  return (
+    <div>
+      <label className="text-xs text-neutral-500">{label}</label>
+      <input type="number" step={step} min="0" value={value ?? ''} onChange={e => onChange(e.target.value)}
+        className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
     </div>
   );
 }
