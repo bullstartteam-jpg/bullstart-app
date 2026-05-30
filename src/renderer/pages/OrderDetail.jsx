@@ -38,6 +38,7 @@ export default function OrderDetail() {
         tracking_id: res.data.order.tracking_id || '',
         shipping_cost: res.data.order.shipping_cost ?? '',
         proof_image: res.data.order.proof_image || '',
+        ship_type: res.data.order.ship_type || '',
       });
     }).finally(() => setLoading(false));
   };
@@ -193,21 +194,40 @@ export default function OrderDetail() {
                   ))}
                 </select>
               </div>
+              {/* Ship type — staff only. Switching to stamp recomputes
+                  shipping cost from item qty and clears label/tracking. */}
+              {(hasRole('admin') || hasRole('support')) && (
+                <div>
+                  <label className="text-xs text-neutral-500">Ship Type</label>
+                  <select value={form.ship_type} onChange={e => setForm(f => ({ ...f, ship_type: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm">
+                    <option value="tiktok_ship">tiktok_ship (TikTok label)</option>
+                    <option value="seller_ship">seller_ship (seller buys label)</option>
+                    <option value="stamp">stamp (no tracking, $/thiệp)</option>
+                  </select>
+                  {form.ship_type === 'stamp' && form.ship_type !== order.ship_type && (
+                    <p className="text-[11px] text-amber-600 mt-1">Khi lưu: label/tracking sẽ bị xoá, handling fee tính lại theo qty.</p>
+                  )}
+                </div>
+              )}
+              {form.ship_type !== 'stamp' && (
+                <>
+                  <div>
+                    <label className="text-xs text-neutral-500">Shipping Label</label>
+                    <input value={form.shipping_label} onChange={e => setForm(f => ({ ...f, shipping_label: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-neutral-500">Tracking ID</label>
+                    <input value={form.tracking_id} onChange={e => setForm(f => ({ ...f, tracking_id: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                  </div>
+                </>
+              )}
               <div>
-                <label className="text-xs text-neutral-500">Shipping Label</label>
-                <input value={form.shipping_label} onChange={e => setForm(f => ({ ...f, shipping_label: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
-              </div>
-              <div>
-                <label className="text-xs text-neutral-500">Tracking ID</label>
-                <input value={form.tracking_id} onChange={e => setForm(f => ({ ...f, tracking_id: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
-              </div>
-              <div>
-                <label className="text-xs text-neutral-500">{order.ship_type === 'stamp' ? 'Handling Fee' : 'Shipping Cost'}</label>
+                <label className="text-xs text-neutral-500">{form.ship_type === 'stamp' ? 'Handling Fee' : 'Shipping Cost'}</label>
                 <input type="number" step="0.01" value={form.shipping_cost} onChange={e => setForm(f => ({ ...f, shipping_cost: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
               </div>
               {/* Stamp proof photo — fulfiller uploads the stamped envelope as
                   evidence (stamp has no tracking). Staff only. */}
-              {order.ship_type === 'stamp' && (hasRole('admin') || hasRole('support')) && (
+              {form.ship_type === 'stamp' && (hasRole('admin') || hasRole('support')) && (
                 <div>
                   <div className="flex items-center justify-between">
                     <label className="text-xs text-neutral-500">Proof image (stamped envelope)</label>
