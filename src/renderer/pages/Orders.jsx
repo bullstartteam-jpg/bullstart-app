@@ -7,22 +7,26 @@ import { buildInvoicePdf } from '../services/invoicePdf';
 import { PreviewModal } from '../components/Preview';
 import { driveThumb, isPreviewable } from '../utils/drive';
 
-// Collect inline thumbnails for an order's items: design artwork (item metas,
-// excluding _qr overlays) + mockup_front + mockup_back. Data is already
-// eager-loaded by the orders index, so this adds no extra hub queries.
-function orderThumbs(order) {
-  const out = [];
-  for (const it of (order.items || [])) {
-    if (it.mockup_front) out.push({ url: it.mockup_front, label: 'mockup front' });
-    if (it.mockup_back) out.push({ url: it.mockup_back, label: 'mockup back' });
+// Group an order's thumbnails by item so each row shows variant + its
+// designs/mockups together. Data is already eager-loaded by the orders index
+// (items.productVariant.product + items.metas) — no extra hub queries.
+function orderItemGroups(order) {
+  return (order.items || []).map(it => {
+    const pv = it.product_variant;
+    const variantText = pv
+      ? `${pv.product?.name || `Variant #${pv.id}`}${pv.color || pv.size ? ` — ${[pv.color, pv.size].filter(Boolean).join('/')}` : ''}`
+      : `Item #${it.id}`;
+    const thumbs = [];
+    if (it.mockup_front) thumbs.push({ url: it.mockup_front, label: 'mockup front' });
+    if (it.mockup_back) thumbs.push({ url: it.mockup_back, label: 'mockup back' });
     for (const m of (it.metas || [])) {
       const key = m?.key || '';
       if (m?.value && isPreviewable(m.value) && !/_qr(_[0-9]+)?$/.test(key)) {
-        out.push({ url: m.value, label: `design ${key}` });
+        thumbs.push({ url: m.value, label: `design ${key}` });
       }
     }
-  }
-  return out;
+    return { variantText, qty: it.quantity, thumbs };
+  });
 }
 
 function OrderThumb({ url, label, onOpen }) {
@@ -941,7 +945,7 @@ export default function Orders() {
               </th>
               <th className="p-3 text-left">System ID</th>
               <th className="p-3 text-left">Ref ID</th>
-              <th className="p-3 text-left">Images</th>
+              <th className="p-3 text-left">Items</th>
               {isStaff && <th className="p-3 text-left">User</th>}
               <th className="p-3 text-left">Status</th>
               <th className="p-3 text-left">Ship Type</th>
@@ -972,12 +976,27 @@ export default function Orders() {
                 </td>
                 <td className="p-3" onClick={e => e.stopPropagation()}>
                   {(() => {
-                    const thumbs = orderThumbs(order);
-                    if (thumbs.length === 0) return <span className="text-neutral-300 text-xs">—</span>;
+                    const groups = orderItemGroups(order);
+                    if (groups.length === 0) return <span className="text-neutral-300 text-xs">—</span>;
                     return (
-                      <div className="flex items-center gap-1 flex-wrap max-w-[150px]">
-                        {thumbs.slice(0, 8).map((t, idx) => <OrderThumb key={idx} url={t.url} label={t.label} onOpen={setPreviewUrl} />)}
-                        {thumbs.length > 8 && <span className="text-[10px] text-neutral-400">+{thumbs.length - 8}</span>}
+                      <div className="space-y-1.5 max-w-[220px]">
+                        {groups.map((g, gi) => (
+                          <div key={gi} className="space-y-0.5">
+                            <div className="text-[11px] text-neutral-600 truncate" title={g.variantText}>
+                              {g.variantText}{g.qty ? ` · ×${g.qty}` : ''}
+                            </div>
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {g.thumbs.length === 0 ? (
+                                <span className="text-[10px] text-neutral-300">— no image</span>
+                              ) : (<>
+                                {g.thumbs.slice(0, 6).map((t, ti) => (
+                                  <OrderThumb key={ti} url={t.url} label={t.label} onOpen={setPreviewUrl} />
+                                ))}
+                                {g.thumbs.length > 6 && <span className="text-[10px] text-neutral-400">+{g.thumbs.length - 6}</span>}
+                              </>)}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     );
                   })()}
