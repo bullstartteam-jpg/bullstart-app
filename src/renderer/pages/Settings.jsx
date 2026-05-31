@@ -355,6 +355,15 @@ function TelegramTab() {
     setField('default_thread_id', thread.id);
   };
 
+  const pickTopupChat = (chat) => {
+    setField('topup_chat_id', String(chat.id));
+    setField('topup_thread_id', null);
+  };
+  const pickTopupThread = (chat, thread) => {
+    setField('topup_chat_id', String(chat.id));
+    setField('topup_thread_id', thread.id);
+  };
+
   const updateCronInterval = (value) => {
     setCronInterval(value);
     localStorage.setItem(CRON_KEY, value);
@@ -370,6 +379,8 @@ function TelegramTab() {
           <TextField label="Default Report Days"     value={String(data.report_days ?? 0)} onChange={v => setField('report_days', parseInt(v || '0', 10))} />
           <TextField label="Default Chat ID"         value={data.default_chat_id}   onChange={v => setField('default_chat_id', v)} />
           <TextField label="Default Thread/Topic ID (optional)" value={data.default_thread_id ?? ''} onChange={v => setField('default_thread_id', v === '' ? null : parseInt(v, 10))} full />
+          <TextField label="Topup Chat ID (notification: tạo + duyệt topup)" value={data.topup_chat_id ?? ''} onChange={v => setField('topup_chat_id', v)} />
+          <TextField label="Topup Thread/Topic ID (optional)" value={data.topup_thread_id ?? ''} onChange={v => setField('topup_thread_id', v === '' ? null : parseInt(v, 10))} full />
         </div>
         <label className="flex items-center gap-2 mt-3 text-sm text-neutral-700 cursor-pointer">
           <input
@@ -412,20 +423,34 @@ function TelegramTab() {
                     <div className="text-sm font-medium text-neutral-800">{g.title || g.username || `Chat ${g.id}`}</div>
                     <div className="text-[11px] text-neutral-500">{g.type} · id: <span className="font-mono">{g.id}</span></div>
                   </div>
-                  <button onClick={() => pickChat(g)} className={`text-xs px-2 py-1 rounded ${String(data.default_chat_id) === String(g.id) ? 'bg-orange-100 text-orange-700' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'}`}>
-                    {String(data.default_chat_id) === String(g.id) ? '✓ Selected' : 'Use this chat'}
-                  </button>
+                  <div className="flex gap-1">
+                    <button onClick={() => pickChat(g)} title="Use as default (report) chat" className={`text-xs px-2 py-1 rounded ${String(data.default_chat_id) === String(g.id) ? 'bg-orange-100 text-orange-700' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'}`}>
+                      📊 {String(data.default_chat_id) === String(g.id) ? '✓' : 'Default'}
+                    </button>
+                    <button onClick={() => pickTopupChat(g)} title="Use as topup notification chat" className={`text-xs px-2 py-1 rounded ${String(data.topup_chat_id) === String(g.id) ? 'bg-emerald-100 text-emerald-700' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'}`}>
+                      💸 {String(data.topup_chat_id) === String(g.id) ? '✓' : 'Topup'}
+                    </button>
+                  </div>
                 </div>
                 {(g.threads || []).length > 0 && (
                   <div className="ml-3 mt-2 flex flex-wrap gap-1.5">
                     {g.threads.map((t) => (
-                      <button
-                        key={t.id}
-                        onClick={() => pickThread(g, t)}
-                        className={`text-[11px] px-2 py-0.5 rounded border ${String(data.default_chat_id) === String(g.id) && data.default_thread_id === t.id ? 'bg-orange-50 border-orange-300 text-orange-700' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}
-                      >
-                        🧵 {t.title} (#{t.id})
-                      </button>
+                      <span key={t.id} className="inline-flex gap-0.5">
+                        <button
+                          onClick={() => pickThread(g, t)}
+                          title="Use as default thread"
+                          className={`text-[11px] px-2 py-0.5 rounded border ${String(data.default_chat_id) === String(g.id) && data.default_thread_id === t.id ? 'bg-orange-50 border-orange-300 text-orange-700' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}
+                        >
+                          📊 🧵 {t.title} (#{t.id})
+                        </button>
+                        <button
+                          onClick={() => pickTopupThread(g, t)}
+                          title="Use as topup thread"
+                          className={`text-[11px] px-2 py-0.5 rounded border ${String(data.topup_chat_id) === String(g.id) && data.topup_thread_id === t.id ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}
+                        >
+                          💸
+                        </button>
+                      </span>
                     ))}
                   </div>
                 )}
