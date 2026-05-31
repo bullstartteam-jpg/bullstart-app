@@ -505,8 +505,8 @@ export default function OrderCreate() {
                   {/* Metas */}
                   <div className="pt-2 border-t border-neutral-100">
                     <div className="flex justify-between items-center mb-2">
-                      <label className="text-xs text-neutral-500">Metas (custom fields)</label>
-                      <button type="button" onClick={() => addMeta(i)} className="text-xs text-orange-500 hover:text-orange-600">+ Add Meta</button>
+                      <label className="text-xs text-neutral-500">Design</label>
+                      <button type="button" onClick={() => addMeta(i)} className="text-xs text-orange-500 hover:text-orange-600">+ Add Design</button>
                     </div>
                     {(item.metas || []).length === 0 ? (
                       <p className="text-xs text-neutral-400">No metas.</p>
