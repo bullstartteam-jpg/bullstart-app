@@ -152,8 +152,8 @@ const qrJob = createJob({
       for (const meta of item.pending) {
         if (state.paused || !state.enabled) break;
         try {
-          const gcTag = meta.is_greeting_card_back ? ' [GC back: rotate 180, no overlay]' : '';
-          pushLog('info', item.system_id, meta.target_key, `Starting (${meta.index}/${meta.total})${gcTag}…`);
+          const backTag = meta.target_key === 'back_qr' || meta.source_key === 'back' ? ' [back: no barcode]' : '';
+          pushLog('info', item.system_id, meta.target_key, `Starting (${meta.index}/${meta.total})${backTag}…`);
           emit();
           await processOne(item, meta);
           state.processedTotal += 1;
@@ -267,11 +267,10 @@ async function processOne(item, meta) {
 }
 
 async function processConvertLabel(lbl, { force = false } = {}) {
-  const blob = await composeConvertLabel(
-    lbl.shipping_label,
-    lbl.system_id,
-    lbl.accessory_summary || ''
-  );
+  // Stamp orders render from the address; everyone else from the carrier label.
+  const blob = lbl.ship_type === 'stamp'
+    ? await composeStampLabel(lbl.address, lbl.system_id, lbl.accessory_summary || '')
+    : await composeConvertLabel(lbl.shipping_label, lbl.system_id, lbl.accessory_summary || '');
   const formData = new FormData();
   formData.append('image', blob, `${lbl.system_id}_label.jpg`);
   if (force) formData.append('force', '1');
@@ -314,6 +313,81 @@ export async function manualConvertLabelById(idOrSystemId) {
     throw err;
   }
   return target;
+}
+
+/**
+ * Compose a STAMP convert-label from a customer address (no carrier label).
+ * Renders an A6 portrait label: big "SHIP BY STAMP" banner so the packer
+ * remembers to stick a postage stamp, the recipient address block, and a
+ * system_id QR + text at the bottom for QC scanning. Returns a JPEG @300DPI.
+ */
+async function composeStampLabel(address, systemId, accessorySummary = '') {
+  const W = 1240, H = 1748;            // A6 portrait @ 300 DPI
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  const pad = 70;
+
+  // "SHIP BY STAMP" banner — black bar, white text.
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, W, 150);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 76px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('SHIP BY STAMP', W / 2, 75);
+
+  // Reminder line.
+  ctx.fillStyle = '#d9480f';
+  ctx.font = 'bold 44px sans-serif';
+  ctx.fillText('★ DÁN TEM VÀO ĐƠN ★', W / 2, 220);
+
+  // Recipient address block.
+  ctx.fillStyle = '#000000';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  const a = address || {};
+  const name = [a.first_name, a.last_name].filter(Boolean).join(' ');
+  const cityLine = [a.city, a.state, a.zipcode].filter(Boolean).join(', ');
+  const lines = [name, a.address_1, a.address_2, cityLine, a.country].filter(s => s && String(s).trim() !== '');
+
+  ctx.font = 'bold 38px sans-serif';
+  ctx.fillText('TO:', pad, 300);
+  ctx.font = '46px sans-serif';
+  let y = 360;
+  for (const line of lines) {
+    // simple wrap at ~ W-2*pad
+    const maxW = W - pad * 2;
+    let text = String(line);
+    while (ctx.measureText(text).width > maxW && text.length > 4) {
+      // break long line
+      let cut = text.length;
+      while (cut > 4 && ctx.measureText(text.slice(0, cut)).width > maxW) cut--;
+      ctx.fillText(text.slice(0, cut), pad, y);
+      y += 58;
+      text = text.slice(cut);
+    }
+    ctx.fillText(text, pad, y);
+    y += 58;
+  }
+
+  // system_id QR + text at the bottom.
+  const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
+  const qrSize = 320;
+  const qrCanvas = await generateQrCanvas(systemId, qrSize);
+  const qrX = (W - qrSize) / 2;
+  const qrY = H - qrSize - 130;
+  ctx.drawImage(qrCanvas, qrX, qrY, qrSize, qrSize);
+  ctx.fillStyle = '#000000';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(codeText, W / 2, H - 90);
+
+  const rawBlob = await canvasToBlob(canvas, 'image/jpeg', 0.95);
+  return await setJpgDpi(rawBlob, 300);
 }
 
 /**
@@ -499,17 +573,10 @@ function generateBarcodeCanvas(value, scale = 3) {
 }
 
 async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {}) {
-  const { source_key, line_id } = opts;
-  // Greeting-card back face: pre-computed server-side (line "GC" OR product
-  // name contains "greeting"/"card", combined with source_key === "back").
-  // Fall back to client-side line_id check for older backends that haven't
-  // deployed the is_greeting_card_back flag yet.
-  const isGreetingCardBack = opts.is_greeting_card_back === true
-    || (String(line_id || '').toUpperCase() === 'GC' && source_key === 'back');
-  console.log('[converter] composeImage opts', {
-    systemId, source_key, line_id, isGreetingCardBack,
-    serverFlag: opts.is_greeting_card_back,
-  });
+  const { source_key } = opts;
+  // Two-sided convert: back faces are no longer flipped 180° — they keep the
+  // same orientation as the front. The barcode is also skipped for backs
+  // (only the front carries it). source_key === 'back' is the single switch.
 
   const id = driveId(sourceUrl);
   const fetchUrl = id ? driveThumb(sourceUrl, 'w3230') : sourceUrl;
@@ -528,27 +595,20 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   const ctx = canvas.getContext('2d');
 
   if (isPortraitSource) {
-    // Combine portrait-to-landscape rotation with the optional 180° flip:
-    //   portrait normal      → -90° (CCW)
-    //   portrait + GC back   → -90° + 180° = +90° (CW)
+    // Portrait → landscape via -90° (CCW). Backs share this same rotation —
+    // no extra flip.
     ctx.save();
     ctx.translate(TARGET_W / 2, TARGET_H / 2);
-    ctx.rotate(isGreetingCardBack ? Math.PI / 2 : -Math.PI / 2);
+    ctx.rotate(-Math.PI / 2);
     ctx.drawImage(sourceImg, -TARGET_H / 2, -TARGET_W / 2, TARGET_H, TARGET_W);
-    ctx.restore();
-  } else if (isGreetingCardBack) {
-    // Landscape source + GC back → straight 180° flip.
-    ctx.save();
-    ctx.translate(TARGET_W / 2, TARGET_H / 2);
-    ctx.rotate(Math.PI);
-    ctx.drawImage(sourceImg, -TARGET_W / 2, -TARGET_H / 2, TARGET_W, TARGET_H);
     ctx.restore();
   } else {
     ctx.drawImage(sourceImg, 0, 0, TARGET_W, TARGET_H);
   }
 
-  // Skip the barcode + system_id panel for greeting-card backs.
-  if (isGreetingCardBack) {
+  // Skip the barcode + system_id panel for any back face — only the front
+  // carries the barcode now.
+  if (source_key === 'back') {
     const rawBlob = await canvasToBlob(canvas, 'image/png');
     return await setPngDpi(rawBlob, 300);
   }
