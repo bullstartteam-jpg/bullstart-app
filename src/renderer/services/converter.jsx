@@ -316,11 +316,20 @@ export async function manualConvertLabelById(idOrSystemId) {
 }
 
 /**
- * Compose a STAMP convert-label from a customer address (no carrier label).
- * Renders an A6 portrait label: big "SHIP BY STAMP" banner so the packer
- * remembers to stick a postage stamp, the recipient address block, and a
- * system_id QR + text at the bottom for QC scanning. Returns a JPEG @300DPI.
+ * Compose a STAMP convert-label as a US-style envelope mock-up:
+ *   top-left: BullStart return address (From)
+ *   top-right: "Stamps" placeholder + system_id text
+ *   center: large recipient block (To: name / address / city,state,zip /
+ *            country / phone)
+ *   bottom-right: small QR of system_id for QC scanning
+ * A6 portrait @ 300 DPI. Returns a JPEG.
  */
+const STAMP_RETURN = {
+  name: 'BullStart',
+  line1: '4353 Saddle Horn Way',
+  line2: 'Oceanside, CA 92057',
+};
+
 async function composeStampLabel(address, systemId, accessorySummary = '') {
   const W = 1240, H = 1748;            // A6 portrait @ 300 DPI
   const canvas = document.createElement('canvas');
@@ -329,62 +338,75 @@ async function composeStampLabel(address, systemId, accessorySummary = '') {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, W, H);
 
-  const pad = 70;
+  const pad = 80;
 
-  // "SHIP BY STAMP" banner — black bar, white text.
-  ctx.fillStyle = '#000000';
-  ctx.fillRect(0, 0, W, 150);
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 76px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('SHIP BY STAMP', W / 2, 75);
-
-  // Reminder line.
-  ctx.fillStyle = '#d9480f';
-  ctx.font = 'bold 44px sans-serif';
-  ctx.fillText('★ DÁN TEM VÀO ĐƠN ★', W / 2, 220);
-
-  // Recipient address block.
+  // ── Top-left: From / return address ─────────────────────────────
   ctx.fillStyle = '#000000';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
+  ctx.font = '34px sans-serif';
+  let ry = pad;
+  ctx.fillText(`From: ${STAMP_RETURN.name}`, pad, ry); ry += 44;
+  ctx.fillText(STAMP_RETURN.line1, pad, ry); ry += 44;
+  ctx.fillText(STAMP_RETURN.line2, pad, ry);
+
+  // ── Top-right: "Stamps" + system_id ────────────────────────────
+  const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
+  ctx.textAlign = 'right';
+  ctx.font = '34px sans-serif';
+  ctx.fillText('Stamps', W - pad, pad);
+  ctx.font = 'bold 30px monospace';
+  ctx.fillStyle = '#d9480f';
+  ctx.fillText(codeText, W - pad, pad + 50);
+
+  // ── Center: large recipient block ──────────────────────────────
+  ctx.fillStyle = '#000000';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
   const a = address || {};
   const name = [a.first_name, a.last_name].filter(Boolean).join(' ');
-  const cityLine = [a.city, a.state, a.zipcode].filter(Boolean).join(', ');
-  const lines = [name, a.address_1, a.address_2, cityLine, a.country].filter(s => s && String(s).trim() !== '');
+  const cityLine = [a.city, a.state, a.zipcode].filter(Boolean).join(' ');
+  const lines = [
+    name ? `To: ${name}` : 'To:',
+    a.address_1,
+    a.address_2,
+    cityLine,
+    a.country,
+    a.phone,
+  ].filter(s => s && String(s).trim() !== '');
 
-  ctx.font = 'bold 38px sans-serif';
-  ctx.fillText('TO:', pad, 300);
-  ctx.font = '46px sans-serif';
-  let y = 360;
-  for (const line of lines) {
-    // simple wrap at ~ W-2*pad
-    const maxW = W - pad * 2;
-    let text = String(line);
+  const fontSize = 68;
+  const lineH = 92;
+  ctx.font = `${fontSize}px sans-serif`;
+  // Soft-wrap any line that overflows the printable width.
+  const maxW = W - pad * 2;
+  const wrapped = [];
+  for (const raw of lines) {
+    let text = String(raw);
     while (ctx.measureText(text).width > maxW && text.length > 4) {
-      // break long line
       let cut = text.length;
       while (cut > 4 && ctx.measureText(text.slice(0, cut)).width > maxW) cut--;
-      ctx.fillText(text.slice(0, cut), pad, y);
-      y += 58;
+      wrapped.push(text.slice(0, cut));
       text = text.slice(cut);
     }
-    ctx.fillText(text, pad, y);
-    y += 58;
+    wrapped.push(text);
+  }
+  const block = wrapped.length * lineH;
+  // Anchor the center block slightly below the geometric center to leave
+  // breathing room for the From/Stamps band at the top.
+  let cy = (H + 180) / 2 - block / 2 + lineH / 2;
+  for (const line of wrapped) {
+    ctx.fillText(line, W / 2, cy);
+    cy += lineH;
   }
 
-  // system_id QR + text at the bottom.
-  const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
-  const qrSize = 320;
+  // ── Bottom-right: small QR for system_id ────────────────────────
+  const qrSize = 220;
   const qrCanvas = await generateQrCanvas(systemId, qrSize);
-  const qrX = (W - qrSize) / 2;
-  const qrY = H - qrSize - 130;
+  const qrX = W - qrSize - pad;
+  const qrY = H - qrSize - pad;
   ctx.drawImage(qrCanvas, qrX, qrY, qrSize, qrSize);
-  ctx.fillStyle = '#000000';
-  ctx.font = 'bold 48px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(codeText, W / 2, H - 90);
 
   const rawBlob = await canvasToBlob(canvas, 'image/jpeg', 0.95);
   return await setJpgDpi(rawBlob, 300);
