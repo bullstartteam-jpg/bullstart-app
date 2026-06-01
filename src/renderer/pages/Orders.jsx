@@ -122,6 +122,7 @@ export default function Orders() {
     const params = { page: filters.page, per_page: filters.per_page || 20 };
     if (filters.status !== '') params.status = filters.status;
     if (filters.paid) params.paid = filters.paid;
+    if (filters.ship_type) params.ship_type = filters.ship_type;
     if (filters.ref_id) params.ref_id = filters.ref_id;
     if (filters.ref_ids) params.ref_ids = filters.ref_ids;
     if (filters.system_id) params.system_id = filters.system_id;
@@ -136,7 +137,7 @@ export default function Orders() {
     }).finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.paid, filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page]);
+  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.paid, filters.ship_type, filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -343,6 +344,7 @@ export default function Orders() {
     const params = {};
     if (filters.status !== '') params.status = filters.status;
     if (filters.paid) params.paid = filters.paid;
+    if (filters.ship_type) params.ship_type = filters.ship_type;
     if (filters.ref_id) params.ref_id = filters.ref_id;
     if (filters.ref_ids) params.ref_ids = filters.ref_ids;
     if (filters.system_id) params.system_id = filters.system_id;
@@ -377,6 +379,7 @@ export default function Orders() {
     const params = {};
     if (filters.status !== '') params.status = filters.status;
     if (filters.paid) params.paid = filters.paid;
+    if (filters.ship_type) params.ship_type = filters.ship_type;
     if (filters.ref_id) params.ref_id = filters.ref_id;
     if (filters.ref_ids) params.ref_ids = filters.ref_ids;
     if (filters.system_id) params.system_id = filters.system_id;
@@ -831,6 +834,18 @@ export default function Orders() {
           <option value="">All Pay</option>
           <option value="paid">Paid</option>
           <option value="unpaid">Unpaid</option>
+        </select>
+
+        <select
+          value={filters.ship_type || ''}
+          onChange={e => setFilters(f => ({ ...f, ship_type: e.target.value, page: 1 }))}
+          className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none"
+          title="Filter by ship type"
+        >
+          <option value="">All Ship Type</option>
+          <option value="tiktok_ship">tiktok_ship</option>
+          <option value="seller_ship">seller_ship</option>
+          <option value="stamp">stamp</option>
         </select>
 
         {isStaff && (
