@@ -221,6 +221,9 @@ export default function OrderDetail() {
                   {form.ship_type === 'stamp' && form.ship_type !== order.ship_type && (
                     <p className="text-[11px] text-amber-600 mt-1">Khi lưu: label/tracking sẽ bị xoá, handling fee tính lại theo qty.</p>
                   )}
+                  {form.ship_type === 'seller_ship' && form.ship_type !== order.ship_type && (
+                    <p className="text-[11px] text-amber-600 mt-1">Khi lưu: label/tracking sẽ bị xoá, shipping cost tính lại theo qty (base + addition × (qty-1)).</p>
+                  )}
                 </div>
               )}
               {/* Shipping label — always editable so staff can attach a label
@@ -246,9 +249,9 @@ export default function OrderDetail() {
                 <label className="text-xs text-neutral-500">{form.ship_type === 'stamp' ? 'Handling Fee' : 'Shipping Cost'}</label>
                 <input type="number" step="0.01" value={form.shipping_cost} onChange={e => setForm(f => ({ ...f, shipping_cost: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
               </div>
-              {/* Address — required for stamp orders (no shipping label, so
-                  we mail straight to this address with a stamp). Staff only. */}
-              {form.ship_type === 'stamp' && (hasRole('admin') || hasRole('support')) && (
+              {/* Address — used for stamp (mailed direct) and seller_ship
+                  (seller buys their own label) orders. Staff only. */}
+              {(form.ship_type === 'stamp' || form.ship_type === 'seller_ship') && (hasRole('admin') || hasRole('support')) && (
                 <div className="space-y-1">
                   <label className="text-xs text-neutral-500">Shipping Address</label>
                   <div className="grid grid-cols-2 gap-2">
