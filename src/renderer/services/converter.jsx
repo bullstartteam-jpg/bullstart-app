@@ -321,7 +321,6 @@ export async function manualConvertLabelById(idOrSystemId) {
  *   top-right: "Stamps" placeholder + system_id text
  *   center: large recipient block (To: name / address / city,state,zip /
  *            country / phone)
- *   bottom-right: small QR of system_id for QC scanning
  * A6 portrait @ 300 DPI. Returns a JPEG.
  */
 const STAMP_RETURN = {
@@ -400,13 +399,6 @@ async function composeStampLabel(address, systemId, accessorySummary = '') {
     ctx.fillText(line, W / 2, cy);
     cy += lineH;
   }
-
-  // ── Bottom-right: small QR for system_id ────────────────────────
-  const qrSize = 220;
-  const qrCanvas = await generateQrCanvas(systemId, qrSize);
-  const qrX = W - qrSize - pad;
-  const qrY = H - qrSize - pad;
-  ctx.drawImage(qrCanvas, qrX, qrY, qrSize, qrSize);
 
   const rawBlob = await canvasToBlob(canvas, 'image/jpeg', 0.95);
   return await setJpgDpi(rawBlob, 300);
