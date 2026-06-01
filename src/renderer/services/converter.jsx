@@ -375,8 +375,8 @@ async function composeStampLabel(address, systemId, accessorySummary = '') {
     a.phone,
   ].filter(s => s && String(s).trim() !== '');
 
-  const fontSize = 60;
-  const lineH = 78;
+  const fontSize = 78;
+  const lineH = 100;
   ctx.font = `${fontSize}px sans-serif`;
   // Soft-wrap any line that overflows the printable width.
   const maxW = W - pad * 2;
