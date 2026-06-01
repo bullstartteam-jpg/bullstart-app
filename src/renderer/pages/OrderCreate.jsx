@@ -79,6 +79,21 @@ export default function OrderCreate() {
   // base fee covers base_items; each item beyond adds fee; + flat handling.
   const stampFee = stampCfg.fee + Math.max(0, stampQty - stampCfg.base_items) * stampCfg.fee + stampCfg.handling_fee;
 
+  // Seller-ship preview: variant.shipping_cost + addition_fee × (qty-1).
+  // Mirrors hub's computeOrderShipping(); UI hint only.
+  const sellerShipPreview = (() => {
+    const first = form.items[0];
+    const variant = first && allVariants.find(v => String(v.id) === String(first.product_variant_id));
+    if (!variant) return null;
+    const tierPrice = (key) => {
+      const p = (variant.prices || []).find(p => p.key === key && (userTierId == null || p.tier_id === userTierId));
+      return p ? Number(p.price) : 0;
+    };
+    const base = tierPrice('shipping_cost');
+    const addition = tierPrice('addition_fee');
+    return { base, addition, total: base + Math.max(0, stampQty - 1) * addition };
+  })();
+
   useEffect(() => {
     api.get('/products', { params: { per_page: 100 } }).then(res => setProducts(res.data.data || []));
   }, []);
@@ -171,6 +186,10 @@ export default function OrderCreate() {
     };
     if (form.method === 'stamp') {
       payload.ship_by_stamp = true;
+      payload.address = form.address;
+    } else if (form.method === 'seller') {
+      // Seller-ship: no label — backend computes shipping_cost from the
+      // variant table (base + addition_fee × (qty-1)) automatically.
       payload.address = form.address;
     } else {
       payload.shipping_label = form.shipping_label;
@@ -313,13 +332,15 @@ export default function OrderCreate() {
               <h3 className="text-sm font-semibold text-neutral-600">Shipping</h3>
               <div className="flex gap-1">
                 <button type="button" onClick={() => setForm(f => ({ ...f, method: 'label' }))}
-                  className={`px-3 py-1 text-xs rounded-lg ${form.method === 'label' ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600'}`}>Label</button>
+                  className={`px-3 py-1 text-xs rounded-lg ${form.method === 'label' ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600'}`}>TikTok Label</button>
+                <button type="button" onClick={() => setForm(f => ({ ...f, method: 'seller' }))}
+                  className={`px-3 py-1 text-xs rounded-lg ${form.method === 'seller' ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600'}`}>Seller Ship</button>
                 <button type="button" onClick={() => setForm(f => ({ ...f, method: 'stamp' }))}
                   className={`px-3 py-1 text-xs rounded-lg ${form.method === 'stamp' ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600'}`}>Ship by Stamp</button>
               </div>
             </div>
 
-            {form.method === 'label' ? (
+            {form.method === 'label' && (
               <div>
                 <div className="flex items-center justify-between">
                   <label className="text-xs text-neutral-500">Shipping Label (URL — Drive supported)</label>
@@ -338,7 +359,35 @@ export default function OrderCreate() {
                 />
                 <UrlPreview url={form.shipping_label} onOpen={setPreviewUrl} label="Preview shipping label" />
               </div>
-            ) : (
+            )}
+
+            {form.method === 'seller' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg">
+                  <span className="text-neutral-500">
+                    Shipping cost · {stampQty} {stampQty === 1 ? 'item' : 'items'}
+                    {sellerShipPreview && stampQty > 1 && (
+                      <span className="text-neutral-400"> · base ${sellerShipPreview.base.toFixed(2)} + ${sellerShipPreview.addition.toFixed(2)} × {stampQty - 1}</span>
+                    )}
+                  </span>
+                  <span className="font-semibold text-neutral-800">
+                    {sellerShipPreview ? `$${sellerShipPreview.total.toFixed(2)}` : '—'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input value={form.address.first_name} onChange={e => updateAddress('first_name', e.target.value)} placeholder="First name" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.last_name} onChange={e => updateAddress('last_name', e.target.value)} placeholder="Last name" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.address_1} onChange={e => updateAddress('address_1', e.target.value)} placeholder="Address line 1" className="col-span-2 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.address_2} onChange={e => updateAddress('address_2', e.target.value)} placeholder="Address line 2 (optional)" className="col-span-2 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.city} onChange={e => updateAddress('city', e.target.value)} placeholder="City" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.state} onChange={e => updateAddress('state', e.target.value)} placeholder="State" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.zipcode} onChange={e => updateAddress('zipcode', e.target.value)} placeholder="Zipcode" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  <input value={form.address.country} onChange={e => updateAddress('country', e.target.value)} placeholder="Country" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                </div>
+              </div>
+            )}
+
+            {form.method === 'stamp' && (
               <div className="space-y-3">
                 <label className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 cursor-pointer">
                   <input type="checkbox" checked={stampAck} onChange={e => setStampAck(e.target.checked)} className="mt-0.5 accent-amber-500" />
