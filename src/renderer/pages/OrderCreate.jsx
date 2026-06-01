@@ -79,8 +79,16 @@ export default function OrderCreate() {
   // base fee covers base_items; each item beyond adds fee; + flat handling.
   const stampFee = stampCfg.fee + Math.max(0, stampQty - stampCfg.base_items) * stampCfg.fee + stampCfg.handling_fee;
 
+
+  useEffect(() => {
+    api.get('/products', { params: { per_page: 100 } }).then(res => setProducts(res.data.data || []));
+  }, []);
+
+  const allVariants = products.flatMap(p => p.variants?.map(v => ({ ...v, product_name: p.name, product_id: p.id })) || []);
+
   // Seller-ship preview: variant.shipping_cost + addition_fee × (qty-1).
-  // Mirrors hub's computeOrderShipping(); UI hint only.
+  // Mirrors hub's computeOrderShipping(); UI hint only. Must come AFTER
+  // allVariants so the .find() lookup works.
   const sellerShipPreview = (() => {
     const first = form.items[0];
     const variant = first && allVariants.find(v => String(v.id) === String(first.product_variant_id));
@@ -93,12 +101,6 @@ export default function OrderCreate() {
     const addition = tierPrice('addition_fee');
     return { base, addition, total: base + Math.max(0, stampQty - 1) * addition };
   })();
-
-  useEffect(() => {
-    api.get('/products', { params: { per_page: 100 } }).then(res => setProducts(res.data.data || []));
-  }, []);
-
-  const allVariants = products.flatMap(p => p.variants?.map(v => ({ ...v, product_name: p.name, product_id: p.id })) || []);
 
   // Lookup product (with accessories) from selected variant id
   const productOfVariant = (variantId) => {
