@@ -28,6 +28,7 @@ export default function Settings() {
     { id: 'invoice', label: 'Invoice Payment' },
     { id: 'telegram', label: 'Telegram' },
     { id: 'vnpay', label: 'VNPay Merchant' },
+    { id: 'bank', label: 'Bank Transfer' },
     { id: 'stamp', label: 'Stamp Shipping' },
   ];
 
@@ -50,6 +51,7 @@ export default function Settings() {
       {tab === 'invoice' && <InvoicePaymentTab />}
       {tab === 'telegram' && <TelegramTab />}
       {tab === 'vnpay' && <VnpayMerchantTab />}
+      {tab === 'bank' && <BankTransferTab />}
       {tab === 'stamp' && <StampConfigTab />}
     </div>
   );
@@ -575,6 +577,78 @@ function InvoicePaymentTab() {
       >
         {saving ? 'Saving…' : 'Save changes'}
       </button>
+    </div>
+  );
+}
+
+function BankTransferTab() {
+  const [data, setData] = useState(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { api.get('/settings/bank-transfer').then(res => setData(res.data)); }, []);
+  if (!data) return <p className="text-sm text-neutral-500">Loading…</p>;
+  const setField = (k, v) => setData(d => ({ ...d, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/bank-transfer', data);
+      setData(res.data);
+      notify('Saved bank-transfer settings', { title: 'Bank Transfer', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Bank Transfer', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  const sampleAmount = 26000;
+  const sampleContent = (data.content_template || 'BS {ref}').replace('{ref}', 'BTABC123');
+  const previewQr = (data.qr_template_url || '')
+    .replace('{bank}', (data.bank_name || '').replace(/[^A-Za-z0-9]/g, ''))
+    .replace('{account}', (data.account_no || '').replace(/[^A-Za-z0-9]/g, ''))
+    .replace('{amount}', String(sampleAmount))
+    .replace('{content}', encodeURIComponent(sampleContent))
+    .replace('{holder}', encodeURIComponent(data.account_holder || ''));
+
+  return (
+    <div className="space-y-5 max-w-3xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-3">Bank Transfer (manual / simulated VNPay)</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">Khi seller nạp tiền, app hiện popup QR + thông tin chuyển khoản này. Sau khi chuyển xong, admin nhận notify Telegram và vào Wallet duyệt deposit.</p>
+        <label className="flex items-center gap-2 mb-3 text-sm text-neutral-700">
+          <input type="checkbox" checked={!!data.enabled} onChange={e => setField('enabled', e.target.checked)} className="w-4 h-4" />
+          Enabled (hiện nút Bank Transfer trên Wallet của seller)
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <TextField label="Rate (VND / 1 USD)" value={String(data.rate ?? '')} onChange={v => setField('rate', Number(v) || 0)} />
+          <TextField label="Min USD" value={String(data.min_usd ?? '')} onChange={v => setField('min_usd', Number(v) || 0)} />
+          <TextField label="Bank name (VietQR short code, vd VCB / TCB / MB)" value={data.bank_name} onChange={v => setField('bank_name', v)} />
+          <TextField label="Account number" value={data.account_no} onChange={v => setField('account_no', v)} />
+          <TextField label="Account holder" value={data.account_holder} onChange={v => setField('account_holder', v)} full />
+          <TextField label="Branch (optional)" value={data.branch} onChange={v => setField('branch', v)} full />
+          <TextField label="Content template (dùng {ref} cho mã CK duy nhất)" value={data.content_template} onChange={v => setField('content_template', v)} full />
+          <TextField label="QR template URL (placeholders: {bank} {account} {amount} {content} {holder})" value={data.qr_template_url} onChange={v => setField('qr_template_url', v)} full />
+        </div>
+        <button onClick={save} disabled={saving} className="mt-4 px-5 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </section>
+
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-3">Preview</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">Mẫu QR + content nếu seller nạp {`₫${sampleAmount.toLocaleString()}`} với reference <code>BTABC123</code>.</p>
+        <div className="flex gap-4 items-start">
+          {previewQr ? (
+            <img src={previewQr} alt="QR preview" className="h-48 w-48 object-contain border border-neutral-200 rounded" onError={e => { e.currentTarget.style.opacity = 0.3; }} />
+          ) : (
+            <div className="h-48 w-48 grid place-items-center text-xs text-neutral-400 border border-neutral-200 rounded">No QR template</div>
+          )}
+          <div className="text-sm space-y-1">
+            <div><span className="text-neutral-500">Bank:</span> {data.bank_name || '—'}</div>
+            <div><span className="text-neutral-500">Account:</span> <span className="font-mono">{data.account_no || '—'}</span></div>
+            <div><span className="text-neutral-500">Holder:</span> {data.account_holder || '—'}</div>
+            <div><span className="text-neutral-500">Content:</span> <code className="bg-amber-50 px-1.5 py-0.5 rounded">{sampleContent}</code></div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
