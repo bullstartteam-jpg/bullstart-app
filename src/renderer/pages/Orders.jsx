@@ -971,7 +971,7 @@ export default function Orders() {
               <th className="p-3 text-left">Ship Type</th>
               <th className="p-3 text-right">Total</th>
               <th className="p-3 text-right">Paid</th>
-              <th className="p-3 text-left">Tracking</th>
+              <th className="p-3 text-left">Shipping</th>
               <th className="p-3 text-left">Date</th>
             </tr>
           </thead>
@@ -1048,7 +1048,32 @@ export default function Orders() {
                     ${order.paid_cost}
                   </span>
                 </td>
-                <td className="p-3 text-neutral-500 text-xs">{order.tracking_id || '-'}</td>
+                <td className="p-3 text-xs" onClick={e => e.stopPropagation()}>
+                  {(() => {
+                    const a = order.address;
+                    const addrLine = a ? [
+                      [a.first_name, a.last_name].filter(Boolean).join(' '),
+                      a.address_1,
+                      [a.city, a.state, a.zipcode].filter(Boolean).join(' '),
+                      a.country,
+                    ].filter(Boolean).join(' · ') : '';
+                    const has = order.tracking_id || order.shipping_label || addrLine;
+                    if (!has) return <span className="text-neutral-300">—</span>;
+                    return (
+                      <div className="space-y-0.5 max-w-[240px]">
+                        {order.tracking_id && (
+                          <div className="font-mono text-neutral-700 truncate" title={order.tracking_id}>{order.tracking_id}</div>
+                        )}
+                        {order.shipping_label && (
+                          <a href={order.shipping_label} target="_blank" rel="noreferrer" className="block text-blue-600 hover:underline truncate" title={order.shipping_label}>📄 label</a>
+                        )}
+                        {addrLine && (
+                          <div className="text-neutral-500 leading-tight truncate" title={addrLine}>📍 {addrLine}</div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </td>
                 <td className="p-3 text-neutral-500 text-xs">{new Date(order.created_at).toLocaleDateString()}</td>
               </tr>
             ))}
