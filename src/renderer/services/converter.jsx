@@ -330,33 +330,33 @@ const STAMP_RETURN = {
 };
 
 async function composeStampLabel(address, systemId, accessorySummary = '') {
-  const W = 1240, H = 1748;            // A6 portrait @ 300 DPI
+  const W = 1800, H = 1200;            // 6×4 inch landscape @ 300 DPI
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, W, H);
 
-  const pad = 80;
+  const pad = 70;
 
   // ── Top-left: From / return address ─────────────────────────────
   ctx.fillStyle = '#000000';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  ctx.font = '34px sans-serif';
+  ctx.font = '32px sans-serif';
   let ry = pad;
-  ctx.fillText(`From: ${STAMP_RETURN.name}`, pad, ry); ry += 44;
-  ctx.fillText(STAMP_RETURN.line1, pad, ry); ry += 44;
+  ctx.fillText(`From: ${STAMP_RETURN.name}`, pad, ry); ry += 42;
+  ctx.fillText(STAMP_RETURN.line1, pad, ry); ry += 42;
   ctx.fillText(STAMP_RETURN.line2, pad, ry);
 
   // ── Top-right: "Stamps" + system_id ────────────────────────────
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
   ctx.textAlign = 'right';
-  ctx.font = '34px sans-serif';
+  ctx.font = '32px sans-serif';
   ctx.fillText('Stamps', W - pad, pad);
   ctx.font = 'bold 30px monospace';
   ctx.fillStyle = '#d9480f';
-  ctx.fillText(codeText, W - pad, pad + 50);
+  ctx.fillText(codeText, W - pad, pad + 48);
 
   // ── Center: large recipient block ──────────────────────────────
   ctx.fillStyle = '#000000';
@@ -375,8 +375,8 @@ async function composeStampLabel(address, systemId, accessorySummary = '') {
     a.phone,
   ].filter(s => s && String(s).trim() !== '');
 
-  const fontSize = 68;
-  const lineH = 92;
+  const fontSize = 60;
+  const lineH = 78;
   ctx.font = `${fontSize}px sans-serif`;
   // Soft-wrap any line that overflows the printable width.
   const maxW = W - pad * 2;
@@ -392,9 +392,10 @@ async function composeStampLabel(address, systemId, accessorySummary = '') {
     wrapped.push(text);
   }
   const block = wrapped.length * lineH;
-  // Anchor the center block slightly below the geometric center to leave
-  // breathing room for the From/Stamps band at the top.
-  let cy = (H + 180) / 2 - block / 2 + lineH / 2;
+  // Anchor below the From/Stamps band; center vertically in the remaining
+  // space (top band ~170px).
+  const topBandEnd = 200;
+  let cy = topBandEnd + (H - topBandEnd) / 2 - block / 2 + lineH / 2;
   for (const line of wrapped) {
     ctx.fillText(line, W / 2, cy);
     cy += lineH;
