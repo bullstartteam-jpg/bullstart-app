@@ -223,10 +223,18 @@ export default function OrderDetail() {
                   )}
                 </div>
               )}
-              {form.ship_type !== 'stamp' && (
-                <>
+              {/* Shipping label — always editable so staff can attach a label
+                  URL even to seller_ship/stamp orders. Backend won't recompute
+                  shipping_cost when only the label changes (ship_type stays
+                  the same). */}
+              <>
                   <div>
-                    <label className="text-xs text-neutral-500">Shipping Label</label>
+                    <label className="text-xs text-neutral-500">
+                      Shipping Label
+                      {form.ship_type !== 'tiktok_ship' && (
+                        <span className="ml-1 text-[10px] text-neutral-400">(không đổi shipping cost)</span>
+                      )}
+                    </label>
                     <input value={form.shipping_label} onChange={e => setForm(f => ({ ...f, shipping_label: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
                   </div>
                   <div>
@@ -234,7 +242,6 @@ export default function OrderDetail() {
                     <input value={form.tracking_id} onChange={e => setForm(f => ({ ...f, tracking_id: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
                   </div>
                 </>
-              )}
               <div>
                 <label className="text-xs text-neutral-500">{form.ship_type === 'stamp' ? 'Handling Fee' : 'Shipping Cost'}</label>
                 <input type="number" step="0.01" value={form.shipping_cost} onChange={e => setForm(f => ({ ...f, shipping_cost: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
