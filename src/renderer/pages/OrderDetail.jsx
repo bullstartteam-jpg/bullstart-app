@@ -31,17 +31,31 @@ export default function OrderDetail() {
 
   const fetchOrder = () => {
     api.get(`/orders/${id}`).then(res => {
-      setOrder(res.data.order);
+      const o = res.data.order;
+      setOrder(o);
+      const a = o.address || {};
       setForm({
-        status: res.data.order.status,
-        shipping_label: res.data.order.shipping_label || '',
-        tracking_id: res.data.order.tracking_id || '',
-        shipping_cost: res.data.order.shipping_cost ?? '',
-        proof_image: res.data.order.proof_image || '',
-        ship_type: res.data.order.ship_type || '',
+        status: o.status,
+        shipping_label: o.shipping_label || '',
+        tracking_id: o.tracking_id || '',
+        shipping_cost: o.shipping_cost ?? '',
+        proof_image: o.proof_image || '',
+        ship_type: o.ship_type || '',
+        address: {
+          first_name: a.first_name || '',
+          last_name:  a.last_name  || '',
+          address_1:  a.address_1  || '',
+          address_2:  a.address_2  || '',
+          city:       a.city       || '',
+          state:      a.state      || '',
+          zipcode:    a.zipcode    || '',
+          country:    a.country    || '',
+        },
       });
     }).finally(() => setLoading(false));
   };
+
+  const setAddr = (key, value) => setForm(f => ({ ...f, address: { ...f.address, [key]: value } }));
 
   useEffect(() => { fetchOrder(); }, [id]);
 
@@ -225,6 +239,23 @@ export default function OrderDetail() {
                 <label className="text-xs text-neutral-500">{form.ship_type === 'stamp' ? 'Handling Fee' : 'Shipping Cost'}</label>
                 <input type="number" step="0.01" value={form.shipping_cost} onChange={e => setForm(f => ({ ...f, shipping_cost: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
               </div>
+              {/* Address — required for stamp orders (no shipping label, so
+                  we mail straight to this address with a stamp). Staff only. */}
+              {form.ship_type === 'stamp' && (hasRole('admin') || hasRole('support')) && (
+                <div className="space-y-1">
+                  <label className="text-xs text-neutral-500">Shipping Address</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input value={form.address.first_name} onChange={e => setAddr('first_name', e.target.value)} placeholder="First name" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                    <input value={form.address.last_name} onChange={e => setAddr('last_name', e.target.value)} placeholder="Last name" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                    <input value={form.address.address_1} onChange={e => setAddr('address_1', e.target.value)} placeholder="Address line 1" className="col-span-2 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                    <input value={form.address.address_2} onChange={e => setAddr('address_2', e.target.value)} placeholder="Address line 2 (optional)" className="col-span-2 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                    <input value={form.address.city} onChange={e => setAddr('city', e.target.value)} placeholder="City" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                    <input value={form.address.state} onChange={e => setAddr('state', e.target.value)} placeholder="State" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                    <input value={form.address.zipcode} onChange={e => setAddr('zipcode', e.target.value)} placeholder="Zipcode" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                    <input value={form.address.country} onChange={e => setAddr('country', e.target.value)} placeholder="Country" className="px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  </div>
+                </div>
+              )}
               {/* Stamp proof photo — fulfiller uploads the stamped envelope as
                   evidence (stamp has no tracking). Staff only. */}
               {form.ship_type === 'stamp' && (hasRole('admin') || hasRole('support')) && (
