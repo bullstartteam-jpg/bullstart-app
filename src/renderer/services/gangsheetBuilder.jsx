@@ -52,11 +52,14 @@ function shortDate(d = new Date()) {
   return `${months[d.getMonth()]}${String(d.getDate()).padStart(2, '0')}`;
 }
 
-export function gangsheetFilename({ linePrefix, firstSid, lastSid, ordersCount, metasCount, date, suffix }) {
+export function gangsheetFilename({ linePrefix, firstSid, lastSid, ordersCount, metasCount, date, suffix, seq }) {
   const prefix = linePrefix || 'GANGSHEET';
   const day = date || shortDate();
   const sfx = suffix ? `_${suffix}` : '';
-  return `${prefix}_${firstSid}-${lastSid}_${ordersCount}_${metasCount}_${day}${sfx}.pdf`;
+  // Zero-padded batch sequence (01, 02, …) so multiple gangsheets generated
+  // from a single Generate click sort in chunk order on disk.
+  const seqPrefix = (seq && seq > 0) ? `${String(seq).padStart(2, '0')}_` : '';
+  return `${seqPrefix}${prefix}_${firstSid}-${lastSid}_${ordersCount}_${metasCount}_${day}${sfx}.pdf`;
 }
 
 /**
@@ -227,7 +230,7 @@ function canvasToBlob(canvas, type = 'image/png') {
  *   { blob, filename, linePrefix, firstSid, lastSid, ordersInChunk, metasUsed,
  *     orderIds, metaIds }
  */
-export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '' } = {}) {
+export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0 } = {}) {
   if (!orders.length) throw new Error('Empty chunk');
 
   const records = flattenQrMetas(orders, { includeProduced });
@@ -293,6 +296,7 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
     ordersCount: ordersInChunk,
     metasCount: metasUsed,
     suffix: nameSuffix,
+    seq,
   });
 
   const pdfBytes = await pdf.save();

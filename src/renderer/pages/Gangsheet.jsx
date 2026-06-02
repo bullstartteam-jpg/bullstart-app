@@ -246,6 +246,7 @@ function ComposeTab() {
         const built = await buildGangsheetForChunk(chunk, {
           linePrefix,
           nameSuffix: suffix,
+          seq: ci + 1,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 
@@ -492,6 +493,7 @@ function FindTab() {
           linePrefix,
           includeProduced: true,
           nameSuffix: suffix,
+          seq: ci + 1,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 
