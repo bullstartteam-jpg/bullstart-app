@@ -81,6 +81,7 @@ export default function AutoPay() {
             <tr className="text-neutral-500 text-xs border-b border-neutral-200">
               <th className="px-3 py-2 text-left">User</th>
               <th className="px-3 py-2 text-right">Wallet</th>
+              <th className="px-3 py-2 text-center" title="Delay hours sau khi tạo đơn">Delay</th>
               <th className="px-3 py-2 text-right">Unpaid</th>
               <th className="px-3 py-2 text-right">Owed</th>
               <th className="px-3 py-2 text-left">Oldest unpaid</th>
@@ -89,9 +90,9 @@ export default function AutoPay() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="p-6 text-center text-neutral-400">Loading…</td></tr>
+              <tr><td colSpan={7} className="p-6 text-center text-neutral-400">Loading…</td></tr>
             ) : data.users.length === 0 ? (
-              <tr><td colSpan={6} className="p-6 text-center text-neutral-400">Không có seller nào bật auto-pay.</td></tr>
+              <tr><td colSpan={7} className="p-6 text-center text-neutral-400">Không có seller nào bật auto-pay.</td></tr>
             ) : data.users.map(u => {
               const canCover = u.oldest && u.wallet >= u.oldest.remaining;
               return (
@@ -101,6 +102,11 @@ export default function AutoPay() {
                     <div className="text-[11px] text-neutral-400">{u.email}</div>
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-emerald-600">${u.wallet.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-center text-xs">
+                    {u.auto_pay_delay_hours > 0
+                      ? <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-mono">{u.auto_pay_delay_hours}h</span>
+                      : <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600">ngay</span>}
+                  </td>
                   <td className="px-3 py-2 text-right">{u.unpaid}</td>
                   <td className="px-3 py-2 text-right font-mono text-red-500">${u.owed.toFixed(2)}</td>
                   <td className="px-3 py-2 text-xs">
