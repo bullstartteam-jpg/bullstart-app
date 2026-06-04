@@ -53,7 +53,7 @@ function OrderThumb({ url, label, onOpen }) {
   );
 }
 
-const STATUS_MAP = ['new_order', 'processing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
+const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
 const STATUS_COLORS = {
   0: 'bg-blue-100 text-blue-600',
