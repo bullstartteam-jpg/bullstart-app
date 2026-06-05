@@ -1,4 +1,5 @@
 import QRCode from 'qrcode';
+import bwipjs from 'bwip-js';
 import api from './api';
 import { driveThumb, driveId, driveOriginal } from '../utils/drive';
 import { runGroupAssign, generateClaimedGroups, getAutomationConfig } from './groupGang';
@@ -656,20 +657,17 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   // same orientation as the front. The QR code is also skipped for backs
   // (only the front carries it). source_key === 'back' is the single switch.
 
-  // Auto QR placement reads the composed canvas to find the artwork's bounding
-  // box (non-white, non-transparent pixels). Drive thumbnails are flattened
-  // JPEGs on a white field; since detection now ignores white too, both the
-  // original PNG and the thumbnail fallback locate the art correctly. We still
-  // prefer the original PNG so transparent areas stay transparent in the output.
-  // Very large originals can fail (Drive serves an HTML virus-scan page instead
-  // of bytes) — fall back to the thumbnail when that happens.
+  // The barcode is stamped at a fixed bottom-left panel (no design detection),
+  // so a flattened thumbnail is fine. For Drive links we still fetch a large
+  // render; very large originals can fail (Drive serves an HTML virus-scan page
+  // instead of bytes) — fall back to a smaller thumbnail then.
   const id = driveId(sourceUrl);
   let sourceImg;
   if (id) {
     try {
       sourceImg = await loadImage(driveOriginal(sourceUrl));
     } catch (err) {
-      console.warn('[qr] original fetch failed, falling back to thumbnail', err);
+      console.warn('[convert] original fetch failed, falling back to thumbnail', err);
       sourceImg = await loadImage(driveThumb(sourceUrl, 'w3230'));
     }
   } else {
@@ -707,132 +705,60 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   }
 
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
-  // QR instead of Code 128: scans reliably from any angle and survives lossy
-  // compression / partial smudging better than a 1D barcode at small sizes.
-  const QR_SIZE = 224;   // 280 − 20%
-  const qrCanvas = await generateQrCanvas(systemId, QR_SIZE);
+  // Code 128 barcode (system_id) + text, stamped at a FIXED bottom-left panel —
+  // no design detection. Size & position match the original convert layout.
+  const barcodeCanvas = generateBarcodeCanvas(systemId);
 
+  const MARGIN_X = 190;
+  const MARGIN_Y = 60;
   const PANEL_PAD = 10;
   const TEXT_H = 22;
-  const TEXT_TO_QR = 6;
-  const QR_W = qrCanvas.width;
-  const QR_H = qrCanvas.height;
-  const MARGIN = 60;          // gap from the canvas edge
-  const DESIGN_GAP = 100;     // empty buffer kept between the artwork and the QR
+  const TEXT_TO_BAR = 6;
+  const BARCODE_W = 350;
+  const BARCODE_H = 130;
 
   ctx.font = 'bold 18px sans-serif';
   const textW = Math.ceil(ctx.measureText(codeText).width);
-  const panelW = Math.max(QR_W, textW) + PANEL_PAD * 2;
-  const panelH = TEXT_H + TEXT_TO_QR + QR_H + PANEL_PAD * 2;
-  const dims = { PANEL_PAD, TEXT_H, TEXT_TO_QR, QR_W, QR_H };
+  const innerW = Math.max(BARCODE_W, textW);
+  const panelW = innerW + PANEL_PAD * 2;
+  const panelH = TEXT_H + TEXT_TO_BAR + BARCODE_H + PANEL_PAD * 2;
+  const panelX = MARGIN_X;
+  const panelY = canvas.height - MARGIN_Y - panelH;
 
-  // Find the artwork's real bounding box (ignoring white + transparent pixels)
-  // and drop the QR just outside it with a fixed ~100px gap, so the code never
-  // sits on the design and the mock-up looks tidy. Falls back to a bottom-left
-  // stamp on a blank canvas; returns null only when the art leaves no room on
-  // any side (handled by the strip-extension branch below).
-  let placement = null;
-  try {
-    const bbox = designContentBounds(ctx);
-    placement = bbox
-      ? placeQrOutsideDesign(bbox, TARGET_W, TARGET_H, panelW, panelH, DESIGN_GAP, MARGIN)
-      : { x: MARGIN, y: TARGET_H - MARGIN - panelH };
-  } catch (err) {
-    console.warn('[qr] placement detection failed, using bottom-left', err);
-    placement = { x: MARGIN, y: TARGET_H - MARGIN - panelH };
-  }
+  ctx.fillStyle = '#000000';
+  ctx.textBaseline = 'top';
+  // Center the system_id text over the barcode below.
+  ctx.textAlign = 'center';
+  const barcodeCenterX = panelX + PANEL_PAD + BARCODE_W / 2;
+  ctx.fillText(codeText, barcodeCenterX, panelY + PANEL_PAD);
 
-  if (placement === null) {
-    // Design leaves no room with the required gap on any side → push the QR
-    // outside the artwork by adding a strip below and stamping it there.
-    const stripH = panelH + MARGIN * 2;
-    const ext = document.createElement('canvas');
-    ext.width = TARGET_W;
-    ext.height = TARGET_H + stripH;
-    const ectx = ext.getContext('2d');
-    ectx.drawImage(canvas, 0, 0);
-    drawQrPanel(ectx, qrCanvas, codeText, MARGIN, TARGET_H + MARGIN, panelW, dims);
-    const extBlob = await canvasToBlob(ext, 'image/png');
-    return await setPngDpi(extBlob, 300);
-  }
-
-  drawQrPanel(ctx, qrCanvas, codeText, placement.x, placement.y, panelW, dims);
+  ctx.drawImage(
+    barcodeCanvas,
+    panelX + PANEL_PAD,
+    panelY + PANEL_PAD + TEXT_H + TEXT_TO_BAR,
+    BARCODE_W,
+    BARCODE_H
+  );
 
   const rawBlob = await canvasToBlob(canvas, 'image/png');
   return await setPngDpi(rawBlob, 300);
 }
 
-// Draw the "{system_id} text + QR" panel with its top-left at (px, py). The
-// QR brings its own white background (light modules), so it stays scannable
-// even when placed over a transparent area of a print file.
-function drawQrPanel(ctx, qrCanvas, codeText, px, py, panelW, dims) {
-  const { PANEL_PAD, TEXT_H, TEXT_TO_QR, QR_W, QR_H } = dims;
-  ctx.font = 'bold 18px sans-serif';
-  ctx.fillStyle = '#000000';
-  ctx.textBaseline = 'top';
-  ctx.textAlign = 'center';
-  const centerX = px + panelW / 2;
-  ctx.fillText(codeText, centerX, py + PANEL_PAD);
-  ctx.drawImage(
-    qrCanvas,
-    px + (panelW - QR_W) / 2,
-    py + PANEL_PAD + TEXT_H + TEXT_TO_QR,
-    QR_W,
-    QR_H
-  );
-}
-
-// Bounding box of the actual artwork on `ctx`: the tightest rectangle covering
-// every pixel that is opaque AND not near-white. Treating white as empty (not
-// just transparent) means flattened white-background sources still report the
-// real art box instead of the whole canvas. Samples every 2nd pixel for speed.
-// Returns null when nothing qualifies (blank / all-white canvas).
-function designContentBounds(ctx, sampleStep = 2) {
-  const W = ctx.canvas.width;
-  const H = ctx.canvas.height;
-  const { data } = ctx.getImageData(0, 0, W, H);
-  const WHITE = 245;            // r,g,b all ≥ this counts as background white
-  let minX = W, minY = H, maxX = -1, maxY = -1;
-  for (let y = 0; y < H; y += sampleStep) {
-    const rowOff = y * W * 4;
-    for (let x = 0; x < W; x += sampleStep) {
-      const i = rowOff + x * 4;
-      if (data[i + 3] <= 16) continue;             // transparent
-      if (data[i] >= WHITE && data[i + 1] >= WHITE && data[i + 2] >= WHITE) continue; // white
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-  }
-  if (maxX < 0) return null;
-  return { minX, minY, maxX, maxY };
-}
-
-// Place the QR panel just outside the design's content box with a fixed gap so
-// it never overlaps the artwork and reads as intentional. Tries below → above →
-// right → left, centred on the design, and takes the first side with enough
-// room (each candidate is clamped into the canvas, then rejected if clamping
-// pulled it back inside the design+gap band). Returns the panel's top-left
-// {x, y}, or null when no side has room (caller extends the canvas instead).
-function placeQrOutsideDesign(bbox, W, H, panelW, panelH, gap, margin) {
-  const cx = (bbox.minX + bbox.maxX) / 2;
-  const cy = (bbox.minY + bbox.maxY) / 2;
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  const candidates = [
-    { x: cx - panelW / 2,        y: bbox.maxY + gap },            // below
-    { x: cx - panelW / 2,        y: bbox.minY - gap - panelH },   // above
-    { x: bbox.maxX + gap,        y: cy - panelH / 2 },            // right
-    { x: bbox.minX - gap - panelW, y: cy - panelH / 2 },          // left
-  ];
-  for (const c of candidates) {
-    const x = clamp(c.x, margin, W - margin - panelW);
-    const y = clamp(c.y, margin, H - margin - panelH);
-    const overlapX = x < bbox.maxX + gap && x + panelW > bbox.minX - gap;
-    const overlapY = y < bbox.maxY + gap && y + panelH > bbox.minY - gap;
-    if (!(overlapX && overlapY)) return { x, y };
-  }
-  return null;
+// Code 128 barcode of `value` rendered to its own canvas via bwip-js. `scale`
+// is px-per-module; a quiet zone (paddingwidth) keeps the start/stop codes
+// readable after lossy compression / thermal-printer drift.
+function generateBarcodeCanvas(value, scale = 3) {
+  const c = document.createElement('canvas');
+  bwipjs.toCanvas(c, {
+    bcid: 'code128',
+    text: value,
+    scale,
+    height: 14,
+    includetext: false,
+    paddingwidth: 10,
+    paddingheight: 4,
+  });
+  return c;
 }
 
 function canvasToBlob(canvas, type = 'image/png', quality) {

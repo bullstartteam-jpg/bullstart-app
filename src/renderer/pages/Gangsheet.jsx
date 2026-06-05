@@ -89,6 +89,16 @@ function slugifyAccessory(name) {
     .slice(0, 24);
 }
 
+// An order's material = the first item that has one (mirrors the backend bucket
+// rule). Returns { id, name }; id=0 when the order has no material.
+function orderMaterial(order) {
+  for (const it of order.items || []) {
+    const id = it.material_id ?? it.material?.id;
+    if (id) return { id, name: it.material?.name || '' };
+  }
+  return { id: 0, name: '' };
+}
+
 /**
  * Pull every accessory_id linked to an order's items, from both the multi-acc
  * pivot (item.accessory_prices[]) and the legacy single accessory_price.
@@ -119,6 +129,35 @@ function orderSideCount(order) {
   return hasFront || hasBack ? 'one' : 'none';
 }
 
+// The split-accessory (e.g. Scratch Card) of an order: smallest id among items'
+// gangsheet_split=true accessories (mirrors backend computeBucket). {id:0} none.
+function orderSplitAccessory(order) {
+  let id = 0, name = '';
+  const consider = (acc) => {
+    if (!acc?.id || acc.gangsheet_split === false) return;
+    if (id === 0 || acc.id < id) { id = acc.id; name = acc.name || ''; }
+  };
+  for (const it of order.items || []) {
+    for (const ap of it.accessory_prices || []) consider(ap.accessory);
+    consider(it.accessory_price?.accessory);
+  }
+  return { id, name };
+}
+
+// Full gang bucket of an order: side × split-accessory × material. Mirrors the
+// backend computeBucket so the Compose chips show the real gang division
+// ("1 mặt · Gloss", "2 mặt · Scratch Card · Matte", …).
+function orderBucketInfo(order) {
+  const side = orderSideCount(order) === 'two' ? 'two' : 'one';
+  const acc = orderSplitAccessory(order);
+  const mat = orderMaterial(order);
+  const key = `${side}|${acc.id}|${mat.id}`;
+  const parts = [side === 'two' ? '2 mặt' : '1 mặt'];
+  if (acc.id) parts.push(acc.name || `Acc#${acc.id}`);
+  parts.push(mat.id ? (mat.name || `Mat#${mat.id}`) : 'Không chất liệu');
+  return { side, acc, mat, key, label: parts.join(' · ') };
+}
+
 function ComposeTab() {
   const [pending, setPending] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -127,7 +166,7 @@ function ComposeTab() {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
   const [results, setResults] = useState([]);
-  // Sub-tab filter: 'all' | 'one' | 'two' | 'acc:<accessoryId>'.
+  // Sub-tab filter: 'all' | a bucket key "<side>|<accId>|<matId>".
   const [subTab, setSubTab] = useState('all');
 
   const fetchPending = async () => {
@@ -145,58 +184,25 @@ function ComposeTab() {
     return next;
   });
 
-  // Side-count buckets (all / one / two) + a dynamic per-accessory bucket
-  // auto-built from whatever accessories actually appear in the pending
-  // orders — no manual config. Each distinct accessory becomes its own
-  // filter chip so e.g. Scratch Card orders split out automatically.
-  const { sideBuckets, accBuckets, accMeta, matBuckets, matMeta } = (() => {
-    const sideBuckets = { all: pending, one: [], two: [] };
-    const accBuckets = {};   // accId → orders[]
-    const accMeta = {};      // accId → { name }
-    const matBuckets = {};   // matId → orders[]
-    const matMeta = {};      // matId → { name }
+  // Combined gang buckets: each chip is one real gang division
+  // (side × split-accessory × material), e.g. "1 mặt · Gloss 300gsm" or
+  // "2 mặt · Scratch Card · Matte". Built dynamically from the pending orders —
+  // no hard-coded material/accessory list.
+  const buckets = (() => {
+    const map = new Map();   // key → { label, side, acc, mat, orders[] }
     for (const o of pending) {
-      const side = orderSideCount(o);
-      if (side === 'two') sideBuckets.two.push(o);
-      else if (side === 'one') sideBuckets.one.push(o);
-
-      // Collect accessory id+name from the order's items (pivot + legacy).
-      // Only accessories with gangsheet_split=true get a chip — physical-only
-      // add-ons (e.g. envelope) are flagged off in the DB and skipped here.
-      for (const it of o.items || []) {
-        const seen = new Set();
-        const add = (acc) => {
-          const id = acc?.id;
-          if (!id || seen.has(id)) return;
-          if (acc.gangsheet_split === false) return; // physical-only — no chip
-          seen.add(id);
-          (accBuckets[id] ||= []).push(o);
-          if (acc.name && !accMeta[id]) accMeta[id] = { name: acc.name };
-        };
-        for (const ap of it.accessory_prices || []) add(ap.accessory);
-        if (it.accessory_price) add(it.accessory_price.accessory);
-      }
-
-      // Material chips: classify each order by its FIRST item's material (the
-      // first item that has one). No "mixed" split. Materials are dynamic — any
-      // newly added material auto-shows here.
-      for (const it of o.items || []) {
-        const mid = it.material_id ?? it.material?.id;
-        if (!mid) continue;
-        (matBuckets[mid] ||= []).push(o);
-        if (it.material?.name && !matMeta[mid]) matMeta[mid] = { name: it.material.name };
-        break;   // first item with a material decides the bucket
-      }
+      const b = orderBucketInfo(o);
+      if (!map.has(b.key)) map.set(b.key, { label: b.label, side: b.side, acc: b.acc, mat: b.mat, orders: [] });
+      map.get(b.key).orders.push(o);
     }
-    return { sideBuckets, accBuckets, accMeta, matBuckets, matMeta };
+    return map;
   })();
+  // 1 mặt before 2 mặt, then larger buckets first.
+  const bucketList = [...buckets.entries()]
+    .map(([key, v]) => ({ key, ...v }))
+    .sort((a, b) => (a.side === b.side ? b.orders.length - a.orders.length : (a.side === 'one' ? -1 : 1)));
 
-  // subTab is 'all' | 'one' | 'two' | 'acc:<id>' | 'mat:<id>' | 'mat:mixed'.
-  const filteredPending = subTab.startsWith('acc:')
-    ? (accBuckets[subTab.slice(4)] || [])
-    : subTab.startsWith('mat:')
-    ? (matBuckets[subTab.slice(4)] || [])
-    : (sideBuckets[subTab] || pending);
+  const filteredPending = subTab === 'all' ? pending : (buckets.get(subTab)?.orders || []);
 
   const toggleAll = () => {
     // Toggle-all operates on the CURRENTLY VISIBLE filter only — clicking
@@ -233,25 +239,27 @@ function ComposeTab() {
     const selected = pending.filter(o => selectedIds.has(o.id));
     if (selected.length === 0) { alert('Select at least 1 order'); return; }
 
-    // When generating from an accessory/material chip, tag the filename so the
-    // press operator can tell the batch apart. acc chip → accessory name;
-    // material chip → material name (or "mixed"). Combined with the two_size
-    // suffix → e.g. GC_..._scratch-card or GC_..._gloss-300_two_size.
-    let accTag = '';
-    if (subTab.startsWith('acc:')) {
-      accTag = slugifyAccessory(accMeta[subTab.slice(4)]?.name);
-    } else if (subTab.startsWith('mat:')) {
-      accTag = slugifyAccessory(matMeta[subTab.slice(4)]?.name);
+    // Group selected orders by their FULL bucket (side × accessory × material)
+    // so every gang is homogeneous — never mixes side, accessory or paper. Each
+    // bucket is single-side already, so just chunk it. Filename gets the
+    // accessory + material + two_size tags of that bucket.
+    const joinTags = (...xs) => xs.filter(Boolean).join('_');
+    const bucketGroups = new Map();   // key → { acc, mat, side, orders[] }
+    for (const o of selected) {
+      const b = orderBucketInfo(o);
+      if (!bucketGroups.has(b.key)) bucketGroups.set(b.key, { acc: b.acc, mat: b.mat, side: b.side, orders: [] });
+      bucketGroups.get(b.key).orders.push(o);
     }
-    const withTag = (s) => [accTag, s].filter(Boolean).join('_');
 
-    // Split two-sided orders out so they get their own gangsheet (named with
-    // `_two_size` suffix). One-side orders ship in the normal sheets.
-    const { oneSide, twoSide } = splitOrdersBySideCount(selected);
-    const chunks = [
-      ...chunkArray(oneSide, batchSize).map(chunk => ({ chunk, suffix: withTag('') })),
-      ...chunkArray(twoSide, batchSize).map(chunk => ({ chunk, suffix: withTag('two_size') })),
-    ];
+    const chunks = [];
+    for (const [, g] of bucketGroups) {
+      const tag = joinTags(
+        g.acc.id ? slugifyAccessory(g.acc.name) : '',
+        g.mat.id ? slugifyAccessory(g.mat.name) : '',
+        g.side === 'two' ? 'two_size' : '',
+      );
+      for (const chunk of chunkArray(g.orders, batchSize)) chunks.push({ chunk, suffix: tag });
+    }
     setRunning(true); setResults([]);
     const out = [];
     try {
@@ -342,38 +350,22 @@ function ComposeTab() {
           </div>
         </div>
 
-        {/* Sub-tabs: All / 1 mặt / 2 mặt + một chip cho mỗi accessory
-            xuất hiện trong pending orders (auto, không cần config). */}
+        {/* Sub-tabs: All + một chip cho mỗi bucket gang thật
+            (mặt × Scratch × chất liệu), auto theo pending orders. */}
         <div className="flex flex-wrap items-center gap-1 border-b border-neutral-100 pb-2">
-          <SubChip active={subTab === 'all'} onClick={() => setSubTab('all')}>All <CountBadge n={sideBuckets.all.length} /></SubChip>
-          <SubChip active={subTab === 'one'} onClick={() => setSubTab('one')}>1 mặt <CountBadge n={sideBuckets.one.length} /></SubChip>
-          <SubChip active={subTab === 'two'} onClick={() => setSubTab('two')}>2 mặt <CountBadge n={sideBuckets.two.length} /></SubChip>
-          {Object.keys(accBuckets)
-            .sort((a, b) => accBuckets[b].length - accBuckets[a].length)
-            .map(id => (
-              <SubChip key={id} active={subTab === `acc:${id}`} onClick={() => setSubTab(`acc:${id}`)}>
-                {accMeta[id]?.name || `Accessory #${id}`} <CountBadge n={accBuckets[id].length} />
-              </SubChip>
-            ))}
-          {/* Material chips (dynamic) — one per material, by first item. */}
-          {Object.keys(matBuckets)
-            .sort((a, b) => matBuckets[b].length - matBuckets[a].length)
-            .map(key => (
-              <SubChip key={`mat-${key}`} active={subTab === `mat:${key}`} onClick={() => setSubTab(`mat:${key}`)}>
-                🧶 {matMeta[key]?.name || `Material #${key}`} <CountBadge n={matBuckets[key].length} />
-              </SubChip>
-            ))}
+          <SubChip active={subTab === 'all'} onClick={() => setSubTab('all')}>All <CountBadge n={pending.length} /></SubChip>
+          {bucketList.map(b => (
+            <SubChip key={b.key} active={subTab === b.key} onClick={() => setSubTab(b.key)}>
+              {b.label} <CountBadge n={b.orders.length} />
+            </SubChip>
+          ))}
         </div>
 
         {loading ? (
           <p className="text-neutral-400 text-sm">Loading…</p>
         ) : filteredPending.length === 0 ? (
           <p className="text-neutral-400 text-sm">
-            {subTab.startsWith('acc:')
-              ? `Không có đơn nào dùng accessory này.`
-              : subTab.startsWith('mat:')
-              ? `Không có đơn nào thuộc nhóm chất liệu này.`
-              : `Không có đơn nào trong tab "${subTab}".`}
+            {subTab === 'all' ? `Không có đơn nào.` : `Không có đơn nào trong nhóm này.`}
           </p>
         ) : (
           <table className="w-full text-sm">
@@ -812,12 +804,22 @@ function FindTab() {
   const handleGenerate = async () => {
     const selected = orders.filter(o => selectedIds.has(o.id));
     if (selected.length === 0) { alert('Select at least 1 order'); return; }
-    // includeProduced=true here, so two-sidedness check must consider all metas.
-    const { oneSide, twoSide } = splitOrdersBySideCount(selected, { includeProduced: true });
-    const chunks = [
-      ...chunkArray(oneSide, batchSize).map(chunk => ({ chunk, suffix: '' })),
-      ...chunkArray(twoSide, batchSize).map(chunk => ({ chunk, suffix: 'two_size' })),
-    ];
+    // Split by material first (so a re-gang never mixes paper stock), then by
+    // side. includeProduced=true here, so two-sidedness considers all metas.
+    const matGroups = new Map();   // matId → { name, orders[] }
+    for (const o of selected) {
+      const m = orderMaterial(o);
+      if (!matGroups.has(m.id)) matGroups.set(m.id, { name: m.name, orders: [] });
+      matGroups.get(m.id).orders.push(o);
+    }
+    const joinTags = (...xs) => xs.filter(Boolean).join('_');
+    const chunks = [];
+    for (const [matId, { name, orders: matOrders }] of matGroups) {
+      const matTag = matId ? slugifyAccessory(name) : '';
+      const { oneSide, twoSide } = splitOrdersBySideCount(matOrders, { includeProduced: true });
+      for (const chunk of chunkArray(oneSide, batchSize)) chunks.push({ chunk, suffix: joinTags(matTag, '') });
+      for (const chunk of chunkArray(twoSide, batchSize)) chunks.push({ chunk, suffix: joinTags(matTag, 'two_size') });
+    }
     setRunning(true); setResults([]);
     const out = [];
     try {
@@ -1013,6 +1015,17 @@ function saveDownloadedSet(s) {
   localStorage.setItem(DOWNLOADED_KEY, JSON.stringify([...s]));
 }
 
+// Category of a gangsheet, parsed from the filename tail after the date token
+// (MMMDD), e.g. "..._JUN06_gloss-300gsm.pdf" → "gloss-300gsm",
+// "..._JUN06_scratch-card_gloss-300gsm.pdf" → "scratch-card_gloss-300gsm",
+// "..._JUN06_gloss-300gsm_two_size.pdf" → "gloss-300gsm_two_size".
+// No suffix (plain) → '' (shown as "Khác").
+function gangCategory(filename) {
+  const m = String(filename || '').match(/_[A-Za-z]{3}\d{2}_(.+)\.pdf$/i);
+  return m ? m[1] : '';
+}
+const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Khác';
+
 function ManageTab({ isAdmin }) {
   const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
@@ -1024,6 +1037,9 @@ function ManageTab({ isAdmin }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [reconvertingId, setReconvertingId] = useState(null);
+  // Sub-tab filter (client-side) by filename category — material / scratch /
+  // two_size — so the loaded page is easy to tell apart. 'all' = no filter.
+  const [subTab, setSubTab] = useState('all');
 
   const markDownloaded = (id) => {
     setDownloadedSet(prev => {
@@ -1052,10 +1068,20 @@ function ManageTab({ isAdmin }) {
       const res = await api.get('/gangsheets', { params });
       setList(res.data);
       setSelectedIds(new Set()); // reset on every re-fetch
+      setSubTab('all');          // category chips reflect the new page
     } finally { setLoading(false); }
   };
 
   useEffect(() => { fetchList(); }, [filters.page]);
+
+  // Category chips + filtered rows (client-side, on the current page).
+  const catCounts = {};
+  for (const g of list.data) {
+    const c = gangCategory(g.filename);
+    catCounts[c] = (catCounts[c] || 0) + 1;
+  }
+  const cats = Object.keys(catCounts).sort((a, b) => catCounts[b] - catCounts[a]);
+  const visible = subTab === 'all' ? list.data : list.data.filter(g => gangCategory(g.filename) === subTab);
 
   const toggleSelected = (id) => setSelectedIds(prev => {
     const next = new Set(prev);
@@ -1063,8 +1089,13 @@ function ManageTab({ isAdmin }) {
     return next;
   });
   const toggleSelectAll = () => {
-    if (selectedIds.size === list.data.length) setSelectedIds(new Set());
-    else setSelectedIds(new Set(list.data.map(g => g.id)));
+    const allSel = visible.length > 0 && visible.every(g => selectedIds.has(g.id));
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (allSel) visible.forEach(g => next.delete(g.id));
+      else visible.forEach(g => next.add(g.id));
+      return next;
+    });
   };
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
@@ -1163,6 +1194,18 @@ function ManageTab({ isAdmin }) {
         </span>
       </form>
 
+      {/* Category chips (parsed from filename) — easy to tell batches apart. */}
+      {!loading && list.data.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <SubChip active={subTab === 'all'} onClick={() => setSubTab('all')}>All <CountBadge n={list.data.length} /></SubChip>
+          {cats.map(c => (
+            <SubChip key={c || '_plain'} active={subTab === c} onClick={() => setSubTab(c)}>
+              {gangCategoryLabel(c)} <CountBadge n={catCounts[c]} />
+            </SubChip>
+          ))}
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
         <table className="w-full text-sm">
@@ -1173,9 +1216,9 @@ function ManageTab({ isAdmin }) {
                   <input
                     type="checkbox"
                     onChange={toggleSelectAll}
-                    checked={list.data.length > 0 && selectedIds.size === list.data.length}
+                    checked={visible.length > 0 && visible.every(g => selectedIds.has(g.id))}
                     className="accent-orange-500"
-                    title="Select all on this page"
+                    title="Select all visible"
                   />
                 </th>
               )}
@@ -1193,9 +1236,9 @@ function ManageTab({ isAdmin }) {
           <tbody>
             {loading ? (
               <tr><td colSpan={isAdmin ? 10 : 9} className="p-6 text-center text-neutral-400">Loading…</td></tr>
-            ) : list.data.length === 0 ? (
+            ) : visible.length === 0 ? (
               <tr><td colSpan={isAdmin ? 10 : 9} className="p-6 text-center text-neutral-400">No gangsheets found.</td></tr>
-            ) : list.data.map(g => {
+            ) : visible.map(g => {
               const isDl = downloadedSet.has(g.id);
               const isSel = selectedIds.has(g.id);
               return (
