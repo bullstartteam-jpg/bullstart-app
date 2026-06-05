@@ -1,7 +1,7 @@
-import bwipjs from 'bwip-js';
 import QRCode from 'qrcode';
 import api from './api';
-import { driveThumb, driveId } from '../utils/drive';
+import { driveThumb, driveId, driveOriginal } from '../utils/drive';
+import { runGroupAssign, generateClaimedGroups, getAutomationConfig } from './groupGang';
 
 // Two independent background jobs, each with its own poll interval, state,
 // log, and persisted auto flag. They share the `/conversion/pending` endpoint
@@ -11,7 +11,7 @@ import { driveThumb, driveId } from '../utils/drive';
 
 const POLL_MS = 60_000;
 
-function createJob({ name, storageKey, runOnce }) {
+function createJob({ name, storageKey, runOnce, pollMs = POLL_MS }) {
   let intervalId = null;
   const state = {
     name,
@@ -57,7 +57,7 @@ function createJob({ name, storageKey, runOnce }) {
       console.warn(`[${name}] poll error`, err);
     } finally {
       state.running = false;
-      state.nextTickAt = state.enabled && !state.paused ? Date.now() + POLL_MS : null;
+      state.nextTickAt = state.enabled && !state.paused ? Date.now() + pollMs : null;
       emit();
     }
   }
@@ -78,7 +78,7 @@ function createJob({ name, storageKey, runOnce }) {
     state.enabled = true;
     try { localStorage.setItem(storageKey, '1'); } catch { /* noop */ }
     if (!intervalId) {
-      intervalId = setInterval(() => { if (!state.paused) tick(); }, POLL_MS);
+      intervalId = setInterval(() => { if (!state.paused) tick(); }, pollMs);
     }
     state.nextTickAt = Date.now() + 1500;
     emit();
@@ -152,7 +152,7 @@ const qrJob = createJob({
       for (const meta of item.pending) {
         if (state.paused || !state.enabled) break;
         try {
-          const backTag = meta.target_key === 'back_qr' || meta.source_key === 'back' ? ' [back: no barcode]' : '';
+          const backTag = meta.target_key === 'back_qr' || meta.source_key === 'back' ? ' [back: no qr]' : '';
           pushLog('info', item.system_id, meta.target_key, `Starting (${meta.index}/${meta.total})${backTag}…`);
           emit();
           await processOne(item, meta);
@@ -209,6 +209,69 @@ const labelJob = createJob({
   },
 });
 
+// ---------------- Automation gangsheet jobs (groups) ----------------
+
+// 'HH:mm' right now in Vietnam — auto-close hooks are evaluated in fixed VN
+// time regardless of the operator machine's timezone.
+function vnNowHHMM() {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(new Date());
+  const h = parts.find(p => p.type === 'hour').value;
+  const m = parts.find(p => p.type === 'minute').value;
+  return `${h}:${m}`;
+}
+
+// Hourly "gom đơn vào group". Server does the bucketing atomically; this just
+// pokes it. Safe to run on multiple machines (assign is idempotent per order).
+const assignJob = createJob({
+  name: 'gangsheet-assign',
+  storageKey: 'converter_gangsheet_assign_auto',
+  pollMs: 3_600_000,   // 1 hour
+  async runOnce({ state, pushLog, emit }) {
+    const res = await runGroupAssign();
+    state.processedTotal += res?.assigned || 0;
+    pushLog('ok', null, 'assign', `Gom ${res?.assigned ?? 0} đơn vào group (touched ${res?.groups_touched ?? 0}).`);
+    emit();
+  },
+});
+
+// Polls every minute; when server auto_close.enabled, fires any time-hook that
+// has been reached but not yet fired this production day. mark-fired claims the
+// hook atomically so multiple open apps don't double-close.
+const autoCloseJob = createJob({
+  name: 'gangsheet-autoclose',
+  storageKey: 'converter_gangsheet_autoclose_auto',
+  pollMs: 60_000,      // 1 minute
+  async runOnce({ state, pushLog, emit }) {
+    const cfg = await getAutomationConfig();
+    if (!cfg?.auto_close?.enabled) return;   // policy off → do nothing
+
+    const hooks = cfg.auto_close.hooks || [];
+    const nowHM = vnNowHHMM();
+    const firedToday = (cfg.close_marks?.date === cfg.production_day) ? (cfg.close_marks.fired || []) : [];
+    const due = hooks.filter(h => h <= nowHM && !firedToday.includes(h)).sort();
+
+    for (const hook of due) {
+      if (state.paused || !state.enabled) break;
+      const mark = await api.post('/gangsheet-groups/mark-fired', { hook });
+      if (!mark.data?.was_new) continue;     // another client already fired this hook
+
+      pushLog('info', null, 'autoclose', `Móc ${hook}: chốt các group đang mở…`);
+      emit();
+      try {
+        const results = await generateClaimedGroups({});   // all open groups
+        state.processedTotal += results.length;
+        pushLog('ok', null, 'autoclose', `Móc ${hook}: tạo ${results.length} gang.`);
+      } catch (err) {
+        state.errorTotal += 1;
+        pushLog('error', null, 'autoclose', `Móc ${hook}: ${err?.message || String(err)}`);
+      }
+      emit();
+    }
+  },
+});
+
 // ---------------- Public API ----------------
 
 // QR job (seller _qr conversion).
@@ -229,6 +292,19 @@ export const resumeLabelConverter = labelJob.resume;
 export const runLabelNow = labelJob.runNow;
 export const isLabelAutoEnabled = labelJob.isAutoEnabled;
 
+// Automation gangsheet: assign (hourly gom) + auto-close (hook-driven).
+export const subscribeAssignJob = assignJob.subscribe;
+export const startAssignJob = assignJob.start;
+export const stopAssignJob = assignJob.stop;
+export const runAssignNow = assignJob.runNow;
+export const isAssignAutoEnabled = assignJob.isAutoEnabled;
+
+export const subscribeAutoCloseJob = autoCloseJob.subscribe;
+export const startAutoCloseJob = autoCloseJob.start;
+export const stopAutoCloseJob = autoCloseJob.stop;
+export const runAutoCloseNow = autoCloseJob.runNow;
+export const isAutoCloseAutoEnabled = autoCloseJob.isAutoEnabled;
+
 /**
  * Restore each job's previously-persisted auto flag. Called by AuthContext
  * after login so users see whichever jobs they had on resume automatically.
@@ -236,6 +312,8 @@ export const isLabelAutoEnabled = labelJob.isAutoEnabled;
 export function autoStartConverters() {
   if (qrJob.isAutoEnabled()) qrJob.start();
   if (labelJob.isAutoEnabled()) labelJob.start();
+  if (assignJob.isAutoEnabled()) assignJob.start();
+  if (autoCloseJob.isAutoEnabled()) autoCloseJob.start();
 }
 
 /** Stop both jobs (called on logout). Preserves the persisted auto flags so
@@ -243,6 +321,8 @@ export function autoStartConverters() {
 export function stopAllConverters() {
   qrJob.softStop();
   labelJob.softStop();
+  assignJob.softStop();
+  autoCloseJob.softStop();
 }
 
 // ---------------- Image composition + upload (shared) ----------------
@@ -570,33 +650,31 @@ function fitOnLabelStock(src, targetW, targetH) {
   return out;
 }
 
-function generateBarcodeCanvas(value, scale = 3) {
-  const c = document.createElement('canvas');
-  bwipjs.toCanvas(c, {
-    bcid: 'code128',
-    text: value,
-    scale,
-    height: 14,
-    includetext: false,
-    // Code 128 spec requires a quiet zone of at least 10× the narrowest bar
-    // width on each side. Without it, scanners often miss the start/stop
-    // codes. Vertical padding gives the bars a small lossy-compression buffer.
-    paddingwidth: 10,
-    paddingheight: 4,
-  });
-  return c;
-}
-
 async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {}) {
   const { source_key } = opts;
   // Two-sided convert: back faces are no longer flipped 180° — they keep the
-  // same orientation as the front. The barcode is also skipped for backs
+  // same orientation as the front. The QR code is also skipped for backs
   // (only the front carries it). source_key === 'back' is the single switch.
 
+  // Auto QR placement reads the composed canvas to find the artwork's bounding
+  // box (non-white, non-transparent pixels). Drive thumbnails are flattened
+  // JPEGs on a white field; since detection now ignores white too, both the
+  // original PNG and the thumbnail fallback locate the art correctly. We still
+  // prefer the original PNG so transparent areas stay transparent in the output.
+  // Very large originals can fail (Drive serves an HTML virus-scan page instead
+  // of bytes) — fall back to the thumbnail when that happens.
   const id = driveId(sourceUrl);
-  const fetchUrl = id ? driveThumb(sourceUrl, 'w3230') : sourceUrl;
-
-  const sourceImg = await loadImage(fetchUrl);
+  let sourceImg;
+  if (id) {
+    try {
+      sourceImg = await loadImage(driveOriginal(sourceUrl));
+    } catch (err) {
+      console.warn('[qr] original fetch failed, falling back to thumbnail', err);
+      sourceImg = await loadImage(driveThumb(sourceUrl, 'w3230'));
+    }
+  } else {
+    sourceImg = await loadImage(sourceUrl);
+  }
   const sourceW = sourceImg.naturalWidth || sourceImg.width;
   const sourceH = sourceImg.naturalHeight || sourceImg.height;
 
@@ -621,52 +699,140 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
     ctx.drawImage(sourceImg, 0, 0, TARGET_W, TARGET_H);
   }
 
-  // Skip the barcode + system_id panel for any back face — only the front
-  // carries the barcode now.
+  // Skip the QR + system_id panel for any back face — only the front
+  // carries the QR now.
   if (source_key === 'back') {
     const rawBlob = await canvasToBlob(canvas, 'image/png');
     return await setPngDpi(rawBlob, 300);
   }
 
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
-  const barcodeCanvas = generateBarcodeCanvas(systemId);
+  // QR instead of Code 128: scans reliably from any angle and survives lossy
+  // compression / partial smudging better than a 1D barcode at small sizes.
+  const QR_SIZE = 224;   // 280 − 20%
+  const qrCanvas = await generateQrCanvas(systemId, QR_SIZE);
 
-  const MARGIN_X = 190;
-  const MARGIN_Y = 60;
   const PANEL_PAD = 10;
   const TEXT_H = 22;
-  const TEXT_TO_BAR = 6;
-  const BARCODE_W = 350;
-  const BARCODE_H = 130;
+  const TEXT_TO_QR = 6;
+  const QR_W = qrCanvas.width;
+  const QR_H = qrCanvas.height;
+  const MARGIN = 60;          // gap from the canvas edge
+  const DESIGN_GAP = 100;     // empty buffer kept between the artwork and the QR
 
   ctx.font = 'bold 18px sans-serif';
   const textW = Math.ceil(ctx.measureText(codeText).width);
+  const panelW = Math.max(QR_W, textW) + PANEL_PAD * 2;
+  const panelH = TEXT_H + TEXT_TO_QR + QR_H + PANEL_PAD * 2;
+  const dims = { PANEL_PAD, TEXT_H, TEXT_TO_QR, QR_W, QR_H };
 
-  const innerW = Math.max(BARCODE_W, textW);
-  const panelW = innerW + PANEL_PAD * 2;
-  const panelH = TEXT_H + TEXT_TO_BAR + BARCODE_H + PANEL_PAD * 2;
-  const panelX = MARGIN_X;
-  const panelY = canvas.height - MARGIN_Y - panelH;
+  // Find the artwork's real bounding box (ignoring white + transparent pixels)
+  // and drop the QR just outside it with a fixed ~100px gap, so the code never
+  // sits on the design and the mock-up looks tidy. Falls back to a bottom-left
+  // stamp on a blank canvas; returns null only when the art leaves no room on
+  // any side (handled by the strip-extension branch below).
+  let placement = null;
+  try {
+    const bbox = designContentBounds(ctx);
+    placement = bbox
+      ? placeQrOutsideDesign(bbox, TARGET_W, TARGET_H, panelW, panelH, DESIGN_GAP, MARGIN)
+      : { x: MARGIN, y: TARGET_H - MARGIN - panelH };
+  } catch (err) {
+    console.warn('[qr] placement detection failed, using bottom-left', err);
+    placement = { x: MARGIN, y: TARGET_H - MARGIN - panelH };
+  }
 
-  ctx.fillStyle = '#000000';
-  ctx.textBaseline = 'top';
-  // Center the system_id text horizontally over the barcode below so short
-  // text doesn't visually hug the left edge while the barcode spans the full
-  // BARCODE_W. The reference point is the centre of the barcode area.
-  ctx.textAlign = 'center';
-  const barcodeCenterX = panelX + PANEL_PAD + BARCODE_W / 2;
-  ctx.fillText(codeText, barcodeCenterX, panelY + PANEL_PAD);
+  if (placement === null) {
+    // Design leaves no room with the required gap on any side → push the QR
+    // outside the artwork by adding a strip below and stamping it there.
+    const stripH = panelH + MARGIN * 2;
+    const ext = document.createElement('canvas');
+    ext.width = TARGET_W;
+    ext.height = TARGET_H + stripH;
+    const ectx = ext.getContext('2d');
+    ectx.drawImage(canvas, 0, 0);
+    drawQrPanel(ectx, qrCanvas, codeText, MARGIN, TARGET_H + MARGIN, panelW, dims);
+    const extBlob = await canvasToBlob(ext, 'image/png');
+    return await setPngDpi(extBlob, 300);
+  }
 
-  ctx.drawImage(
-    barcodeCanvas,
-    panelX + PANEL_PAD,
-    panelY + PANEL_PAD + TEXT_H + TEXT_TO_BAR,
-    BARCODE_W,
-    BARCODE_H
-  );
+  drawQrPanel(ctx, qrCanvas, codeText, placement.x, placement.y, panelW, dims);
 
   const rawBlob = await canvasToBlob(canvas, 'image/png');
   return await setPngDpi(rawBlob, 300);
+}
+
+// Draw the "{system_id} text + QR" panel with its top-left at (px, py). The
+// QR brings its own white background (light modules), so it stays scannable
+// even when placed over a transparent area of a print file.
+function drawQrPanel(ctx, qrCanvas, codeText, px, py, panelW, dims) {
+  const { PANEL_PAD, TEXT_H, TEXT_TO_QR, QR_W, QR_H } = dims;
+  ctx.font = 'bold 18px sans-serif';
+  ctx.fillStyle = '#000000';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'center';
+  const centerX = px + panelW / 2;
+  ctx.fillText(codeText, centerX, py + PANEL_PAD);
+  ctx.drawImage(
+    qrCanvas,
+    px + (panelW - QR_W) / 2,
+    py + PANEL_PAD + TEXT_H + TEXT_TO_QR,
+    QR_W,
+    QR_H
+  );
+}
+
+// Bounding box of the actual artwork on `ctx`: the tightest rectangle covering
+// every pixel that is opaque AND not near-white. Treating white as empty (not
+// just transparent) means flattened white-background sources still report the
+// real art box instead of the whole canvas. Samples every 2nd pixel for speed.
+// Returns null when nothing qualifies (blank / all-white canvas).
+function designContentBounds(ctx, sampleStep = 2) {
+  const W = ctx.canvas.width;
+  const H = ctx.canvas.height;
+  const { data } = ctx.getImageData(0, 0, W, H);
+  const WHITE = 245;            // r,g,b all ≥ this counts as background white
+  let minX = W, minY = H, maxX = -1, maxY = -1;
+  for (let y = 0; y < H; y += sampleStep) {
+    const rowOff = y * W * 4;
+    for (let x = 0; x < W; x += sampleStep) {
+      const i = rowOff + x * 4;
+      if (data[i + 3] <= 16) continue;             // transparent
+      if (data[i] >= WHITE && data[i + 1] >= WHITE && data[i + 2] >= WHITE) continue; // white
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+// Place the QR panel just outside the design's content box with a fixed gap so
+// it never overlaps the artwork and reads as intentional. Tries below → above →
+// right → left, centred on the design, and takes the first side with enough
+// room (each candidate is clamped into the canvas, then rejected if clamping
+// pulled it back inside the design+gap band). Returns the panel's top-left
+// {x, y}, or null when no side has room (caller extends the canvas instead).
+function placeQrOutsideDesign(bbox, W, H, panelW, panelH, gap, margin) {
+  const cx = (bbox.minX + bbox.maxX) / 2;
+  const cy = (bbox.minY + bbox.maxY) / 2;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const candidates = [
+    { x: cx - panelW / 2,        y: bbox.maxY + gap },            // below
+    { x: cx - panelW / 2,        y: bbox.minY - gap - panelH },   // above
+    { x: bbox.maxX + gap,        y: cy - panelH / 2 },            // right
+    { x: bbox.minX - gap - panelW, y: cy - panelH / 2 },          // left
+  ];
+  for (const c of candidates) {
+    const x = clamp(c.x, margin, W - margin - panelW);
+    const y = clamp(c.y, margin, H - margin - panelH);
+    const overlapX = x < bbox.maxX + gap && x + panelW > bbox.minX - gap;
+    const overlapY = y < bbox.maxY + gap && y + panelH > bbox.minY - gap;
+    if (!(overlapX && overlapY)) return { x, y };
+  }
+  return null;
 }
 
 function canvasToBlob(canvas, type = 'image/png', quality) {

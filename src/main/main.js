@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { autoUpdater } = require('electron-updater');
 
 let mainWindow;
@@ -139,6 +139,30 @@ ipcMain.handle('s3-upload', async (_event, { credentials, bucket, key, body, con
     ACL: 'public-read',
   }));
 
+  return { ok: true, key };
+});
+
+// Delete an object from B2 — used when a gangsheet group is re-ganged after a
+// remove-design, so the stale PDF doesn't linger in the bucket. Best-effort:
+// callers should not block the workflow if this fails (the DB record is already
+// gone). `key` is the object path within the bucket (no leading slash).
+ipcMain.handle('s3-delete', async (_event, { credentials, bucket, key }) => {
+  if (!credentials?.access_key_id || !credentials?.secret_access_key) {
+    throw new Error('Missing S3 credentials');
+  }
+  if (!bucket || !key) throw new Error('Missing bucket or key');
+
+  const client = new S3Client({
+    region: credentials.region || 'us-west-004',
+    endpoint: credentials.endpoint,
+    credentials: {
+      accessKeyId: credentials.access_key_id,
+      secretAccessKey: credentials.secret_access_key,
+    },
+    forcePathStyle: false,
+  });
+
+  await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
   return { ok: true, key };
 });
 

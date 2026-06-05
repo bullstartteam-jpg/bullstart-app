@@ -30,6 +30,7 @@ export default function Settings() {
     { id: 'vnpay', label: 'VNPay Merchant' },
     { id: 'bank', label: 'Bank Transfer' },
     { id: 'stamp', label: 'Stamp Shipping' },
+    { id: 'gangsheet', label: 'Gangsheet Auto' },
   ];
 
   if (loading) return <div className="p-6 text-neutral-400">Loading...</div>;
@@ -53,6 +54,93 @@ export default function Settings() {
       {tab === 'vnpay' && <VnpayMerchantTab />}
       {tab === 'bank' && <BankTransferTab />}
       {tab === 'stamp' && <StampConfigTab />}
+      {tab === 'gangsheet' && <GangsheetAutomationTab />}
+    </div>
+  );
+}
+
+function GangsheetAutomationTab() {
+  const [cfg, setCfg] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [newHook, setNewHook] = useState('');
+
+  useEffect(() => { api.get('/gangsheet-groups/automation-config').then(r => setCfg(r.data)); }, []);
+  if (!cfg) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const hooks = cfg.auto_close?.hooks || [];
+  const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+  const addHook = () => {
+    const v = newHook.trim();
+    if (!HHMM.test(v)) { notify('Định dạng HH:mm (vd 09:00)', { title: 'Móc giờ', kind: 'error' }); return; }
+    if (!hooks.includes(v)) {
+      setCfg(c => ({ ...c, auto_close: { ...c.auto_close, hooks: [...hooks, v].sort() } }));
+    }
+    setNewHook('');
+  };
+  const removeHook = (h) => setCfg(c => ({ ...c, auto_close: { ...c.auto_close, hooks: hooks.filter(x => x !== h) } }));
+  const setEnabled = (v) => setCfg(c => ({ ...c, auto_close: { ...c.auto_close, enabled: v } }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await api.put('/gangsheet-groups/automation-config', {
+        group_size: Number(cfg.group_size) || 1,
+        auto_close: { enabled: !!cfg.auto_close?.enabled, hooks },
+      });
+      setCfg(res.data);
+      notify('Saved gangsheet automation', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-neutral-700 mb-1">Automation Gangsheet</h3>
+          <p className="text-[11px] text-neutral-500">
+            Cron gom đơn vào group chạy <b>trong app</b> (không phải server). Mốc giờ tính theo
+            giờ Việt Nam; ngày sản xuất reset 08:00. Ngày SX hiện tại: <b>{cfg.production_day}</b>.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <NumField label="Số đơn mỗi group" value={cfg.group_size} onChange={v => setCfg(c => ({ ...c, group_size: v }))} step="1" />
+        </div>
+
+        <div className="rounded-lg border border-neutral-200 p-3">
+          <label className="flex items-center gap-2 text-sm font-medium text-neutral-700">
+            <input type="checkbox" checked={!!cfg.auto_close?.enabled} onChange={e => setEnabled(e.target.checked)} className="accent-orange-500" />
+            Bật auto-chốt theo móc giờ
+          </label>
+          <p className="text-[11px] text-neutral-500 mt-1">
+            Khi bật, app sẽ tự chốt các group đang mở khi tới mốc giờ. Vẫn cần job "Auto chốt"
+            được bật ở tab Groups trên ít nhất 1 máy đang mở app.
+          </p>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            {hooks.length === 0 && <span className="text-xs text-neutral-400">Chưa có móc giờ nào.</span>}
+            {hooks.map(h => (
+              <span key={h} className="inline-flex items-center gap-1 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded-lg text-xs font-mono">
+                {h}
+                <button onClick={() => removeHook(h)} className="text-red-500 hover:text-red-600 ml-1">×</button>
+              </span>
+            ))}
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <input value={newHook} onChange={e => setNewHook(e.target.value)} placeholder="09:00"
+              onKeyDown={e => { if (e.key === 'Enter') addHook(); }}
+              className="w-28 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono" />
+            <button onClick={addHook} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Thêm móc</button>
+          </div>
+        </div>
+
+        <button onClick={save} disabled={saving} className="px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </section>
     </div>
   );
 }

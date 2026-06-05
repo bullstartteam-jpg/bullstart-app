@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount } from '../services/gangsheetBuilder';
+import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen } from '../services/groupGang';
+import {
+  subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
+  subscribeAutoCloseJob, startAutoCloseJob, stopAutoCloseJob,
+} from '../services/converter';
 import Pagination from '../components/Pagination';
 
 export default function Gangsheet() {
@@ -28,11 +33,13 @@ export default function Gangsheet() {
 
       <div className="flex gap-2 border-b border-neutral-200">
         <TabBtn active={tab === 'compose'} onClick={() => setTab('compose')}>Compose</TabBtn>
+        <TabBtn active={tab === 'groups'} onClick={() => setTab('groups')}>Groups</TabBtn>
         <TabBtn active={tab === 'find'} onClick={() => setTab('find')}>Find / Re-gang</TabBtn>
         <TabBtn active={tab === 'manage'} onClick={() => setTab('manage')}>Manage</TabBtn>
       </div>
 
       {tab === 'compose' && <ComposeTab />}
+      {tab === 'groups' && <GroupsTab />}
       {tab === 'find' && <FindTab />}
       {tab === 'manage' && <ManageTab isAdmin={hasRole('admin')} />}
     </div>
@@ -142,10 +149,12 @@ function ComposeTab() {
   // auto-built from whatever accessories actually appear in the pending
   // orders — no manual config. Each distinct accessory becomes its own
   // filter chip so e.g. Scratch Card orders split out automatically.
-  const { sideBuckets, accBuckets, accMeta } = (() => {
+  const { sideBuckets, accBuckets, accMeta, matBuckets, matMeta } = (() => {
     const sideBuckets = { all: pending, one: [], two: [] };
     const accBuckets = {};   // accId → orders[]
     const accMeta = {};      // accId → { name }
+    const matBuckets = {};   // matId → orders[]
+    const matMeta = {};      // matId → { name }
     for (const o of pending) {
       const side = orderSideCount(o);
       if (side === 'two') sideBuckets.two.push(o);
@@ -167,13 +176,26 @@ function ComposeTab() {
         for (const ap of it.accessory_prices || []) add(ap.accessory);
         if (it.accessory_price) add(it.accessory_price.accessory);
       }
+
+      // Material chips: classify each order by its FIRST item's material (the
+      // first item that has one). No "mixed" split. Materials are dynamic — any
+      // newly added material auto-shows here.
+      for (const it of o.items || []) {
+        const mid = it.material_id ?? it.material?.id;
+        if (!mid) continue;
+        (matBuckets[mid] ||= []).push(o);
+        if (it.material?.name && !matMeta[mid]) matMeta[mid] = { name: it.material.name };
+        break;   // first item with a material decides the bucket
+      }
     }
-    return { sideBuckets, accBuckets, accMeta };
+    return { sideBuckets, accBuckets, accMeta, matBuckets, matMeta };
   })();
 
-  // subTab is 'all' | 'one' | 'two' | 'acc:<id>'.
+  // subTab is 'all' | 'one' | 'two' | 'acc:<id>' | 'mat:<id>' | 'mat:mixed'.
   const filteredPending = subTab.startsWith('acc:')
     ? (accBuckets[subTab.slice(4)] || [])
+    : subTab.startsWith('mat:')
+    ? (matBuckets[subTab.slice(4)] || [])
     : (sideBuckets[subTab] || pending);
 
   const toggleAll = () => {
@@ -211,13 +233,16 @@ function ComposeTab() {
     const selected = pending.filter(o => selectedIds.has(o.id));
     if (selected.length === 0) { alert('Select at least 1 order'); return; }
 
-    // When generating from an accessory chip (e.g. Scratch Card), tag the
-    // filename with the accessory name so the press operator can tell the
-    // batch apart from regular card gangsheets. Combined with the two_size
-    // suffix → e.g. GC_..._scratch-card or GC_..._scratch-card_two_size.
-    const accTag = subTab.startsWith('acc:')
-      ? slugifyAccessory(accMeta[subTab.slice(4)]?.name)
-      : '';
+    // When generating from an accessory/material chip, tag the filename so the
+    // press operator can tell the batch apart. acc chip → accessory name;
+    // material chip → material name (or "mixed"). Combined with the two_size
+    // suffix → e.g. GC_..._scratch-card or GC_..._gloss-300_two_size.
+    let accTag = '';
+    if (subTab.startsWith('acc:')) {
+      accTag = slugifyAccessory(accMeta[subTab.slice(4)]?.name);
+    } else if (subTab.startsWith('mat:')) {
+      accTag = slugifyAccessory(matMeta[subTab.slice(4)]?.name);
+    }
     const withTag = (s) => [accTag, s].filter(Boolean).join('_');
 
     // Split two-sided orders out so they get their own gangsheet (named with
@@ -330,6 +355,14 @@ function ComposeTab() {
                 {accMeta[id]?.name || `Accessory #${id}`} <CountBadge n={accBuckets[id].length} />
               </SubChip>
             ))}
+          {/* Material chips (dynamic) — one per material, by first item. */}
+          {Object.keys(matBuckets)
+            .sort((a, b) => matBuckets[b].length - matBuckets[a].length)
+            .map(key => (
+              <SubChip key={`mat-${key}`} active={subTab === `mat:${key}`} onClick={() => setSubTab(`mat:${key}`)}>
+                🧶 {matMeta[key]?.name || `Material #${key}`} <CountBadge n={matBuckets[key].length} />
+              </SubChip>
+            ))}
         </div>
 
         {loading ? (
@@ -338,6 +371,8 @@ function ComposeTab() {
           <p className="text-neutral-400 text-sm">
             {subTab.startsWith('acc:')
               ? `Không có đơn nào dùng accessory này.`
+              : subTab.startsWith('mat:')
+              ? `Không có đơn nào thuộc nhóm chất liệu này.`
               : `Không có đơn nào trong tab "${subTab}".`}
           </p>
         ) : (
@@ -404,6 +439,315 @@ function ComposeTab() {
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────── Groups (automation) ───────────────────────────
+
+function bucketLabel(g) {
+  const side = g.side_type === 'two' ? '2 mặt' : '1 mặt';
+  const acc = g.accessory_id ? ` · acc#${g.accessory_id}` : '';
+  const mat = g.material_id ? ` · mat#${g.material_id}` : '';
+  return `${g.line_id || '-'} · ${side}${acc}${mat}`;
+}
+
+const GROUP_STATUS_STYLE = {
+  open:      'bg-neutral-100 text-neutral-600',
+  closing:   'bg-amber-100 text-amber-700',
+  generated: 'bg-green-100 text-green-700',
+};
+
+// Small start/stop chip for an app-side cron job (assign / auto-close).
+function JobChip({ label, state, onStart, onStop, onRunNow }) {
+  const enabled = !!state?.enabled;
+  return (
+    <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-xs">
+      <span className={`w-2 h-2 rounded-full ${enabled ? (state?.running ? 'bg-amber-400 animate-pulse' : 'bg-green-500') : 'bg-neutral-300'}`} />
+      <span className="font-medium text-neutral-700">{label}</span>
+      {enabled ? (
+        <>
+          {onRunNow && <button onClick={onRunNow} className="text-orange-600 hover:text-orange-700">Run now</button>}
+          <button onClick={onStop} className="text-red-500 hover:text-red-600">Tắt</button>
+        </>
+      ) : (
+        <button onClick={onStart} className="text-green-600 hover:text-green-700">Bật</button>
+      )}
+      {state?.processedTotal > 0 && <span className="text-neutral-400">· {state.processedTotal}</span>}
+    </div>
+  );
+}
+
+function GroupsTab() {
+  const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
+  const [page, setPage] = useState(1);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(new Set());
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [assignState, setAssignState] = useState(null);
+  const [autoCloseState, setAutoCloseState] = useState(null);
+
+  useEffect(() => subscribeAssignJob(setAssignState), []);
+  useEffect(() => subscribeAutoCloseJob(setAutoCloseState), []);
+
+  const fetchList = async () => {
+    setLoading(true);
+    try {
+      const params = { page, per_page: 50 };
+      if (statusFilter) params.status = statusFilter;
+      const res = await api.get('/gangsheet-groups', { params });
+      setList(res.data);
+      setSelected(new Set());
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { fetchList(); }, [page, statusFilter]);
+
+  const selectableIds = list.data.filter(g => g.status === 'open' && (g.order_ids?.length || 0) > 0).map(g => g.id);
+  const toggle = (id) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleAll = () => {
+    const all = selectableIds.length > 0 && selectableIds.every(id => selected.has(id));
+    setSelected(all ? new Set() : new Set(selectableIds));
+  };
+
+  const handleAssignNow = async () => {
+    try {
+      const r = await runGroupAssign();
+      alert(`Gom ${r.assigned ?? 0} đơn vào group (touched ${r.groups_touched ?? 0}).`);
+      fetchList();
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Assign failed');
+    }
+  };
+
+  const handleClose = async (ids) => {
+    if (!ids.length) { alert('Chọn ít nhất 1 group đang mở.'); return; }
+    if (!window.electronAPI?.s3Upload) { alert('Cần mở từ app desktop (Electron) để build gangsheet.'); return; }
+    if (!confirm(`Chốt ${ids.length} group → tạo gangsheet?`)) return;
+    setRunning(true); setProgress(null);
+    try {
+      const results = await generateClaimedGroups({ groupIds: ids, onProgress: (p) => setProgress(p) });
+      alert(`Đã tạo ${results.length} gang.`);
+      fetchList();
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Chốt thất bại');
+    } finally {
+      setRunning(false); setProgress(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Job controls + assign-now */}
+      <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm flex flex-wrap items-center gap-3">
+        <JobChip
+          label="Auto gom (1h)"
+          state={assignState}
+          onStart={startAssignJob} onStop={stopAssignJob} onRunNow={runAssignNow}
+        />
+        <JobChip
+          label="Auto chốt (móc giờ)"
+          state={autoCloseState}
+          onStart={startAutoCloseJob} onStop={stopAutoCloseJob}
+        />
+        <span className="text-xs text-neutral-400">Cấu hình group size + móc giờ ở Settings.</span>
+        <div className="ml-auto flex gap-2">
+          <button onClick={handleAssignNow} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Gom ngay</button>
+          <button onClick={fetchList} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Refresh</button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
+        <div className="flex justify-between items-center gap-3">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-neutral-700">Groups ({list.total ?? 0})</h3>
+            <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
+              className="px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded-lg text-xs">
+              <option value="">Tất cả</option>
+              <option value="open">open</option>
+              <option value="closing">closing</option>
+              <option value="generated">generated</option>
+            </select>
+          </div>
+          <button onClick={() => handleClose([...selected])} disabled={running || selected.size === 0}
+            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+            {running ? 'Đang chốt…' : `Chốt (${selected.size})`}
+          </button>
+        </div>
+
+        {loading ? (
+          <p className="text-neutral-400 text-sm">Loading…</p>
+        ) : list.data.length === 0 ? (
+          <p className="text-neutral-400 text-sm">Chưa có group nào. Bấm "Gom ngay" hoặc bật Auto gom.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-neutral-500 text-xs border-b border-neutral-200">
+                <th className="py-2 text-left w-8"><input type="checkbox" onChange={toggleAll}
+                  checked={selectableIds.length > 0 && selectableIds.every(id => selected.has(id))}
+                  className="accent-orange-500" /></th>
+                <th className="py-2 text-left">Seq</th>
+                <th className="py-2 text-left">Bucket</th>
+                <th className="py-2 text-right">Đơn</th>
+                <th className="py-2 text-center">Status</th>
+                <th className="py-2 text-left">Gangsheet</th>
+                <th className="py-2 text-left">Ngày SX</th>
+                <th className="py-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.data.map(g => {
+                const canSelect = g.status === 'open' && (g.order_ids?.length || 0) > 0;
+                return (
+                  <tr key={g.id} className="border-b border-neutral-100 hover:bg-orange-50/40">
+                    <td className="py-1.5">
+                      <input type="checkbox" disabled={!canSelect} checked={selected.has(g.id)}
+                        onChange={() => toggle(g.id)} className="accent-orange-500 disabled:opacity-30" />
+                    </td>
+                    <td className="py-1.5 font-mono text-orange-500">#{g.seq}</td>
+                    <td className="py-1.5 text-xs text-neutral-700 font-mono">{bucketLabel(g)}</td>
+                    <td className="py-1.5 text-right text-neutral-700">{g.order_ids?.length || 0}</td>
+                    <td className="py-1.5 text-center">
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${GROUP_STATUS_STYLE[g.status] || 'bg-neutral-100'}`}>{g.status}</span>
+                    </td>
+                    <td className="py-1.5 text-xs">
+                      {g.gangsheet
+                        ? <a href={g.gangsheet.file_url} target="_blank" rel="noreferrer" className="text-orange-500 truncate inline-block max-w-[200px] align-bottom">{g.gangsheet.filename}</a>
+                        : <span className="text-neutral-400">-</span>}
+                    </td>
+                    <td className="py-1.5 text-xs text-neutral-500">{g.production_day}</td>
+                    <td className="py-1.5 text-right">
+                      <button onClick={() => setDetail(g)} className="text-xs text-neutral-600 hover:text-neutral-800">Detail</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {progress && (
+        <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm">
+          <h3 className="text-sm font-semibold text-neutral-700 mb-2">Đang chốt…</h3>
+          <div className="text-xs text-neutral-600">
+            Group <span className="font-medium">{(progress.groupIndex ?? 0) + 1}/{progress.totalGroups ?? '?'}</span>
+            {progress.group && <> · seq <span className="font-mono text-orange-500">#{progress.group.seq}</span></>}
+            {progress.system_id && <> · <span className="font-mono">{progress.system_id}</span> / {progress.key}</>}
+          </div>
+        </div>
+      )}
+
+      <Pagination page={page} lastPage={list.last_page} onChange={setPage} />
+
+      {detail && <GroupDetailModal group={detail} onClose={() => setDetail(null)} onChanged={fetchList} />}
+    </div>
+  );
+}
+
+function GroupDetailModal({ group, onClose, onChanged }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(new Set());
+  const [busy, setBusy] = useState(false);
+
+  const fetchDetail = async () => {
+    setLoading(true);
+    try {
+      const res = await api.get(`/gangsheet-groups/${group.id}`);
+      setData(res.data);
+      setSelected(new Set());
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { fetchDetail(); }, [group.id]);
+
+  const orders = data?.orders || [];
+  const toggle = (id) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const handleRemove = async () => {
+    const ids = [...selected];
+    if (!ids.length) { alert('Chọn đơn cần gỡ.'); return; }
+    if (!confirm(`Gỡ ${ids.length} đơn khỏi group #${group.seq}?\nĐơn sẽ về pending; gang cũ bị xoá và tạo lại (giữ nguyên seq).`)) return;
+    setBusy(true);
+    try {
+      const res = await removeDesignAndRegen(group.id, ids);
+      if (!res.group) {
+        alert('Đã gỡ hết đơn — group rỗng nên đã bị xoá.');
+        onClose();
+      } else {
+        alert(`Đã gỡ ${res.detached?.length ?? ids.length} đơn và tạo lại gang (seq #${group.seq}).`);
+        await fetchDetail();
+      }
+      onChanged?.();
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Gỡ design thất bại');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
+      <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[90vw] max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-200 flex justify-between items-center">
+          <div>
+            <h3 className="text-sm font-semibold text-neutral-800 font-mono">Group #{group.seq} · {bucketLabel(group)}</h3>
+            <p className="text-xs text-neutral-500 mt-0.5">{group.status} · {orders.length} đơn · ngày SX {group.production_day}</p>
+          </div>
+          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800 text-xl leading-none">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading ? (
+            <p className="text-neutral-400 text-sm">Loading…</p>
+          ) : orders.length === 0 ? (
+            <p className="text-neutral-400 text-sm">Không có đơn.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-neutral-500 text-xs border-b border-neutral-200">
+                  <th className="py-2 text-left w-8"></th>
+                  <th className="py-2 text-left">System ID</th>
+                  <th className="py-2 text-left">Ref</th>
+                  <th className="py-2 text-left">Line</th>
+                  <th className="py-2 text-right">_qr metas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orders.map(o => {
+                  const li = o.items?.[0]?.product_variant?.product?.line_id;
+                  let qn = 0;
+                  for (const it of o.items || []) for (const m of it.metas || []) if (isQrKey(m.key)) qn++;
+                  return (
+                    <tr key={o.id} className="border-b border-neutral-100">
+                      <td className="py-1.5"><input type="checkbox" checked={selected.has(o.id)} onChange={() => toggle(o.id)} className="accent-orange-500" /></td>
+                      <td className="py-1.5 font-mono text-orange-500 text-xs">{o.system_id}</td>
+                      <td className="py-1.5 text-xs text-neutral-600">{o.ref_id || '-'}</td>
+                      <td className="py-1.5 text-xs text-neutral-600 font-mono">{li || '-'}</td>
+                      <td className="py-1.5 text-right text-neutral-700">{qn}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t border-neutral-200 flex justify-end gap-2">
+          <button onClick={handleRemove} disabled={busy || selected.size === 0}
+            className="px-4 py-2 bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white text-sm rounded-lg">
+            {busy ? 'Đang xử lý…' : `Gỡ design (${selected.size})`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
