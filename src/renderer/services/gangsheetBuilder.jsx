@@ -19,32 +19,43 @@ const MARK_ARM = 90;        // length of each L-arm
 const MARK_THICK = 10;      // line thickness
 const CENTER_TICK = 70;     // length of the per-edge center mark
 
-// Page formats @ 300 DPI (landscape). 'letter' = original 11×8.5"; 'a4' = A4.
+// Page formats @ 300 DPI (landscape).
+//   'original' = the _qr design at native 10×7" (page = design, no margin/marks)
+//   'letter'   = 11×8.5" sheet with the design centered + registration marks
+//   'a4'       = 297×210mm sheet, design centered + marks
 const PAGE_SIZES = {
-  letter: { w: 3300, h: 2550 },   // 11 × 8.5 in  (original)
-  a4:     { w: 3508, h: 2480 },   // 297 × 210 mm
+  original: { w: 3000, h: 2100 },   // 10 × 7 in  (design native size)
+  letter:   { w: 3300, h: 2550 },   // 11 × 8.5 in
+  a4:       { w: 3508, h: 2480 },   // 297 × 210 mm
 };
+const PAGE_FORMATS = ['original', 'letter', 'a4'];
 
-// Per-format layout: page canvas size + centered design box + PDF point size.
-function pageLayout(format = 'letter') {
-  const p = PAGE_SIZES[format] || PAGE_SIZES.letter;
+// Per-format layout: page canvas size + design box + PDF point size. For
+// 'original' the design fills the whole page (no margin → no alignment marks).
+function pageLayout(format = 'original') {
+  const p = PAGE_SIZES[format] || PAGE_SIZES.original;
+  const fill = format === 'original';
   return {
     CANVAS_W: p.w,
     CANVAS_H: p.h,
-    DESIGN_X: Math.round((p.w - DESIGN_W) / 2),
-    DESIGN_Y: DESIGN_TOP,
+    DESIGN_X: fill ? 0 : Math.round((p.w - DESIGN_W) / 2),
+    DESIGN_Y: fill ? 0 : DESIGN_TOP,
+    marks: !fill,
     PAGE_W_PT: (p.w / DPI) * PT_PER_IN,
     PAGE_H_PT: (p.h / DPI) * PT_PER_IN,
   };
 }
 
-// Per-machine gang page-format choice ('letter' | 'a4'), set from the UI.
+// Per-machine gang page-format choice, set from the UI. Default 'original' (10×7).
 export function getGangPageFormat() {
-  try { return localStorage.getItem('gangsheet_page_format') === 'a4' ? 'a4' : 'letter'; }
-  catch { return 'letter'; }
+  try {
+    const v = localStorage.getItem('gangsheet_page_format');
+    return PAGE_FORMATS.includes(v) ? v : 'original';
+  } catch { return 'original'; }
 }
 export function setGangPageFormat(fmt) {
-  try { localStorage.setItem('gangsheet_page_format', fmt === 'a4' ? 'a4' : 'letter'); } catch { /* noop */ }
+  const v = PAGE_FORMATS.includes(fmt) ? fmt : 'original';
+  try { localStorage.setItem('gangsheet_page_format', v); } catch { /* noop */ }
 }
 
 // Source side keys, in the canonical order we want them to appear in the gang sheet.
@@ -280,10 +291,10 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
     // 2. Draw the _qr design centered on the canvas.
     sheetCtx.drawImage(img, L.DESIGN_X, L.DESIGN_Y, DESIGN_W, DESIGN_H);
 
-    // 2b. Registration marks in the surrounding margin — corner L-shapes +
-    //     center-edge ticks. Drawn after the design so they sit on top of any
-    //     bleed pixels but stay outside the printable artwork area.
-    drawAlignmentMarks(sheetCtx, L);
+    // 2b. Registration marks in the surrounding margin — only when the page is
+    //     larger than the design (Letter/A4). 'original' (page = design) has no
+    //     margin, so marks are skipped.
+    if (L.marks) drawAlignmentMarks(sheetCtx, L);
 
     // 3. Snapshot the canvas as a single PNG, embed into PDF as a full page.
     const blob = await canvasToBlob(sheetCanvas, 'image/png');

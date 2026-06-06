@@ -162,7 +162,8 @@ function orderBucketInfo(order) {
 }
 
 // Gang PDF page-format selector (shared, persisted per machine in localStorage).
-// "Gốc" = original Letter 11×8.5 (3300×2550); "A4" = 297×210mm landscape.
+//   Gốc 10×7 = design native size (page = design); Letter 11×8.5 / A4 = sheet
+//   with the design centered + registration marks.
 function PageFormatSelect() {
   const [fmt, setFmt] = useState(getGangPageFormat());
   return (
@@ -174,7 +175,8 @@ function PageFormatSelect() {
         className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
         title="Khổ trang file gang PDF"
       >
-        <option value="letter">Gốc (11×8.5)</option>
+        <option value="original">Gốc 10×7</option>
+        <option value="letter">Letter 11×8.5</option>
         <option value="a4">A4</option>
       </select>
     </div>
