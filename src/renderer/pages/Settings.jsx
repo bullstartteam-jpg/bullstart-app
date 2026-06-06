@@ -71,10 +71,13 @@ function GangsheetAutomationTab() {
   const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
   const addHook = () => {
-    const v = newHook.trim();
-    if (!HHMM.test(v)) { notify('Định dạng HH:mm (vd 09:00)', { title: 'Móc giờ', kind: 'error' }); return; }
-    if (!hooks.includes(v)) {
-      setCfg(c => ({ ...c, auto_close: { ...c.auto_close, hooks: [...hooks, v].sort() } }));
+    // Accept several at once, e.g. "09:00, 15:00 21:00".
+    const tokens = newHook.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    const invalid = tokens.filter(t => !HHMM.test(t));
+    const valid = tokens.filter(t => HHMM.test(t));
+    if (invalid.length) notify(`Sai định dạng (HH:mm): ${invalid.join(', ')}`, { title: 'Móc giờ', kind: 'error' });
+    if (valid.length) {
+      setCfg(c => ({ ...c, auto_close: { ...c.auto_close, hooks: [...new Set([...hooks, ...valid])].sort() } }));
     }
     setNewHook('');
   };
@@ -122,8 +125,9 @@ function GangsheetAutomationTab() {
             Bật auto-chốt theo móc giờ
           </label>
           <p className="text-[11px] text-neutral-500 mt-1">
-            Khi bật, app sẽ tự chốt các group đang mở khi tới mốc giờ. Vẫn cần job "Auto chốt"
-            được bật ở tab Groups trên ít nhất 1 máy đang mở app.
+            Khi bật, app sẽ tự chốt các group đang mở khi tới mỗi mốc giờ. Thêm <b>nhiều móc</b> tuỳ ý
+            (vd 09:00, 15:00, 21:00) — mỗi mốc chốt một đợt. Vẫn cần job "Auto chốt" bật ở tab Groups
+            trên ít nhất 1 máy đang mở app.
           </p>
 
           <div className="mt-3 flex flex-wrap gap-2">
@@ -136,9 +140,9 @@ function GangsheetAutomationTab() {
             ))}
           </div>
           <div className="mt-2 flex items-center gap-2">
-            <input value={newHook} onChange={e => setNewHook(e.target.value)} placeholder="09:00"
+            <input value={newHook} onChange={e => setNewHook(e.target.value)} placeholder="09:00, 15:00, 21:00"
               onKeyDown={e => { if (e.key === 'Enter') addHook(); }}
-              className="w-28 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono" />
+              className="w-56 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono" />
             <button onClick={addHook} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Thêm móc</button>
           </div>
         </div>
