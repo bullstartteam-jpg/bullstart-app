@@ -329,6 +329,44 @@ export function stopAllConverters() {
   autoCloseJob.softStop();
 }
 
+// ---------------- Resize-reconvert (replace existing _qr in place) ----------------
+
+/** Fetch the existing _qr targets (+ their source design URL) for system_ids. */
+export async function fetchResizeTargets(systemIds) {
+  const res = await api.post('/conversion/resize-targets', { system_ids: systemIds });
+  return res.data; // { items: [{order_item_id, system_id, accessory_summary, line_id, targets:[{target_key,source_key,source_value,is_greeting_card_back}]}], missing: [] }
+}
+
+/**
+ * Re-compose each existing _qr at a new size and REPLACE it in place via
+ * qr-meta (updateOrCreate by item+key). Does NOT delete metas or touch
+ * production — independent of the old reconvert/cron flow.
+ */
+export async function reconvertResizeItems(items, { targetW = 3300, targetH = 2100, onProgress } = {}) {
+  let done = 0;
+  const total = items.reduce((n, it) => n + (it.targets?.length || 0), 0);
+  for (const item of items) {
+    for (const t of item.targets || []) {
+      onProgress?.({ system_id: item.system_id, key: t.target_key, done, total });
+      const blob = await composeImage(t.source_value, item.system_id, item.accessory_summary || '', {
+        source_key: t.source_key,
+        line_id: item.line_id,
+        is_greeting_card_back: !!t.is_greeting_card_back,
+        targetW, targetH,
+      });
+      const fd = new FormData();
+      fd.append('key', t.target_key);
+      fd.append('image', blob, `${item.system_id}_${t.target_key}.png`);
+      await api.post(`/conversion/${item.order_item_id}/qr-meta`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      done++;
+      onProgress?.({ system_id: item.system_id, key: t.target_key, done, total });
+    }
+  }
+  return { total: done };
+}
+
 // ---------------- Image composition + upload (shared) ----------------
 
 async function processOne(item, meta) {
@@ -680,8 +718,10 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   const sourceH = sourceImg.naturalHeight || sourceImg.height;
 
   const isPortraitSource = sourceW < sourceH;
-  const TARGET_W = 3000;
-  const TARGET_H = 2100;
+  // Output canvas size; default 3000×2100 (10×7" @300dpi). The resize flow
+  // passes 3300×2100 (11×7").
+  const TARGET_W = opts.targetW || 3000;
+  const TARGET_H = opts.targetH || 2100;
 
   const canvas = document.createElement('canvas');
   canvas.width = TARGET_W;

@@ -6,6 +6,7 @@ import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGrou
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
   subscribeAutoCloseJob, startAutoCloseJob, stopAutoCloseJob,
+  fetchResizeTargets, reconvertResizeItems,
 } from '../services/converter';
 import Pagination from '../components/Pagination';
 
@@ -35,12 +36,14 @@ export default function Gangsheet() {
         <TabBtn active={tab === 'compose'} onClick={() => setTab('compose')}>Compose</TabBtn>
         <TabBtn active={tab === 'groups'} onClick={() => setTab('groups')}>Groups</TabBtn>
         <TabBtn active={tab === 'find'} onClick={() => setTab('find')}>Find / Re-gang</TabBtn>
+        <TabBtn active={tab === 'reconvert'} onClick={() => setTab('reconvert')}>Reconvert 11×7</TabBtn>
         <TabBtn active={tab === 'manage'} onClick={() => setTab('manage')}>Manage</TabBtn>
       </div>
 
       {tab === 'compose' && <ComposeTab />}
       {tab === 'groups' && <GroupsTab />}
       {tab === 'find' && <FindTab />}
+      {tab === 'reconvert' && <ReconvertTab />}
       {tab === 'manage' && <ManageTab isAdmin={hasRole('admin')} />}
     </div>
   );
@@ -768,6 +771,126 @@ function GroupDetailModal({ group, onClose, onChanged }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Re-render existing _qr at 11×7" (3300×2100) and replace in place — no delete,
+// no production change, independent of the reconvert/cron flow.
+function ReconvertTab() {
+  const [input, setInput] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [items, setItems] = useState([]);
+  const [missing, setMissing] = useState([]);
+  const [selectedIds, setSelectedIds] = useState(new Set());   // order_item_id
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState(null);
+
+  const parseIds = (raw) => Array.from(new Set(raw.split(/[\s,;\n\r\t]+/).map(s => s.trim()).filter(Boolean)));
+
+  const handleFind = async () => {
+    const ids = parseIds(input);
+    if (!ids.length) { alert('Paste ít nhất 1 system_id'); return; }
+    setSearching(true);
+    try {
+      const res = await fetchResizeTargets(ids);
+      setItems(res.items || []);
+      setMissing(res.missing || []);
+      setSelectedIds(new Set((res.items || []).map(it => it.order_item_id)));
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Lookup failed');
+    } finally { setSearching(false); }
+  };
+
+  const toggle = (id) => setSelectedIds(prev => {
+    const n = new Set(prev);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
+  const toggleAll = () => setSelectedIds(prev => prev.size === items.length ? new Set() : new Set(items.map(it => it.order_item_id)));
+
+  const selItems = items.filter(it => selectedIds.has(it.order_item_id));
+  const totalTargets = selItems.reduce((n, it) => n + (it.targets?.length || 0), 0);
+
+  const handleRun = async () => {
+    if (!selItems.length) { alert('Chọn ít nhất 1 đơn'); return; }
+    if (!window.electronAPI?.s3Upload) { alert('Cần mở từ app desktop (Electron).'); return; }
+    if (!confirm(`Reconvert ${selItems.length} đơn (${totalTargets} _qr) ở size 11×7" và REPLACE ảnh cũ?\n(Không xoá meta, không đổi production.)`)) return;
+    setRunning(true); setProgress(null);
+    try {
+      const r = await reconvertResizeItems(selItems, { targetW: 3300, targetH: 2100, onProgress: (p) => setProgress(p) });
+      alert(`Đã reconvert ${r.total} _qr (size 11×7").`);
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Reconvert failed');
+    } finally { setRunning(false); setProgress(null); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-neutral-700">Reconvert _qr về size 11×7" (300dpi)</h3>
+          <p className="text-xs text-neutral-500">Paste system_id → tìm → chọn đơn → render lại tất cả _qr ở 3300×2100 và <b>replace tại chỗ</b>. Không xoá meta, không đụng production/gang.</p>
+        </div>
+        <textarea value={input} onChange={e => setInput(e.target.value)} placeholder={`PS_C2034\nPS_C2035\n...`} rows={5}
+          className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm font-mono" />
+        <div className="flex items-center gap-2">
+          <button onClick={handleFind} disabled={searching} className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">{searching ? 'Searching…' : 'Find'}</button>
+          {items.length > 0 && <span className="text-xs text-neutral-500">Found {items.length} item(s) · {items.reduce((n, it) => n + (it.targets?.length || 0), 0)} _qr</span>}
+          {missing.length > 0 && <span className="text-xs text-red-500">Missing: {missing.length}</span>}
+        </div>
+        {missing.length > 0 && (
+          <div className="text-xs bg-red-50 border border-red-200 rounded p-2 text-red-700">
+            <div className="font-medium mb-1">Not found ({missing.length}):</div>
+            <div className="font-mono break-all">{missing.join(', ')}</div>
+          </div>
+        )}
+      </div>
+
+      {items.length > 0 && (
+        <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
+          <div className="flex justify-between items-center gap-3">
+            <h3 className="text-sm font-semibold text-neutral-700">Items ({items.length})</h3>
+            <button onClick={handleRun} disabled={running || selectedIds.size === 0}
+              className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+              {running ? 'Reconverting…' : `Reconvert 11×7 (${totalTargets})`}
+            </button>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-neutral-500 text-xs border-b border-neutral-200">
+                <th className="py-2 text-left w-8"><input type="checkbox" onChange={toggleAll} checked={selectedIds.size === items.length && items.length > 0} className="accent-orange-500" /></th>
+                <th className="py-2 text-left">System ID</th>
+                <th className="py-2 text-left">Line</th>
+                <th className="py-2 text-right">_qr</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map(it => (
+                <tr key={it.order_item_id} className="border-b border-neutral-100 hover:bg-orange-50/40">
+                  <td className="py-1.5"><input type="checkbox" checked={selectedIds.has(it.order_item_id)} onChange={() => toggle(it.order_item_id)} className="accent-orange-500" /></td>
+                  <td className="py-1.5 font-mono text-orange-500 text-xs">{it.system_id}</td>
+                  <td className="py-1.5 text-xs text-neutral-600 font-mono">{it.line_id || '-'}</td>
+                  <td className="py-1.5 text-right text-neutral-700">{it.targets?.length || 0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {progress && (
+        <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm">
+          <h3 className="text-sm font-semibold text-neutral-700 mb-2">Reconverting…</h3>
+          <div className="text-xs text-neutral-600">
+            meta <span className="font-medium">{progress.done}/{progress.total}</span>
+            {progress.system_id && <> · <span className="font-mono text-orange-500">{progress.system_id}</span> / {progress.key}</>}
+          </div>
+          <div className="mt-2 h-2 bg-neutral-100 rounded overflow-hidden">
+            <div className="h-full bg-orange-500 transition-all" style={{ width: progress.total ? `${(progress.done / progress.total) * 100}%` : '0%' }} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
