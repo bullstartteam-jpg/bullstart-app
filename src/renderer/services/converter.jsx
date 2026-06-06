@@ -258,9 +258,12 @@ const autoCloseJob = createJob({
       const mark = await api.post('/gangsheet-groups/mark-fired', { hook });
       if (!mark.data?.was_new) continue;     // another client already fired this hook
 
-      pushLog('info', null, 'autoclose', `Móc ${hook}: chốt các group đang mở…`);
+      pushLog('info', null, 'autoclose', `Móc ${hook}: gom đơn rồi chốt…`);
       emit();
       try {
+        // At the hook: pull ALL pending into groups (any count), then gang them.
+        const asg = await runGroupAssign();
+        if (asg?.assigned) pushLog('info', null, 'autoclose', `Móc ${hook}: gom ${asg.assigned} đơn.`);
         const results = await generateClaimedGroups({});   // all open groups
         state.processedTotal += results.length;
         pushLog('ok', null, 'autoclose', `Móc ${hook}: tạo ${results.length} gang.`);

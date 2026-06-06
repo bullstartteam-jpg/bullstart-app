@@ -89,7 +89,6 @@ function GangsheetAutomationTab() {
     try {
       const res = await api.put('/gangsheet-groups/automation-config', {
         group_size: Number(cfg.group_size) || 1,
-        group_min: Number(cfg.group_min) || 1,
         auto_close: { enabled: !!cfg.auto_close?.enabled, hooks },
       });
       setCfg(res.data);
@@ -112,11 +111,10 @@ function GangsheetAutomationTab() {
 
         <div className="grid grid-cols-2 gap-3">
           <NumField label="Số đơn mỗi group (tối đa)" value={cfg.group_size} onChange={v => setCfg(c => ({ ...c, group_size: v }))} step="1" />
-          <NumField label="Tối thiểu để auto-chốt" value={cfg.group_min} onChange={v => setCfg(c => ({ ...c, group_min: v }))} step="1" />
         </div>
         <p className="text-[11px] text-neutral-500 -mt-2">
-          Group gom tối đa {cfg.group_size || '?'} đơn; auto-chốt chỉ tạo gang khi group đủ ≥ {cfg.group_min || 1} đơn
-          (chưa đủ thì tiếp tục gom). Chốt thủ công vẫn chốt được bất kể số lượng.
+          Group gom tối đa {cfg.group_size || '?'} đơn/bucket. Tới mỗi móc giờ, app gom hết đơn pending
+          (bao nhiêu cũng group) rồi chốt tạo gang ngay cho tất cả group. Chốt thủ công luôn chốt được.
         </p>
 
         <div className="rounded-lg border border-neutral-200 p-3">
