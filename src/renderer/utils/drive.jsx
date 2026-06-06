@@ -18,6 +18,15 @@ export function driveThumb(url, size = 'w400') {
   return id ? `https://drive.google.com/thumbnail?id=${id}&sz=${size}` : url;
 }
 
+// Original-file download URL. Unlike `driveThumb` (which returns a flattened
+// JPEG with no alpha), this serves the raw uploaded bytes so a PNG keeps its
+// transparency — needed for alpha-based QR placement. Falls back to the
+// original URL for non-Drive links.
+export function driveOriginal(url) {
+  const id = driveId(url);
+  return id ? `https://drive.google.com/uc?export=download&id=${id}` : url;
+}
+
 // Embeddable preview URL (works for PDFs and images via Drive's viewer).
 // Falls back to the original URL for non-Drive links so an <img> can render it.
 export function drivePreview(url) {

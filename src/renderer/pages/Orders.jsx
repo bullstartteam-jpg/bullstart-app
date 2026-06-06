@@ -1000,7 +1000,14 @@ export default function Orders() {
                 <td className="p-3" onClick={e => e.stopPropagation()}>
                   <input type="checkbox" checked={selected.includes(order.id)} onChange={() => toggleSelect(order.id)} className="accent-orange-500" />
                 </td>
-                <td className="p-3 text-orange-500 font-mono text-xs">{order.system_id}</td>
+                <td className="p-3 text-orange-500 font-mono text-xs">
+                  <span className="inline-flex items-center gap-1">
+                    {order.system_id}
+                    {order.production && (
+                      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-green-500 text-white text-[10px] leading-none" title="Đã tạo gangsheet (production)">✓</span>
+                    )}
+                  </span>
+                </td>
                 <td className={`p-3 text-xs ${order.is_duplicate_ref ? 'text-red-600 font-semibold' : 'text-neutral-700'}`}>
                   {order.ref_id ? (
                     <span title={order.is_duplicate_ref ? 'Ref ID duplicated across multiple orders' : ''}>
