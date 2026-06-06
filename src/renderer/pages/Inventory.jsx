@@ -6,9 +6,10 @@ const MODE_PER_ITEM = 'per_item';
 const MODE_PER_PACKAGE = 'per_package';
 
 const emptyForm = {
-  target: 'variant',           // 'variant' | 'accessory' | 'supply'
+  target: 'variant',           // 'variant' | 'accessory' | 'material' | 'supply'
   product_variant_id: '',
   accessory_id: '',            // unified per-accessory stock (no longer tier-scoped)
+  material_id: '',             // per-material stock pool (chất liệu)
   supply_id: '',               // consumables (label paper, etc.) — 1 ship = 1 trừ default label
   price_mode: MODE_PER_ITEM,
   quantity: '',
@@ -139,6 +140,9 @@ export default function Inventory() {
         if (!form.accessory_id) throw new Error('Please choose an accessory');
         // form.accessory_id now holds accessory_price.id (per-code target).
         payload.accessory_price_id = parseInt(form.accessory_id, 10);
+      } else if (form.target === 'material') {
+        if (!form.material_id) throw new Error('Please choose a material');
+        payload.material_id = parseInt(form.material_id, 10);
       } else {
         if (!form.supply_id) throw new Error('Please choose a supply');
         payload.supply_id = parseInt(form.supply_id, 10);
@@ -364,11 +368,12 @@ export default function Inventory() {
               <label className="text-xs text-neutral-500">Target</label>
               <select
                 value={form.target}
-                onChange={e => setForm({ ...form, target: e.target.value, product_variant_id: '', accessory_id: '', supply_id: '' })}
+                onChange={e => setForm({ ...form, target: e.target.value, product_variant_id: '', accessory_id: '', material_id: '', supply_id: '' })}
                 className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
               >
                 <option value="variant">Product variant</option>
                 <option value="accessory">Accessory</option>
+                <option value="material">Material (chất liệu)</option>
                 <option value="supply">Supply (label paper, etc.)</option>
               </select>
             </div>
@@ -400,6 +405,21 @@ export default function Inventory() {
                   <option value="">— pick an accessory —</option>
                   {accessoryOptions.map(a => (
                     <option key={a.id} value={a.id}>{a.display} (stock {a.stock})</option>
+                  ))}
+                </select>
+              </div>
+            ) : form.target === 'material' ? (
+              <div className="md:col-span-2">
+                <label className="text-xs text-neutral-500">Material (chất liệu) — stock theo từng material</label>
+                <select
+                  value={form.material_id}
+                  onChange={e => setForm({ ...form, material_id: e.target.value })}
+                  required
+                  className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+                >
+                  <option value="">— pick a material —</option>
+                  {(stock.materials || []).map(m => (
+                    <option key={m.id} value={m.id}>{(m.product_name ? m.product_name + ' · ' : '') + m.label} (stock {m.stock})</option>
                   ))}
                 </select>
               </div>
@@ -604,6 +624,9 @@ export default function Inventory() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <StockTable title="Product variants" rows={stock.variants} />
             <StockTable title="Accessories" rows={stock.accessories} />
+            {stock.materials?.length > 0 && (
+              <StockTable title="Materials (chất liệu)" rows={stock.materials} />
+            )}
           </div>
         </div>
       )}
