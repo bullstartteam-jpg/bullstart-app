@@ -12,7 +12,7 @@ import Pagination from '../components/Pagination';
 
 export default function Gangsheet() {
   const { hasRole } = useAuth();
-  const [tab, setTab] = useState('compose');
+  const [tab, setTab] = useState('default');
 
   if (!hasRole('admin') && !hasRole('support')) {
     return (
@@ -33,14 +33,16 @@ export default function Gangsheet() {
       </div>
 
       <div className="flex gap-2 border-b border-neutral-200">
-        <TabBtn active={tab === 'compose'} onClick={() => setTab('compose')}>Compose</TabBtn>
+        <TabBtn active={tab === 'default'} onClick={() => setTab('default')}>Default (10×7)</TabBtn>
+        <TabBtn active={tab === 'a4'} onClick={() => setTab('a4')}>A4</TabBtn>
         <TabBtn active={tab === 'groups'} onClick={() => setTab('groups')}>Groups</TabBtn>
         <TabBtn active={tab === 'find'} onClick={() => setTab('find')}>Find / Re-gang</TabBtn>
         <TabBtn active={tab === 'reconvert'} onClick={() => setTab('reconvert')}>Reconvert 11×7</TabBtn>
         <TabBtn active={tab === 'manage'} onClick={() => setTab('manage')}>Manage</TabBtn>
       </div>
 
-      {tab === 'compose' && <ComposeTab />}
+      {tab === 'default' && <ComposeTab pageFormat="original" />}
+      {tab === 'a4' && <ComposeTab pageFormat="a4" />}
       {tab === 'groups' && <GroupsTab />}
       {tab === 'find' && <FindTab />}
       {tab === 'reconvert' && <ReconvertTab />}
@@ -183,7 +185,7 @@ function PageFormatSelect() {
   );
 }
 
-function ComposeTab() {
+function ComposeTab({ pageFormat = 'original' }) {
   const [pending, setPending] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [batchSize, setBatchSize] = useState(10);
@@ -313,7 +315,7 @@ function ComposeTab() {
           linePrefix,
           nameSuffix: suffix,
           seq: ci + 1,
-          pageFormat: getGangPageFormat(),
+          pageFormat,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 
@@ -366,8 +368,8 @@ function ComposeTab() {
       <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
         <div className="flex justify-between items-end gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-neutral-700">Pending orders ({pending.length})</h3>
-            <p className="text-xs text-neutral-500">Orders with at least one un-produced <span className="font-mono">_qr</span> meta.</p>
+            <h3 className="text-sm font-semibold text-neutral-700">Pending orders ({pending.length}) · Khổ {pageFormat === 'a4' ? 'A4' : '10×7'}</h3>
+            <p className="text-xs text-neutral-500">Orders with at least one un-produced <span className="font-mono">_qr</span> meta. Gang xuất khổ <b>{pageFormat === 'a4' ? 'A4' : '10×7 (gốc)'}</b>.</p>
           </div>
           <div className="flex gap-2 items-end">
             <div>
@@ -376,7 +378,6 @@ function ComposeTab() {
                 onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
                 className="mt-1 w-24 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
             </div>
-            <PageFormatSelect />
             <button onClick={handleGenerate} disabled={running || selectedIds.size === 0}
               className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
               {running ? 'Generating…' : `Generate (${selectedIds.size})`}
