@@ -195,8 +195,16 @@ function ComposeTab() {
   const fetchPending = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/gangsheets/pending-orders', { params: { per_page: 200 } });
-      setPending(res.data.data || []);
+      // Load ALL pending pages (not just the first 200) so big backlogs show.
+      let page = 1, lastPage = 1;
+      const all = [];
+      do {
+        const res = await api.get('/gangsheets/pending-orders', { params: { per_page: 200, page } });
+        all.push(...(res.data.data || []));
+        lastPage = res.data.last_page || 1;
+        page++;
+      } while (page <= lastPage && page <= 50);   // 50-page safety cap (=10k orders)
+      setPending(all);
     } finally { setLoading(false); }
   };
   useEffect(() => { fetchPending(); }, []);
