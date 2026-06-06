@@ -182,10 +182,17 @@ function PageFormatSelect() {
   );
 }
 
+// Default Orders/batch, persisted per machine.
+function loadDefaultBatch() {
+  const v = parseInt(localStorage.getItem('gangsheet_batch_size'), 10);
+  return v > 0 ? v : 10;
+}
+
 function ComposeTab() {
   const [pending, setPending] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [batchSize, setBatchSize] = useState(10);
+  const [batchSize, setBatchSize] = useState(loadDefaultBatch);
+  const [batchSaved, setBatchSaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
@@ -372,9 +379,19 @@ function ComposeTab() {
           <div className="flex gap-2 items-end">
             <div>
               <label className="text-xs text-neutral-500 block">Orders / batch</label>
-              <input type="number" min="1" value={batchSize}
-                onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
-                className="mt-1 w-24 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+              <div className="mt-1 flex items-center gap-1">
+                <input type="number" min="1" value={batchSize}
+                  onChange={e => { setBatchSize(Math.max(1, parseInt(e.target.value) || 1)); setBatchSaved(false); }}
+                  className="w-20 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                <button
+                  type="button"
+                  onClick={() => { localStorage.setItem('gangsheet_batch_size', String(batchSize)); setBatchSaved(true); }}
+                  title="Lưu làm mặc định"
+                  className="px-2 py-1.5 text-xs rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700"
+                >
+                  {batchSaved ? '✓ Đã lưu' : 'Lưu mặc định'}
+                </button>
+              </div>
             </div>
             <PageFormatSelect />
             <button onClick={handleGenerate} disabled={running || selectedIds.size === 0}
