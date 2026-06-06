@@ -175,9 +175,8 @@ function PageFormatSelect() {
         className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
         title="Khổ trang file gang PDF"
       >
-        <option value="original">Gốc 10×7</option>
+        <option value="original">Default 10×7</option>
         <option value="letter">Letter 11×8.5</option>
-        <option value="a4">A4</option>
       </select>
     </div>
   );
@@ -1387,7 +1386,7 @@ function ManageTab({ isAdmin }) {
         <span className="text-xs text-neutral-500 mr-1">Khổ:</span>
         <SubChip active={filters.page_format === ''} onClick={() => setFilters(f => ({ ...f, page_format: '', page: 1 }))}>Tất cả</SubChip>
         <SubChip active={filters.page_format === 'original'} onClick={() => setFilters(f => ({ ...f, page_format: 'original', page: 1 }))}>Default (10×7)</SubChip>
-        <SubChip active={filters.page_format === 'a4'} onClick={() => setFilters(f => ({ ...f, page_format: 'a4', page: 1 }))}>A4</SubChip>
+        <SubChip active={filters.page_format === 'letter'} onClick={() => setFilters(f => ({ ...f, page_format: 'letter', page: 1 }))}>Letter 11×8.5</SubChip>
       </div>
 
       {/* Category chips (parsed from filename) — easy to tell batches apart. */}

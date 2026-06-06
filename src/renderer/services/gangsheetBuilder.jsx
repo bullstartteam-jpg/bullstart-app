@@ -22,13 +22,12 @@ const CENTER_TICK = 70;     // length of the per-edge center mark
 // Page formats @ 300 DPI (landscape).
 //   'original' = the _qr design at native 10×7" (page = design, no margin/marks)
 //   'letter'   = 11×8.5" sheet with the design centered + registration marks
-//   'a4'       = 297×210mm sheet, design centered + marks
+//                (this is the original/legacy gang format)
 const PAGE_SIZES = {
   original: { w: 3000, h: 2100 },   // 10 × 7 in  (design native size)
-  letter:   { w: 3300, h: 2550 },   // 11 × 8.5 in
-  a4:       { w: 3508, h: 2480 },   // 297 × 210 mm
+  letter:   { w: 3300, h: 2550 },   // 11 × 8.5 in (legacy gang)
 };
-const PAGE_FORMATS = ['original', 'letter', 'a4'];
+const PAGE_FORMATS = ['original', 'letter'];
 
 // Per-format layout: page canvas size + design box + PDF point size. For
 // 'original' the design fills the whole page (no margin → no alignment marks).
