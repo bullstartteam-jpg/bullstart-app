@@ -622,11 +622,9 @@ export default function Inventory() {
             <StockTable title="Supplies (vật tư tiêu hao)" rows={stock.supplies} />
           )}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <StockTable title="Product variants" rows={stock.variants} />
-            <StockTable title="Accessories" rows={stock.accessories} />
-            {stock.materials?.length > 0 && (
-              <StockTable title="Materials (chất liệu)" rows={stock.materials} />
-            )}
+            <StockTable title="Product variants" rows={stock.variants || []} />
+            <StockTable title="Materials (chất liệu / loại giấy)" rows={stock.materials || []} />
+            <StockTable title="Accessories" rows={stock.accessories || []} />
           </div>
         </div>
       )}
