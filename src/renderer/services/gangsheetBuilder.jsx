@@ -6,18 +6,10 @@ import { PDFDocument } from 'pdf-lib';
 const DPI = 300;
 const PT_PER_IN = 72;
 
-// Page canvas size (Letter landscape @ 300 DPI).
-const CANVAS_W = 3300;
-const CANVAS_H = 2550;
-
-// Design footprint within the canvas (matches converter.composeImage output).
+// Design footprint within the page (matches converter.composeImage output).
 const DESIGN_W = 3000;
 const DESIGN_H = 2100;
-
-// Horizontal centered, top fixed at 150 px so the design sits closer to the
-// upper edge with a wider bottom margin for trimming / printer feed.
-const DESIGN_X = (CANVAS_W - DESIGN_W) / 2;   // 150
-const DESIGN_Y = 150;                         // 0.5 in from top
+const DESIGN_TOP = 150;   // fixed top margin; horizontally centered per page.
 
 // Registration marks drawn in the margin around the design — corner L-shapes
 // pointing toward each design corner + a tick at the center of each edge.
@@ -27,9 +19,33 @@ const MARK_ARM = 90;        // length of each L-arm
 const MARK_THICK = 10;      // line thickness
 const CENTER_TICK = 70;     // length of the per-edge center mark
 
-// PDF page size in points (= canvas size at 300 DPI). 11 × 8.5 in landscape.
-const PAGE_W_PT = (CANVAS_W / DPI) * PT_PER_IN;   // 792
-const PAGE_H_PT = (CANVAS_H / DPI) * PT_PER_IN;   // 612
+// Page formats @ 300 DPI (landscape). 'letter' = original 11×8.5"; 'a4' = A4.
+const PAGE_SIZES = {
+  letter: { w: 3300, h: 2550 },   // 11 × 8.5 in  (original)
+  a4:     { w: 3508, h: 2480 },   // 297 × 210 mm
+};
+
+// Per-format layout: page canvas size + centered design box + PDF point size.
+function pageLayout(format = 'letter') {
+  const p = PAGE_SIZES[format] || PAGE_SIZES.letter;
+  return {
+    CANVAS_W: p.w,
+    CANVAS_H: p.h,
+    DESIGN_X: Math.round((p.w - DESIGN_W) / 2),
+    DESIGN_Y: DESIGN_TOP,
+    PAGE_W_PT: (p.w / DPI) * PT_PER_IN,
+    PAGE_H_PT: (p.h / DPI) * PT_PER_IN,
+  };
+}
+
+// Per-machine gang page-format choice ('letter' | 'a4'), set from the UI.
+export function getGangPageFormat() {
+  try { return localStorage.getItem('gangsheet_page_format') === 'a4' ? 'a4' : 'letter'; }
+  catch { return 'letter'; }
+}
+export function setGangPageFormat(fmt) {
+  try { localStorage.setItem('gangsheet_page_format', fmt === 'a4' ? 'a4' : 'letter'); } catch { /* noop */ }
+}
 
 // Source side keys, in the canonical order we want them to appear in the gang sheet.
 const SOURCE_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
@@ -171,14 +187,14 @@ function loadImageFromBytes(bytes) {
  * sheet without the marks bleeding onto the artwork. Center ticks on every
  * edge mark the mid-point of the design for symmetric alignment.
  */
-function drawAlignmentMarks(ctx) {
+function drawAlignmentMarks(ctx, L) {
   ctx.save();
   ctx.fillStyle = '#000000';
 
-  const dx1 = DESIGN_X;
-  const dy1 = DESIGN_Y;
-  const dx2 = DESIGN_X + DESIGN_W;
-  const dy2 = DESIGN_Y + DESIGN_H;
+  const dx1 = L.DESIGN_X;
+  const dy1 = L.DESIGN_Y;
+  const dx2 = L.DESIGN_X + DESIGN_W;
+  const dy2 = L.DESIGN_Y + DESIGN_H;
   const cx = (dx1 + dx2) / 2;
   const cy = (dy1 + dy2) / 2;
 
@@ -230,11 +246,13 @@ function canvasToBlob(canvas, type = 'image/png') {
  *   { blob, filename, linePrefix, firstSid, lastSid, ordersInChunk, metasUsed,
  *     orderIds, metaIds }
  */
-export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0 } = {}) {
+export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0, pageFormat = 'letter' } = {}) {
   if (!orders.length) throw new Error('Empty chunk');
 
   const records = flattenQrMetas(orders, { includeProduced });
   if (!records.length) throw new Error('No _qr metas in this chunk');
+
+  const L = pageLayout(pageFormat);   // page size + centered design box
 
   const pdf = await PDFDocument.create();
   const total = records.length;
@@ -247,8 +265,8 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
 
   // Reuse one canvas across all pages — fast, predictable memory.
   const sheetCanvas = document.createElement('canvas');
-  sheetCanvas.width = CANVAS_W;
-  sheetCanvas.height = CANVAS_H;
+  sheetCanvas.width = L.CANVAS_W;
+  sheetCanvas.height = L.CANVAS_H;
   const sheetCtx = sheetCanvas.getContext('2d');
 
   for (const rec of records) {
@@ -257,22 +275,22 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
 
     // 1. Reset canvas to white.
     sheetCtx.fillStyle = '#ffffff';
-    sheetCtx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    sheetCtx.fillRect(0, 0, L.CANVAS_W, L.CANVAS_H);
 
     // 2. Draw the _qr design centered on the canvas.
-    sheetCtx.drawImage(img, DESIGN_X, DESIGN_Y, DESIGN_W, DESIGN_H);
+    sheetCtx.drawImage(img, L.DESIGN_X, L.DESIGN_Y, DESIGN_W, DESIGN_H);
 
     // 2b. Registration marks in the surrounding margin — corner L-shapes +
     //     center-edge ticks. Drawn after the design so they sit on top of any
     //     bleed pixels but stay outside the printable artwork area.
-    drawAlignmentMarks(sheetCtx);
+    drawAlignmentMarks(sheetCtx, L);
 
     // 3. Snapshot the canvas as a single PNG, embed into PDF as a full page.
     const blob = await canvasToBlob(sheetCanvas, 'image/png');
     const pngBytes = new Uint8Array(await blob.arrayBuffer());
     const pageImg = await pdf.embedPng(pngBytes);
-    const page = pdf.addPage([PAGE_W_PT, PAGE_H_PT]);
-    page.drawImage(pageImg, { x: 0, y: 0, width: PAGE_W_PT, height: PAGE_H_PT });
+    const page = pdf.addPage([L.PAGE_W_PT, L.PAGE_H_PT]);
+    page.drawImage(pageImg, { x: 0, y: 0, width: L.PAGE_W_PT, height: L.PAGE_H_PT });
 
     metaIdsUsed.push(rec.meta.id);
     if (!seenOrders.has(rec.order.id)) {

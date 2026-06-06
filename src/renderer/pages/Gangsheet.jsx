@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount } from '../services/gangsheetBuilder';
+import { buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount, getGangPageFormat, setGangPageFormat } from '../services/gangsheetBuilder';
 import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGroup, deleteOpenGroups } from '../services/groupGang';
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
@@ -161,6 +161,26 @@ function orderBucketInfo(order) {
   return { side, acc, mat, key, label: parts.join(' · ') };
 }
 
+// Gang PDF page-format selector (shared, persisted per machine in localStorage).
+// "Gốc" = original Letter 11×8.5 (3300×2550); "A4" = 297×210mm landscape.
+function PageFormatSelect() {
+  const [fmt, setFmt] = useState(getGangPageFormat());
+  return (
+    <div>
+      <label className="text-xs text-neutral-500 block">Khổ gang</label>
+      <select
+        value={fmt}
+        onChange={e => { setFmt(e.target.value); setGangPageFormat(e.target.value); }}
+        className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+        title="Khổ trang file gang PDF"
+      >
+        <option value="letter">Gốc (11×8.5)</option>
+        <option value="a4">A4</option>
+      </select>
+    </div>
+  );
+}
+
 function ComposeTab() {
   const [pending, setPending] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -283,6 +303,7 @@ function ComposeTab() {
           linePrefix,
           nameSuffix: suffix,
           seq: ci + 1,
+          pageFormat: getGangPageFormat(),
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 
@@ -345,6 +366,7 @@ function ComposeTab() {
                 onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
                 className="mt-1 w-24 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
             </div>
+            <PageFormatSelect />
             <button onClick={handleGenerate} disabled={running || selectedIds.size === 0}
               className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
               {running ? 'Generating…' : `Generate (${selectedIds.size})`}
@@ -576,6 +598,7 @@ function GroupsTab() {
           onStart={startAutoCloseJob} onStop={stopAutoCloseJob}
         />
         <span className="text-xs text-neutral-400">Cấu hình group size + móc giờ ở Settings.</span>
+        <PageFormatSelect />
         <div className="ml-auto flex gap-2">
           <button onClick={handleAssignNow} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Gom ngay</button>
           <button onClick={handleDeleteOpen} className="px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-sm rounded-lg">Xoá group mở</button>
@@ -991,6 +1014,7 @@ function FindTab() {
           includeProduced: true,
           nameSuffix: suffix,
           seq: ci + 1,
+          pageFormat: getGangPageFormat(),
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 

@@ -7,7 +7,7 @@
 // there is no server-side build. See doc/automation_gangsheet.md.
 
 import api from './api';
-import { buildGangsheetForChunk } from './gangsheetBuilder';
+import { buildGangsheetForChunk, getGangPageFormat } from './gangsheetBuilder';
 
 // "Scratch Card" → "scratch-card" (mirror of Gangsheet.jsx slugifyAccessory).
 function slugifyAccessory(name) {
@@ -100,6 +100,7 @@ async function generateOneClaimedGroup(group, orders, creds, onProgress) {
     includeProduced: true,
     nameSuffix: suffix,
     seq: group.seq,
+    pageFormat: getGangPageFormat(),
     onProgress,
   });
 
