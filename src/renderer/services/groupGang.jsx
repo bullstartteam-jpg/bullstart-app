@@ -155,6 +155,18 @@ export async function generateClaimedGroups({ groupIds = null, onProgress } = {}
   return out;
 }
 
+/** Delete one group (orders → pending); clean up its B2 PDF if it had one. */
+export async function deleteGroup(groupId) {
+  const data = (await api.delete(`/gangsheet-groups/${groupId}`)).data || {};
+  if (data.deleted_file_url) await s3DeleteByUrl(data.deleted_file_url);
+  return data;
+}
+
+/** Delete ALL open groups (orders → pending) — used to rebuild after changing size. */
+export async function deleteOpenGroups() {
+  return (await api.post('/gangsheet-groups/delete-open')).data;
+}
+
 /** Best-effort delete of a gangsheet PDF on B2 from its public URL. */
 export async function s3DeleteByUrl(fileUrl) {
   if (!fileUrl || !window.electronAPI?.s3Delete) return;

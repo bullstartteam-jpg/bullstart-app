@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount } from '../services/gangsheetBuilder';
-import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen } from '../services/groupGang';
+import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGroup, deleteOpenGroups } from '../services/groupGang';
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
   subscribeAutoCloseJob, startAutoCloseJob, stopAutoCloseJob,
@@ -534,6 +534,30 @@ function GroupsTab() {
     }
   };
 
+  const handleDeleteGroup = async (g) => {
+    const warn = g.status === 'generated'
+      ? `Xoá group #${g.seq}? Gang đã tạo + file PDF sẽ bị xoá, các đơn trả về pending.`
+      : `Xoá group #${g.seq}? Các đơn trả về pending.`;
+    if (!confirm(warn)) return;
+    try {
+      await deleteGroup(g.id);
+      fetchList();
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Xoá group thất bại');
+    }
+  };
+
+  const handleDeleteOpen = async () => {
+    if (!confirm('Xoá TẤT CẢ group đang mở? Đơn trả về pending để gom lại (vd sau khi đổi group size).')) return;
+    try {
+      const res = await deleteOpenGroups();
+      alert(res?.message || 'Đã xoá group đang mở.');
+      fetchList();
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Xoá thất bại');
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Job controls + assign-now */}
@@ -551,6 +575,7 @@ function GroupsTab() {
         <span className="text-xs text-neutral-400">Cấu hình group size + móc giờ ở Settings.</span>
         <div className="ml-auto flex gap-2">
           <button onClick={handleAssignNow} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Gom ngay</button>
+          <button onClick={handleDeleteOpen} className="px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-sm rounded-lg">Xoá group mở</button>
           <button onClick={fetchList} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Refresh</button>
         </div>
       </div>
@@ -615,7 +640,10 @@ function GroupsTab() {
                     </td>
                     <td className="py-1.5 text-xs text-neutral-500">{g.production_day}</td>
                     <td className="py-1.5 text-right">
-                      <button onClick={() => setDetail(g)} className="text-xs text-neutral-600 hover:text-neutral-800">Detail</button>
+                      <div className="flex gap-3 justify-end">
+                        <button onClick={() => setDetail(g)} className="text-xs text-neutral-600 hover:text-neutral-800">Detail</button>
+                        <button onClick={() => handleDeleteGroup(g)} className="text-xs text-red-500 hover:text-red-600">Delete</button>
+                      </div>
                     </td>
                   </tr>
                 );
