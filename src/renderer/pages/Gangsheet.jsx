@@ -12,7 +12,7 @@ import Pagination from '../components/Pagination';
 
 export default function Gangsheet() {
   const { hasRole } = useAuth();
-  const [tab, setTab] = useState('default');
+  const [tab, setTab] = useState('compose');
 
   if (!hasRole('admin') && !hasRole('support')) {
     return (
@@ -33,16 +33,14 @@ export default function Gangsheet() {
       </div>
 
       <div className="flex gap-2 border-b border-neutral-200">
-        <TabBtn active={tab === 'default'} onClick={() => setTab('default')}>Default (10×7)</TabBtn>
-        <TabBtn active={tab === 'a4'} onClick={() => setTab('a4')}>A4</TabBtn>
+        <TabBtn active={tab === 'compose'} onClick={() => setTab('compose')}>Compose</TabBtn>
         <TabBtn active={tab === 'groups'} onClick={() => setTab('groups')}>Groups</TabBtn>
         <TabBtn active={tab === 'find'} onClick={() => setTab('find')}>Find / Re-gang</TabBtn>
         <TabBtn active={tab === 'reconvert'} onClick={() => setTab('reconvert')}>Reconvert 11×7</TabBtn>
         <TabBtn active={tab === 'manage'} onClick={() => setTab('manage')}>Manage</TabBtn>
       </div>
 
-      {tab === 'default' && <ComposeTab pageFormat="original" />}
-      {tab === 'a4' && <ComposeTab pageFormat="a4" />}
+      {tab === 'compose' && <ComposeTab />}
       {tab === 'groups' && <GroupsTab />}
       {tab === 'find' && <FindTab />}
       {tab === 'reconvert' && <ReconvertTab />}
@@ -185,7 +183,7 @@ function PageFormatSelect() {
   );
 }
 
-function ComposeTab({ pageFormat = 'original' }) {
+function ComposeTab() {
   const [pending, setPending] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [batchSize, setBatchSize] = useState(10);
@@ -315,7 +313,7 @@ function ComposeTab({ pageFormat = 'original' }) {
           linePrefix,
           nameSuffix: suffix,
           seq: ci + 1,
-          pageFormat,
+          pageFormat: getGangPageFormat(),
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 
@@ -337,6 +335,7 @@ function ComposeTab({ pageFormat = 'original' }) {
           filename: built.filename,
           file_url: publicUrl,
           line_id: linePrefix || '',
+          page_format: getGangPageFormat(),
           first_system_id: built.firstSid,
           last_system_id: built.lastSid,
           orders_count: built.ordersInChunk,
@@ -368,8 +367,8 @@ function ComposeTab({ pageFormat = 'original' }) {
       <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
         <div className="flex justify-between items-end gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-neutral-700">Pending orders ({pending.length}) · Khổ {pageFormat === 'a4' ? 'A4' : '10×7'}</h3>
-            <p className="text-xs text-neutral-500">Orders with at least one un-produced <span className="font-mono">_qr</span> meta. Gang xuất khổ <b>{pageFormat === 'a4' ? 'A4' : '10×7 (gốc)'}</b>.</p>
+            <h3 className="text-sm font-semibold text-neutral-700">Pending orders ({pending.length})</h3>
+            <p className="text-xs text-neutral-500">Orders with at least one un-produced <span className="font-mono">_qr</span> meta.</p>
           </div>
           <div className="flex gap-2 items-end">
             <div>
@@ -378,6 +377,7 @@ function ComposeTab({ pageFormat = 'original' }) {
                 onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
                 className="mt-1 w-24 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
             </div>
+            <PageFormatSelect />
             <button onClick={handleGenerate} disabled={running || selectedIds.size === 0}
               className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
               {running ? 'Generating…' : `Generate (${selectedIds.size})`}
@@ -1045,6 +1045,7 @@ function FindTab() {
           filename: built.filename,
           file_url: publicUrl,
           line_id: linePrefix || '',
+          page_format: getGangPageFormat(),
           first_system_id: built.firstSid,
           last_system_id: built.lastSid,
           orders_count: built.ordersInChunk,
@@ -1213,7 +1214,7 @@ function gangCategory(filename) {
 const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Khác';
 
 function ManageTab({ isAdmin }) {
-  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page: 1 });
+  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
@@ -1251,6 +1252,7 @@ function ManageTab({ isAdmin }) {
       if (filters.date_from) params.date_from = filters.date_from;
       if (filters.date_to) params.date_to = filters.date_to;
       if (filters.line_id) params.line_id = filters.line_id;
+      if (filters.page_format) params.page_format = filters.page_format;
       const res = await api.get('/gangsheets', { params });
       setList(res.data);
       setSelectedIds(new Set()); // reset on every re-fetch
@@ -1258,7 +1260,7 @@ function ManageTab({ isAdmin }) {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchList(); }, [filters.page]);
+  useEffect(() => { fetchList(); }, [filters.page, filters.page_format]);
 
   // Category chips + filtered rows (client-side, on the current page).
   const catCounts = {};
@@ -1304,7 +1306,7 @@ function ManageTab({ isAdmin }) {
     fetchList();
   };
   const clearFilters = () => {
-    setFilters({ date_from: '', date_to: '', line_id: '', page: 1 });
+    setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', page: 1 });
     setTimeout(fetchList, 0);
   };
 
@@ -1379,6 +1381,14 @@ function ManageTab({ isAdmin }) {
           {list.total ?? 0}
         </span>
       </form>
+
+      {/* Size sub-tabs (server-side filter by page_format). */}
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-xs text-neutral-500 mr-1">Khổ:</span>
+        <SubChip active={filters.page_format === ''} onClick={() => setFilters(f => ({ ...f, page_format: '', page: 1 }))}>Tất cả</SubChip>
+        <SubChip active={filters.page_format === 'original'} onClick={() => setFilters(f => ({ ...f, page_format: 'original', page: 1 }))}>Default (10×7)</SubChip>
+        <SubChip active={filters.page_format === 'a4'} onClick={() => setFilters(f => ({ ...f, page_format: 'a4', page: 1 }))}>A4</SubChip>
+      </div>
 
       {/* Category chips (parsed from filename) — easy to tell batches apart. */}
       {!loading && list.data.length > 0 && (

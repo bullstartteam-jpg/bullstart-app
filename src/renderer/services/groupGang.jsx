@@ -119,6 +119,7 @@ async function generateOneClaimedGroup(group, orders, creds, onProgress) {
     filename: built.filename,
     file_url: publicUrl,
     line_id: linePrefix || '',
+    page_format: getGangPageFormat(),
     first_system_id: built.firstSid,
     last_system_id: built.lastSid,
     orders_count: built.ordersInChunk,
