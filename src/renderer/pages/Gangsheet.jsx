@@ -1240,6 +1240,7 @@ function ManageTab({ isAdmin }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [reconvertingId, setReconvertingId] = useState(null);
+  const [partnerModal, setPartnerModal] = useState(null);   // gang being assigned to partners
   // Sub-tab filter (client-side) by filename category — material / scratch /
   // two_size — so the loaded page is easy to tell apart. 'all' = no filter.
   const [subTab, setSubTab] = useState('all');
@@ -1510,6 +1511,12 @@ function ManageTab({ isAdmin }) {
                       </button>
                     )}
                     {isAdmin && (
+                      <button onClick={() => setPartnerModal(g)} className="text-xs text-purple-600 hover:text-purple-700"
+                        title="Phân quyền gang này cho partner">
+                        Partners{g.partners?.length ? ` (${g.partners.length})` : ''}
+                      </button>
+                    )}
+                    {isAdmin && (
                       <button onClick={() => handleDelete(g)} className="text-xs text-red-500 hover:text-red-600">Delete</button>
                     )}
                   </div>
@@ -1529,6 +1536,7 @@ function ManageTab({ isAdmin }) {
       />
 
       {detail && <DetailModal gs={detail} onClose={() => setDetail(null)} />}
+      {partnerModal && <PartnerAssignModal gs={partnerModal} onClose={() => setPartnerModal(null)} onSaved={fetchList} />}
     </div>
   );
 }
@@ -1591,6 +1599,71 @@ function DetailModal({ gs, onClose }) {
               )}
             </>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Admin: assign a gangsheet to partner users (they see it in partner-bullstart).
+function PartnerAssignModal({ gs, onClose, onSaved }) {
+  const [users, setUsers] = useState([]);
+  const [selected, setSelected] = useState(new Set((gs.partners || []).map(p => p.id)));
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get('/gangsheets/partner-users')
+      .then(res => setUsers(res.data || []))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const toggle = (id) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.put(`/gangsheets/${gs.id}/partners`, { user_ids: [...selected] });
+      onSaved?.();
+      onClose();
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Lưu phân quyền thất bại');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
+      <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[90vw] max-w-md max-h-[85vh] flex flex-col overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-200 flex justify-between items-center">
+          <h3 className="text-sm font-semibold text-neutral-800">Phân quyền partner — <span className="font-mono">{gs.filename}</span></h3>
+          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800 text-xl leading-none">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading ? (
+            <p className="text-neutral-400 text-sm">Loading…</p>
+          ) : users.length === 0 ? (
+            <p className="text-neutral-400 text-sm">Chưa có tài khoản role <b>partner</b> nào. Tạo user partner ở Users trước.</p>
+          ) : (
+            <div className="space-y-1">
+              {users.map(u => (
+                <label key={u.id} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-neutral-50 cursor-pointer">
+                  <input type="checkbox" checked={selected.has(u.id)} onChange={() => toggle(u.id)} className="accent-orange-500" />
+                  <span className="text-sm text-neutral-800">{u.name}</span>
+                  <span className="text-xs text-neutral-400">{u.email}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t border-neutral-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Huỷ</button>
+          <button onClick={save} disabled={saving} className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">
+            {saving ? 'Đang lưu…' : `Lưu (${selected.size})`}
+          </button>
         </div>
       </div>
     </div>
