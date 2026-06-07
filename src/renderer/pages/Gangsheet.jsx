@@ -10,6 +10,12 @@ import {
 } from '../services/converter';
 import Pagination from '../components/Pagination';
 
+// fulfill_status (order.status) options relevant to ganging (exclude shipped).
+const STATUS_OPTIONS = [
+  [0, 'new_order'], [1, 'producing'], [2, 'wrongsize'],
+  [3, 'fixed'], [4, 'reprint'], [5, 'onhold'], [7, 'cancelled'],
+];
+
 export default function Gangsheet() {
   const { hasRole } = useAuth();
   const [tab, setTab] = useState('compose');
@@ -199,6 +205,8 @@ function ComposeTab() {
   const [results, setResults] = useState([]);
   // Sub-tab filter: 'all' | a bucket key "<side>|<accId>|<matId>".
   const [subTab, setSubTab] = useState('all');
+  // fulfill_status multi-filter (empty Set = all non-shipped).
+  const [statuses, setStatuses] = useState(new Set());
 
   const fetchPending = async () => {
     setLoading(true);
@@ -206,8 +214,11 @@ function ComposeTab() {
       // Load ALL pending pages (not just the first 200) so big backlogs show.
       let page = 1, lastPage = 1;
       const all = [];
+      const statusArr = [...statuses];
       do {
-        const res = await api.get('/gangsheets/pending-orders', { params: { per_page: 200, page } });
+        const params = { per_page: 200, page };
+        if (statusArr.length) params.statuses = statusArr;
+        const res = await api.get('/gangsheets/pending-orders', { params });
         all.push(...(res.data.data || []));
         lastPage = res.data.last_page || 1;
         page++;
@@ -215,7 +226,14 @@ function ComposeTab() {
       setPending(all);
     } finally { setLoading(false); }
   };
-  useEffect(() => { fetchPending(); }, []);
+  const statusKey = [...statuses].sort().join(',');
+  useEffect(() => { fetchPending(); }, [statusKey]);
+
+  const toggleStatus = (s) => setStatuses(prev => {
+    const next = new Set(prev);
+    if (next.has(s)) next.delete(s); else next.add(s);
+    return next;
+  });
 
   const toggle = (id) => setSelectedIds(prev => {
     const next = new Set(prev);
@@ -400,6 +418,17 @@ function ComposeTab() {
             </button>
             <button onClick={fetchPending} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Refresh</button>
           </div>
+        </div>
+
+        {/* Fulfill status multi-filter (chọn nhiều; rỗng = mọi đơn chưa ship). */}
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-xs text-neutral-500 mr-1">Fulfill status:</span>
+          {STATUS_OPTIONS.map(([s, label]) => (
+            <SubChip key={s} active={statuses.has(s)} onClick={() => toggleStatus(s)}>{label}</SubChip>
+          ))}
+          {statuses.size > 0 && (
+            <button onClick={() => setStatuses(new Set())} className="text-xs text-neutral-400 hover:text-neutral-600 ml-1">× bỏ lọc</button>
+          )}
         </div>
 
         {/* Sub-tabs: All + một chip cho mỗi bucket gang thật

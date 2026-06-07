@@ -89,6 +89,7 @@ function GangsheetAutomationTab() {
     try {
       const res = await api.put('/gangsheet-groups/automation-config', {
         group_size: Number(cfg.group_size) || 1,
+        assign_statuses: cfg.assign_statuses || [],
         auto_close: { enabled: !!cfg.auto_close?.enabled, hooks },
       });
       setCfg(res.data);
@@ -111,6 +112,26 @@ function GangsheetAutomationTab() {
 
         <div className="grid grid-cols-2 gap-3">
           <NumField label="Số đơn mỗi group (tối đa)" value={cfg.group_size} onChange={v => setCfg(c => ({ ...c, group_size: v }))} step="1" />
+        </div>
+
+        <div>
+          <label className="text-xs text-neutral-500 block mb-1">Chỉ gom đơn có fulfill_status (rỗng = mọi đơn chưa ship)</label>
+          <div className="flex flex-wrap gap-1">
+            {[[0,'new_order'],[1,'producing'],[2,'wrongsize'],[3,'fixed'],[4,'reprint'],[5,'onhold'],[7,'cancelled']].map(([s,label]) => {
+              const on = (cfg.assign_statuses || []).includes(s);
+              return (
+                <button key={s} type="button"
+                  onClick={() => setCfg(c => {
+                    const set = new Set(c.assign_statuses || []);
+                    on ? set.delete(s) : set.add(s);
+                    return { ...c, assign_statuses: [...set] };
+                  })}
+                  className={`px-3 py-1 text-xs font-semibold rounded-full ${on ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-orange-50'}`}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         </div>
         <p className="text-[11px] text-neutral-500 -mt-2">
           Group gom tối đa {cfg.group_size || '?'} đơn/bucket. Tới mỗi móc giờ, app gom hết đơn pending
