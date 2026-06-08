@@ -362,7 +362,7 @@ export default function Wallet() {
                   onChange={e => setVnpayVnd(e.target.value)}
                   required
                   min={vnpayRate.min_vnd}
-                  step="1000"
+                  step="any"
                   placeholder="vd 500000"
                   className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-base font-mono"
                 />
