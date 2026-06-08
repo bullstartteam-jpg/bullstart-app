@@ -94,8 +94,7 @@ function GangsheetAutomationTab() {
     try {
       const res = await api.put('/gangsheet-groups/automation-config', {
         group_size: Number(cfg.group_size) || 1,
-        assign_statuses: cfg.assign_statuses || [],
-        assign_users: cfg.assign_users || [],
+        assign_rules: (cfg.assign_rules || []).filter(r => r.user_id),
         marks: cfg.marks || {},
         auto_close: { enabled: !!cfg.auto_close?.enabled, hooks },
       });
@@ -123,45 +122,48 @@ function GangsheetAutomationTab() {
         </div>
 
         <div>
-          <label className="text-xs text-neutral-500 block mb-1">Chỉ gom đơn có fulfill_status (rỗng = mọi đơn chưa ship)</label>
-          <div className="flex flex-wrap gap-1">
-            {[[0,'new_order'],[1,'producing'],[2,'wrongsize'],[3,'fixed'],[4,'reprint'],[5,'onhold'],[7,'cancelled']].map(([s,label]) => {
-              const on = (cfg.assign_statuses || []).includes(s);
-              return (
-                <button key={s} type="button"
-                  onClick={() => setCfg(c => {
-                    const set = new Set(c.assign_statuses || []);
-                    on ? set.delete(s) : set.add(s);
-                    return { ...c, assign_statuses: [...set] };
+          <label className="text-xs text-neutral-500 block mb-1">Quy tắc gom theo user — mỗi user chọn status riêng (rỗng = mọi đơn chưa ship)</label>
+          {(cfg.assign_rules || []).map((r, idx) => {
+            const u = userOpts.find(x => x.id === r.user_id);
+            return (
+              <div key={idx} className="border border-neutral-200 rounded-lg p-2 mb-2">
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-sm font-medium text-neutral-800">{u ? u.name : `#${r.user_id}`}{u?.role ? ` · ${u.role}` : ''}</span>
+                  <button type="button" onClick={() => setCfg(c => ({ ...c, assign_rules: c.assign_rules.filter((_, i) => i !== idx) }))}
+                    className="text-red-500 hover:text-red-600 text-xs">× xoá</button>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {[[0,'new_order'],[1,'producing'],[2,'wrongsize'],[3,'fixed'],[4,'reprint'],[5,'onhold'],[7,'cancelled']].map(([s,label]) => {
+                    const on = (r.statuses || []).includes(s);
+                    return (
+                      <button key={s} type="button"
+                        onClick={() => setCfg(c => {
+                          const rules = [...c.assign_rules];
+                          const set = new Set(rules[idx].statuses || []);
+                          on ? set.delete(s) : set.add(s);
+                          rules[idx] = { ...rules[idx], statuses: [...set] };
+                          return { ...c, assign_rules: rules };
+                        })}
+                        className={`px-2.5 py-0.5 text-xs font-semibold rounded-full ${on ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-orange-50'}`}>
+                        {label}
+                      </button>
+                    );
                   })}
-                  className={`px-3 py-1 text-xs font-semibold rounded-full ${on ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-orange-50'}`}>
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div>
-          <label className="text-xs text-neutral-500 block mb-1">Chỉ gom đơn của user (rỗng = mọi user)</label>
-          <div className="flex flex-wrap gap-1 max-h-40 overflow-y-auto">
-            {userOpts.length === 0 && <span className="text-xs text-neutral-400">Đang tải user…</span>}
-            {userOpts.map(u => {
-              const on = (cfg.assign_users || []).includes(u.id);
-              return (
-                <button key={u.id} type="button"
-                  onClick={() => setCfg(c => {
-                    const set = new Set(c.assign_users || []);
-                    on ? set.delete(u.id) : set.add(u.id);
-                    return { ...c, assign_users: [...set] };
-                  })}
-                  title={`${u.email || ''} · ${u.role || ''}`}
-                  className={`px-3 py-1 text-xs font-semibold rounded-full ${on ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-orange-50'}`}>
-                  {u.name}{u.role ? ` · ${u.role}` : ''}
-                </button>
-              );
-            })}
-          </div>
+                </div>
+                <p className="text-[10px] text-neutral-400 mt-1">Không chọn status nào = mọi status của user này.</p>
+              </div>
+            );
+          })}
+          <select value="" onChange={e => {
+              const id = Number(e.target.value);
+              if (id) setCfg(c => ({ ...c, assign_rules: [...(c.assign_rules || []), { user_id: id, statuses: [] }] }));
+            }}
+            className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+            <option value="">+ Thêm user…</option>
+            {userOpts.filter(u => !(cfg.assign_rules || []).some(r => r.user_id === u.id)).map(u => (
+              <option key={u.id} value={u.id}>{u.name}{u.role ? ` · ${u.role}` : ''}</option>
+            ))}
+          </select>
         </div>
 
         <p className="text-[11px] text-neutral-500 -mt-2">
