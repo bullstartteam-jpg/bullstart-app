@@ -31,6 +31,7 @@ export default function Settings() {
     { id: 'vnpay', label: 'VNPay Merchant' },
     { id: 'bank', label: 'Bank Transfer' },
     { id: 'stamp', label: 'Stamp Shipping' },
+    { id: 'qr', label: 'QR Portal' },
     { id: 'gangsheet', label: 'Gangsheet Auto' },
   ];
 
@@ -55,6 +56,7 @@ export default function Settings() {
       {tab === 'vnpay' && <VnpayMerchantTab />}
       {tab === 'bank' && <BankTransferTab />}
       {tab === 'stamp' && <StampConfigTab />}
+      {tab === 'qr' && <QrConfigTab />}
       {tab === 'gangsheet' && <GangsheetAutomationTab />}
     </div>
   );
@@ -268,6 +270,49 @@ function StampConfigTab() {
         <button onClick={save} disabled={saving} className="mt-4 px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
           {saving ? 'Saving…' : 'Save changes'}
         </button>
+      </section>
+    </div>
+  );
+}
+
+function QrConfigTab() {
+  const [c, setC] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { api.get('/settings/qr-config').then(res => setC(res.data)); }, []);
+  if (!c) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const save = async (next) => {
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/qr-config', { auto_ship_print: !!next.auto_ship_print });
+      setC(res.data);
+      notify('Saved QR config', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">QR Portal</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">Hành vi khi mở trang <code className="font-mono">/qr/&#123;system_id&#125;</code> trên hub.</p>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={!!c.auto_ship_print}
+            disabled={saving}
+            onChange={e => { const v = e.target.checked; setC(p => ({ ...p, auto_ship_print: v })); save({ auto_ship_print: v }); }}
+            className="mt-0.5 w-4 h-4 accent-orange-500"
+          />
+          <span className="text-sm text-neutral-700">
+            Tự động Ship &amp; Print khi mở trang QR
+            <span className="block text-[11px] text-neutral-500 mt-0.5">
+              Khi quét/mở 1 đơn <b>chưa shipped</b>, hệ thống tự đánh dấu shipped rồi bung hộp thoại in label. Đơn đã shipped thì bỏ qua.
+            </span>
+          </span>
+        </label>
       </section>
     </div>
   );
