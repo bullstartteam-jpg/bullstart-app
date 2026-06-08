@@ -36,6 +36,7 @@ export default function OrderDetail() {
       const a = o.address || {};
       setForm({
         status: o.status,
+        note: o.note || '',
         shipping_label: o.shipping_label || '',
         tracking_id: o.tracking_id || '',
         shipping_cost: o.shipping_cost ?? '',
@@ -278,11 +279,21 @@ export default function OrderDetail() {
                   {isPreviewable(form.proof_image) && <UrlPreview url={form.proof_image} onOpen={setPreviewUrl} label="Proof" size="sm" />}
                 </div>
               )}
+              <div>
+                <label className="text-xs text-neutral-500">Note</label>
+                <textarea value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} rows={2} placeholder="Ghi chú cho đơn…" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+              </div>
               <button onClick={handleUpdate} className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Save</button>
             </div>
           ) : (
             <div className="space-y-2 text-sm">
               <Row label="Status" value={STATUS_MAP[order.status]} />
+              {order.note && (
+                <div className="flex justify-between items-start gap-3">
+                  <span className="text-neutral-500 text-sm">Note</span>
+                  <span className="text-neutral-800 font-medium text-sm whitespace-pre-wrap text-right">{order.note}</span>
+                </div>
+              )}
               <Row label="Ship Type" value={order.ship_type} />
               <div className="flex justify-between items-center gap-3">
                 <span className="text-neutral-500 text-sm">Shipping Label</span>
