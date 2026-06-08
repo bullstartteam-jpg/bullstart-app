@@ -10,6 +10,7 @@ import {
   startQrBgJob,
   stopQrBgJob,
   runQrBgNow,
+  refreshQrBgFlagged,
 } from '../services/converter';
 import { useAuth } from '../contexts/AuthContext';
 import { notify } from '../components/Dialog';
@@ -34,6 +35,9 @@ export default function Convert() {
 
   useEffect(() => subscribeQrConverter(setS), []);
   useEffect(() => subscribeQrBgJob(setBg), []);
+  // Load the saved black-flagged list from the server on mount (survives
+  // restarts; checked orders are never re-scanned so the live job won't refill it).
+  useEffect(() => { refreshQrBgFlagged(); }, []);
 
   const flagged = bg?.flagged || [];
   const toggleSel = (id) => setSel(prev => {
@@ -211,6 +215,11 @@ export default function Convert() {
                 <button onClick={() => copyList(flagged)}
                   className="px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg">
                   Copy tất cả
+                </button>
+                <button onClick={() => refreshQrBgFlagged()}
+                  title="Tải lại list đã lưu từ server"
+                  className="px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg">
+                  ↻
                 </button>
               </div>
             )}

@@ -118,6 +118,8 @@ function createJob({ name, storageKey, runOnce, pollMs = POLL_MS }) {
     pushLog: (level, system_id, key, message) => { pushLog(level, system_id, key, message); emit(); },
     bumpProcessed: () => { state.processedTotal += 1; emit(); },
     bumpError: () => { state.errorTotal += 1; emit(); },
+    // Mutate state from outside (e.g. seed a list from the server) + re-emit.
+    patchState: (fn) => { fn(state); emit(); },
   };
 }
 
@@ -287,6 +289,11 @@ const qrBgJob = createJob({
   storageKey: 'converter_qr_bg_auto',
   pollMs: 120_000,     // 2 minutes — scanning loads full images, keep it light
   async runOnce({ state, pushLog, emit }) {
+    // Seed the flagged list from the server (source of truth) so it survives
+    // restarts and reflects orders flagged on other machines too.
+    try { state.flagged = await fetchQrBgFlaggedList(); } catch { if (!state.flagged) state.flagged = []; }
+    emit();
+
     const res = await api.get('/conversion/qr-bg/pending');
     const items = res.data?.items || [];
     state.pending = items.map(i => ({ system_id: i.system_id, target_key: i.key, value: i.url }));
@@ -338,6 +345,26 @@ const qrBgJob = createJob({
     }
   },
 });
+
+/** Load the persisted black-flagged orders from the server (DB-backed). */
+async function fetchQrBgFlaggedList() {
+  const r = await api.get('/conversion/qr-bg/flagged');
+  return (r.data?.items || []).map(f => ({
+    order_id: f.order_id,
+    system_id: f.system_id,
+    url: f.url,
+    ts: f.checked_at ? Date.parse(f.checked_at) : Date.now(),
+  }));
+}
+
+/** Seed the job's flagged list from the server — call on page mount so the
+ *  saved list shows even when the job hasn't ticked yet (or is off). */
+export async function refreshQrBgFlagged() {
+  try {
+    const list = await fetchQrBgFlaggedList();
+    qrBgJob.patchState(st => { st.flagged = list; });
+  } catch { /* noop */ }
+}
 
 /**
  * Measure how "light" the barcode panel area is on a composed front_qr image.
