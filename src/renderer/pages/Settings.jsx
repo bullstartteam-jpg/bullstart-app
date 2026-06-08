@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import api from '../services/api';
 import UploadButton from '../components/UploadButton';
 import { notify } from '../components/Dialog';
-import { getGangMarks, setGangMarks } from '../services/gangsheetBuilder';
+import { setGangMarks } from '../services/gangsheetBuilder';
 
 export default function Settings() {
   const [tab, setTab] = useState('roles');
@@ -64,8 +64,6 @@ function GangsheetAutomationTab() {
   const [cfg, setCfg] = useState(null);
   const [saving, setSaving] = useState(false);
   const [newHook, setNewHook] = useState('');
-  const [marks, setMarks] = useState(getGangMarks);
-  const [marksSaved, setMarksSaved] = useState(false);
 
   useEffect(() => { api.get('/gangsheet-groups/automation-config').then(r => setCfg(r.data)); }, []);
   if (!cfg) return <div className="text-neutral-400 text-sm">Loading…</div>;
@@ -93,9 +91,11 @@ function GangsheetAutomationTab() {
       const res = await api.put('/gangsheet-groups/automation-config', {
         group_size: Number(cfg.group_size) || 1,
         assign_statuses: cfg.assign_statuses || [],
+        marks: cfg.marks || {},
         auto_close: { enabled: !!cfg.auto_close?.enabled, hooks },
       });
       setCfg(res.data);
+      setGangMarks(res.data.marks || {});   // cache for the local build pipeline
       notify('Saved gangsheet automation', { title: 'Settings', kind: 'success' });
     } catch (err) {
       notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
@@ -142,18 +142,14 @@ function GangsheetAutomationTab() {
         </p>
 
         <div className="rounded-lg border border-neutral-200 p-3">
-          <div className="text-sm font-medium text-neutral-700 mb-1">Registration marks (canh in) — lưu trên máy này</div>
-          <p className="text-[11px] text-neutral-500 mb-2">Kích thước dấu canh ở góc gang (px @300dpi). Áp dụng cho khổ Letter/A4 (khổ Gốc 10×7 không có marks).</p>
+          <div className="text-sm font-medium text-neutral-700 mb-1">Registration marks (canh in) — lưu trên hub (chung)</div>
+          <p className="text-[11px] text-neutral-500 mb-2">Kích thước dấu canh ở góc gang (px @300dpi). Áp dụng cho khổ Letter/A4 (khổ Gốc 10×7 không có marks). Lưu cùng nút "Save changes".</p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <NumField label="Khoảng hở mép (gap)" value={marks.gap} onChange={v => { setMarks(m => ({ ...m, gap: Number(v) || 0 })); setMarksSaved(false); }} step="1" />
-            <NumField label="Dài cánh L (arm)" value={marks.arm} onChange={v => { setMarks(m => ({ ...m, arm: Number(v) || 0 })); setMarksSaved(false); }} step="1" />
-            <NumField label="Độ dày nét (thick)" value={marks.thick} onChange={v => { setMarks(m => ({ ...m, thick: Number(v) || 0 })); setMarksSaved(false); }} step="1" />
-            <NumField label="Dài vạch giữa (tick, 0=ẩn)" value={marks.tick} onChange={v => { setMarks(m => ({ ...m, tick: Number(v) || 0 })); setMarksSaved(false); }} step="1" />
+            <NumField label="Khoảng hở mép (gap)" value={cfg.marks?.gap ?? 30} onChange={v => setCfg(c => ({ ...c, marks: { ...c.marks, gap: Number(v) || 0 } }))} step="1" />
+            <NumField label="Dài cánh L (arm)" value={cfg.marks?.arm ?? 90} onChange={v => setCfg(c => ({ ...c, marks: { ...c.marks, arm: Number(v) || 0 } }))} step="1" />
+            <NumField label="Độ dày nét (thick)" value={cfg.marks?.thick ?? 10} onChange={v => setCfg(c => ({ ...c, marks: { ...c.marks, thick: Number(v) || 0 } }))} step="1" />
+            <NumField label="Dài vạch giữa (tick, 0=ẩn)" value={cfg.marks?.tick ?? 70} onChange={v => setCfg(c => ({ ...c, marks: { ...c.marks, tick: Number(v) || 0 } }))} step="1" />
           </div>
-          <button type="button" onClick={() => { setGangMarks(marks); setMarksSaved(true); }}
-            className="mt-3 px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">
-            {marksSaved ? '✓ Đã lưu marks' : 'Lưu marks'}
-          </button>
         </div>
 
         <div className="rounded-lg border border-neutral-200 p-3">

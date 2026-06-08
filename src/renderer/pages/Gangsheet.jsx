@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount, getGangPageFormat, setGangPageFormat } from '../services/gangsheetBuilder';
+import { buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount, getGangPageFormat, setGangPageFormat, setGangMarks } from '../services/gangsheetBuilder';
 import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGroup, deleteOpenGroups } from '../services/groupGang';
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
@@ -19,6 +19,14 @@ const STATUS_OPTIONS = [
 export default function Gangsheet() {
   const { hasRole } = useAuth();
   const [tab, setTab] = useState('compose');
+
+  // Sync registration-mark sizes from the hub (shared) into the local cache the
+  // build pipeline reads.
+  useEffect(() => {
+    api.get('/gangsheet-groups/automation-config')
+      .then(r => setGangMarks(r.data.marks || {}))
+      .catch(() => {});
+  }, []);
 
   if (!hasRole('admin') && !hasRole('support')) {
     return (
