@@ -64,8 +64,12 @@ function GangsheetAutomationTab() {
   const [cfg, setCfg] = useState(null);
   const [saving, setSaving] = useState(false);
   const [newHook, setNewHook] = useState('');
+  const [userOpts, setUserOpts] = useState([]);
 
-  useEffect(() => { api.get('/gangsheet-groups/automation-config').then(r => setCfg(r.data)); }, []);
+  useEffect(() => {
+    api.get('/gangsheet-groups/automation-config').then(r => setCfg(r.data));
+    api.get('/gangsheet-groups/assign-user-options').then(r => setUserOpts(r.data || [])).catch(() => {});
+  }, []);
   if (!cfg) return <div className="text-neutral-400 text-sm">Loading…</div>;
 
   const hooks = cfg.auto_close?.hooks || [];
@@ -91,6 +95,7 @@ function GangsheetAutomationTab() {
       const res = await api.put('/gangsheet-groups/automation-config', {
         group_size: Number(cfg.group_size) || 1,
         assign_statuses: cfg.assign_statuses || [],
+        assign_users: cfg.assign_users || [],
         marks: cfg.marks || {},
         auto_close: { enabled: !!cfg.auto_close?.enabled, hooks },
       });
@@ -136,6 +141,29 @@ function GangsheetAutomationTab() {
             })}
           </div>
         </div>
+
+        <div>
+          <label className="text-xs text-neutral-500 block mb-1">Chỉ gom đơn của user (rỗng = mọi user)</label>
+          <div className="flex flex-wrap gap-1 max-h-40 overflow-y-auto">
+            {userOpts.length === 0 && <span className="text-xs text-neutral-400">Đang tải user…</span>}
+            {userOpts.map(u => {
+              const on = (cfg.assign_users || []).includes(u.id);
+              return (
+                <button key={u.id} type="button"
+                  onClick={() => setCfg(c => {
+                    const set = new Set(c.assign_users || []);
+                    on ? set.delete(u.id) : set.add(u.id);
+                    return { ...c, assign_users: [...set] };
+                  })}
+                  title={`${u.email || ''} · ${u.role || ''}`}
+                  className={`px-3 py-1 text-xs font-semibold rounded-full ${on ? 'bg-orange-500 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-orange-50'}`}>
+                  {u.name}{u.role ? ` · ${u.role}` : ''}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <p className="text-[11px] text-neutral-500 -mt-2">
           Group gom tối đa {cfg.group_size || '?'} đơn/bucket. Tới mỗi móc giờ, app gom hết đơn pending
           (bao nhiêu cũng group) rồi chốt tạo gang ngay cho tất cả group. Chốt thủ công luôn chốt được.
