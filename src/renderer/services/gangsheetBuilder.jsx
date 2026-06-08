@@ -57,6 +57,20 @@ export function setGangPageFormat(fmt) {
   try { localStorage.setItem('gangsheet_page_format', v); } catch { /* noop */ }
 }
 
+// Registration-mark sizes (px @300dpi), editable + saved per machine. Defaults
+// from the MARK_* constants above. gap = khoảng hở mép design → mark.
+export function getGangMarks() {
+  const d = { gap: MARK_GAP, arm: MARK_ARM, thick: MARK_THICK, tick: CENTER_TICK };
+  try {
+    const v = JSON.parse(localStorage.getItem('gangsheet_marks') || '{}');
+    const num = (x, dv) => (Number.isFinite(+x) && +x >= 0 ? +x : dv);
+    return { gap: num(v.gap, d.gap), arm: num(v.arm, d.arm), thick: num(v.thick, d.thick), tick: num(v.tick, d.tick) };
+  } catch { return d; }
+}
+export function setGangMarks(m) {
+  try { localStorage.setItem('gangsheet_marks', JSON.stringify(m)); } catch { /* noop */ }
+}
+
 // Source side keys, in the canonical order we want them to appear in the gang sheet.
 const SOURCE_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
 // Matches "<source>_qr" or "<source>_qr_<copy>" (copy starts at 1).
@@ -197,43 +211,40 @@ function loadImageFromBytes(bytes) {
  * sheet without the marks bleeding onto the artwork. Center ticks on every
  * edge mark the mid-point of the design for symmetric alignment.
  */
-function drawAlignmentMarks(ctx, L) {
+function drawAlignmentMarks(ctx, L, m) {
   ctx.save();
   ctx.fillStyle = '#000000';
 
+  const gap = m.gap, arm = m.arm, thick = m.thick, tick = m.tick;
   const dx1 = L.DESIGN_X;
   const dy1 = L.DESIGN_Y;
   const dx2 = L.DESIGN_X + DESIGN_W;
   const dy2 = L.DESIGN_Y + DESIGN_H;
   const cx = (dx1 + dx2) / 2;
-  const cy = (dy1 + dy2) / 2;
 
   // Place the inner corner of the L at (ix, iy), arms extending in (sx, sy)
   // (each ±1) AWAY from the design. Thickness extends INTO the corner (toward
   // the design) so the L-elbow visually points at the design corner.
   const drawCornerL = (ix, iy, sx, sy) => {
-    // Horizontal arm: width=ARM in -sx direction, thickness=T in -sy direction
-    const hx = sx > 0 ? ix : ix - MARK_ARM;
-    const hy = sy > 0 ? iy - MARK_THICK : iy;
-    ctx.fillRect(hx, hy, MARK_ARM, MARK_THICK);
-    // Vertical arm
-    const vx = sx > 0 ? ix - MARK_THICK : ix;
-    const vy = sy > 0 ? iy : iy - MARK_ARM;
-    ctx.fillRect(vx, vy, MARK_THICK, MARK_ARM);
+    const hx = sx > 0 ? ix : ix - arm;
+    const hy = sy > 0 ? iy - thick : iy;
+    ctx.fillRect(hx, hy, arm, thick);
+    const vx = sx > 0 ? ix - thick : ix;
+    const vy = sy > 0 ? iy : iy - arm;
+    ctx.fillRect(vx, vy, thick, arm);
   };
 
   // 4 corners — inner corner sits diagonally outside each design corner.
-  drawCornerL(dx1 - MARK_GAP, dy1 - MARK_GAP, -1, -1); // top-left
-  drawCornerL(dx2 + MARK_GAP, dy1 - MARK_GAP, +1, -1); // top-right
-  drawCornerL(dx1 - MARK_GAP, dy2 + MARK_GAP, -1, +1); // bottom-left
-  drawCornerL(dx2 + MARK_GAP, dy2 + MARK_GAP, +1, +1); // bottom-right
+  drawCornerL(dx1 - gap, dy1 - gap, -1, -1); // top-left
+  drawCornerL(dx2 + gap, dy1 - gap, +1, -1); // top-right
+  drawCornerL(dx1 - gap, dy2 + gap, -1, +1); // bottom-left
+  drawCornerL(dx2 + gap, dy2 + gap, +1, +1); // bottom-right
 
-  // Center ticks marking the horizontal mid-point of the design — vertical
-  // sticks above the top edge and below the bottom edge. (Left/right edge
-  // ticks were intentionally dropped — operator only needs to find the
-  // horizontal center for press alignment.)
-  ctx.fillRect(cx - MARK_THICK / 2, dy1 - MARK_GAP - CENTER_TICK, MARK_THICK, CENTER_TICK);
-  ctx.fillRect(cx - MARK_THICK / 2, dy2 + MARK_GAP, MARK_THICK, CENTER_TICK);
+  // Center ticks at the horizontal mid-point, above top + below bottom edge.
+  if (tick > 0) {
+    ctx.fillRect(cx - thick / 2, dy1 - gap - tick, thick, tick);
+    ctx.fillRect(cx - thick / 2, dy2 + gap, thick, tick);
+  }
 
   ctx.restore();
 }
@@ -263,6 +274,7 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
   if (!records.length) throw new Error('No _qr metas in this chunk');
 
   const L = pageLayout(pageFormat);   // page size + centered design box
+  const marks = getGangMarks();       // editable registration-mark sizes
 
   const pdf = await PDFDocument.create();
   const total = records.length;
@@ -293,7 +305,7 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
     // 2b. Registration marks in the surrounding margin — only when the page is
     //     larger than the design (Letter/A4). 'original' (page = design) has no
     //     margin, so marks are skipped.
-    if (L.marks) drawAlignmentMarks(sheetCtx, L);
+    if (L.marks) drawAlignmentMarks(sheetCtx, L, marks);
 
     // 3. Snapshot the canvas as a single PNG, embed into PDF as a full page.
     const blob = await canvasToBlob(sheetCanvas, 'image/png');

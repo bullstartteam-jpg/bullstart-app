@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import api from '../services/api';
 import UploadButton from '../components/UploadButton';
 import { notify } from '../components/Dialog';
+import { getGangMarks, setGangMarks } from '../services/gangsheetBuilder';
 
 export default function Settings() {
   const [tab, setTab] = useState('roles');
@@ -63,6 +64,8 @@ function GangsheetAutomationTab() {
   const [cfg, setCfg] = useState(null);
   const [saving, setSaving] = useState(false);
   const [newHook, setNewHook] = useState('');
+  const [marks, setMarks] = useState(getGangMarks);
+  const [marksSaved, setMarksSaved] = useState(false);
 
   useEffect(() => { api.get('/gangsheet-groups/automation-config').then(r => setCfg(r.data)); }, []);
   if (!cfg) return <div className="text-neutral-400 text-sm">Loading…</div>;
@@ -137,6 +140,21 @@ function GangsheetAutomationTab() {
           Group gom tối đa {cfg.group_size || '?'} đơn/bucket. Tới mỗi móc giờ, app gom hết đơn pending
           (bao nhiêu cũng group) rồi chốt tạo gang ngay cho tất cả group. Chốt thủ công luôn chốt được.
         </p>
+
+        <div className="rounded-lg border border-neutral-200 p-3">
+          <div className="text-sm font-medium text-neutral-700 mb-1">Registration marks (canh in) — lưu trên máy này</div>
+          <p className="text-[11px] text-neutral-500 mb-2">Kích thước dấu canh ở góc gang (px @300dpi). Áp dụng cho khổ Letter/A4 (khổ Gốc 10×7 không có marks).</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <NumField label="Khoảng hở mép (gap)" value={marks.gap} onChange={v => { setMarks(m => ({ ...m, gap: Number(v) || 0 })); setMarksSaved(false); }} step="1" />
+            <NumField label="Dài cánh L (arm)" value={marks.arm} onChange={v => { setMarks(m => ({ ...m, arm: Number(v) || 0 })); setMarksSaved(false); }} step="1" />
+            <NumField label="Độ dày nét (thick)" value={marks.thick} onChange={v => { setMarks(m => ({ ...m, thick: Number(v) || 0 })); setMarksSaved(false); }} step="1" />
+            <NumField label="Dài vạch giữa (tick, 0=ẩn)" value={marks.tick} onChange={v => { setMarks(m => ({ ...m, tick: Number(v) || 0 })); setMarksSaved(false); }} step="1" />
+          </div>
+          <button type="button" onClick={() => { setGangMarks(marks); setMarksSaved(true); }}
+            className="mt-3 px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">
+            {marksSaved ? '✓ Đã lưu marks' : 'Lưu marks'}
+          </button>
+        </div>
 
         <div className="rounded-lg border border-neutral-200 p-3">
           <label className="flex items-center gap-2 text-sm font-medium text-neutral-700">
