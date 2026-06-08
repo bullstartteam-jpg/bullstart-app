@@ -46,6 +46,11 @@ export default function Users() {
     fetchUsers(search);
   };
 
+  const handleToggleAutoPay = async (user) => {
+    await api.put(`/users/${user.id}`, { auto_pay: !user.auto_pay });
+    fetchUsers(search);
+  };
+
   const handleRegenApiKey = async (userId) => {
     if (!confirm('Regenerate API key?')) return;
     const res = await api.post(`/users/${userId}/regenerate-api-key`);
@@ -108,12 +113,13 @@ export default function Users() {
               <th className="p-3 text-right">Wallet</th>
               <th className="p-3 text-center">Status</th>
               <th className="p-3 text-center">Convert</th>
+              <th className="p-3 text-center">Auto-pay</th>
               <th className="p-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan="8" className="p-6 text-center text-neutral-400">Loading...</td></tr>
+              <tr><td colSpan="9" className="p-6 text-center text-neutral-400">Loading...</td></tr>
             ) : users.map(user => (
               <tr key={user.id} className="border-b border-neutral-100 hover:bg-orange-50/50 transition-colors">
                 <td className="p-3 text-neutral-800 font-medium">{user.name}</td>
@@ -129,6 +135,11 @@ export default function Users() {
                 <td className="p-3 text-center">
                   <button onClick={() => handleToggleConvert(user)} className={`px-2 py-0.5 rounded text-xs font-medium ${user.convert ? 'bg-blue-100 text-blue-600' : 'bg-neutral-100 text-neutral-500'}`}>
                     {user.convert ? 'On' : 'Off'}
+                  </button>
+                </td>
+                <td className="p-3 text-center">
+                  <button onClick={() => handleToggleAutoPay(user)} className={`px-2 py-0.5 rounded text-xs font-medium ${user.auto_pay ? 'bg-green-100 text-green-600' : 'bg-neutral-100 text-neutral-500'}`}>
+                    {user.auto_pay ? `On${user.auto_pay_delay_hours ? ` · ${user.auto_pay_delay_hours}h` : ''}` : 'Off'}
                   </button>
                 </td>
                 <td className="p-3 text-right space-x-2">
@@ -155,6 +166,8 @@ function EditUserModal({ user, roles, tiers, onClose, onSaved }) {
     status: user.status ?? 1,
     convert: user.convert ?? false,
     wallet: user.wallet ?? 0,
+    auto_pay: user.auto_pay ?? false,
+    auto_pay_delay_hours: user.auto_pay_delay_hours ?? 0,
   });
   const [saving, setSaving] = useState(false);
 
@@ -170,6 +183,8 @@ function EditUserModal({ user, roles, tiers, onClose, onSaved }) {
         status: parseInt(form.status),
         convert: !!form.convert,
         wallet: form.wallet === '' ? 0 : Number(form.wallet),
+        auto_pay: !!form.auto_pay,
+        auto_pay_delay_hours: form.auto_pay_delay_hours === '' ? 0 : Number(form.auto_pay_delay_hours),
       };
       if (form.password && form.password.length >= 6) {
         payload.password = form.password;
@@ -234,6 +249,19 @@ function EditUserModal({ user, roles, tiers, onClose, onSaved }) {
               <option value="0">Off</option>
               <option value="1">On</option>
             </select>
+          </div>
+          <div>
+            <label className="text-xs text-neutral-500">Auto-pay</label>
+            <select value={form.auto_pay ? '1' : '0'} onChange={e => setForm(f => ({ ...f, auto_pay: e.target.value === '1' }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm">
+              <option value="0">Off</option>
+              <option value="1">On</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-neutral-500">Auto-pay delay (giờ) <span className="text-neutral-400">0 = ngay</span></label>
+            <input type="number" min={0} max={72} disabled={!form.auto_pay} value={form.auto_pay_delay_hours}
+              onChange={e => setForm(f => ({ ...f, auto_pay_delay_hours: e.target.value }))}
+              className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm disabled:opacity-50" />
           </div>
         </div>
         <div className="px-4 py-3 border-t border-neutral-200 flex justify-end gap-2">
