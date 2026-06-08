@@ -23,6 +23,7 @@ export default function GangsheetLabel() {
   const [mergeProgress, setMergeProgress] = useState(null);   // {done, total, system_id}
   const [mergeResult, setMergeResult] = useState(null);       // last merged label info
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [sidText, setSidText] = useState('');
 
   const fetch = async () => {
     setLoading(true);
@@ -120,59 +121,90 @@ export default function GangsheetLabel() {
       const merged = mergeRes.data.merged_label;
       const scanCode = mergeRes.data.scan_code;
       const orderIds = mergeRes.data.order_ids;
-      const scanUrl = `${scanBase}/gs/${scanCode}`;
 
-      // 2) Fetch order details (convert_label URLs) preserving order_ids sequence
-      const ordersRes = await api.post('/gangsheets/lookup-orders', {
-        system_ids: [], // we'll filter by id below
-      }).catch(() => null);
-      // Lookup endpoint expects system_ids; easier to use the show endpoint
-      // for the merged label which already returns orders with convert_label.
-      const showRes = await api.get(`/gangsheet-labels/${merged.id}`);
-      const orders = (showRes.data.orders || []).filter(o => orderIds.includes(o.id));
-      if (orders.length === 0) throw new Error('Backend returned 0 orders for merged label');
-
-      // 3) Build PDF
-      const built = await buildMergedLabelPdf({
-        orders,
-        scanUrl,
-        name: merged.name,
-        onProgress: (p) => setMergeProgress(p),
-      });
-
-      // 4) Upload to B2 (reuse gangsheet credentials endpoint)
-      const credsRes = await api.get('/gangsheets/storage-credentials');
-      const creds = credsRes.data;
-      const key = `${creds.folder}/labels/${built.filename}`;
-      const bytes = new Uint8Array(await built.blob.arrayBuffer());
-      await window.electronAPI.s3Upload({
-        credentials: creds,
-        bucket: creds.bucket,
-        key,
-        body: bytes,
-        contentType: 'application/pdf',
-      });
-      const publicUrl = `${creds.public_url_base}/${key}`;
-
-      // 5) Save file_url back to merged label
-      await api.put(`/gangsheet-labels/${merged.id}/file-url`, { file_url: publicUrl });
-
-      setMergeResult({
-        id: merged.id,
-        scanCode,
-        scanUrl,
-        fileUrl: publicUrl,
-        orderCount: orders.length,
-        pageCount: built.pageCount,
-        skipped: built.skipped,
-      });
+      await finishMerge(merged, scanCode, orderIds);
       setSelectedIds(new Set());
-      fetch();
     } catch (err) {
       const detail = err?.response?.data?.message || err?.message || 'Merge failed';
       const status = err?.response?.status ? ` [HTTP ${err.response.status}]` : '';
       console.error('[merge] error', err);
       alert(`Merge failed${status}:\n${detail}`);
+    } finally {
+      setMerging(false);
+      setMergeProgress(null);
+    }
+  };
+
+  /**
+   * Shared finish step: fetch member orders (with convert_label) for the master
+   * GSL, build the merged PDF, upload to B2, and save file_url back. Used by
+   * both the merge-selected-labels flow and the merge-from-system_ids flow.
+   */
+  const finishMerge = async (merged, scanCode, orderIds) => {
+    const scanUrl = `${scanBase}/gs/${scanCode}`;
+
+    const showRes = await api.get(`/gangsheet-labels/${merged.id}`);
+    const orders = (showRes.data.orders || []).filter(o => orderIds.includes(o.id));
+    if (orders.length === 0) throw new Error('Backend returned 0 orders for merged label');
+
+    const built = await buildMergedLabelPdf({
+      orders,
+      scanUrl,
+      name: merged.name,
+      onProgress: (p) => setMergeProgress(p),
+    });
+
+    const credsRes = await api.get('/gangsheets/storage-credentials');
+    const creds = credsRes.data;
+    const key = `${creds.folder}/labels/${built.filename}`;
+    const bytes = new Uint8Array(await built.blob.arrayBuffer());
+    await window.electronAPI.s3Upload({
+      credentials: creds,
+      bucket: creds.bucket,
+      key,
+      body: bytes,
+      contentType: 'application/pdf',
+    });
+    const publicUrl = `${creds.public_url_base}/${key}`;
+
+    await api.put(`/gangsheet-labels/${merged.id}/file-url`, { file_url: publicUrl });
+
+    setMergeResult({
+      id: merged.id,
+      scanCode,
+      scanUrl,
+      fileUrl: publicUrl,
+      orderCount: orders.length,
+      pageCount: built.pageCount,
+      skipped: built.skipped,
+    });
+    fetch();
+    return { publicUrl, orders };
+  };
+
+  /** Build a gangsheet label PDF straight from a pasted list of system_ids. */
+  const handleMergeFromSystemIds = async () => {
+    const ids = sidText.split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+    if (ids.length === 0) { alert('Nhập ít nhất 1 system_id.'); return; }
+    if (!window.electronAPI?.s3Upload) { alert('Cần mở từ desktop app để upload PDF lên B2.'); return; }
+    if (!confirm(`Tạo gangsheet label từ ${ids.length} system_id?`)) return;
+
+    setMerging(true);
+    setMergeProgress(null);
+    setMergeResult(null);
+    try {
+      const res = await api.post('/gangsheet-labels/merge-by-system-ids', { system_ids: ids });
+      const { merged_label: merged, scan_code: scanCode, order_ids: orderIds, missing } = res.data;
+      await finishMerge(merged, scanCode, orderIds);
+      setSidText('');
+      if (missing?.length) {
+        alert(`Không tìm thấy ${missing.length} system_id:\n${missing.slice(0, 15).join(', ')}${missing.length > 15 ? '…' : ''}`);
+      }
+    } catch (err) {
+      const detail = err?.response?.data?.message || err?.message || 'Failed';
+      const status = err?.response?.status ? ` [HTTP ${err.response.status}]` : '';
+      console.error('[merge-by-sid] error', err);
+      alert(`Lỗi tạo gangsheet label${status}:\n${detail}`);
     } finally {
       setMerging(false);
       setMergeProgress(null);
@@ -255,6 +287,33 @@ export default function GangsheetLabel() {
           </div>
         </div>
       )}
+
+      {/* Build from a pasted system_id list */}
+      <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700">Tạo gangsheet label từ list system_id</h3>
+        <p className="text-[11px] text-neutral-500 mt-0.5 mb-2">
+          Dán danh sách system_id (cách nhau bằng xuống dòng, dấu phẩy hoặc khoảng trắng) → gộp convert_label của các đơn đó thành 1 PDF + trang QR cuối.
+        </p>
+        <textarea
+          value={sidText}
+          onChange={e => setSidText(e.target.value)}
+          rows={3}
+          placeholder="GC123  PS_C110&#10;GC124, GC125 …"
+          className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono"
+        />
+        <div className="flex items-center justify-between mt-2">
+          <span className="text-[11px] text-neutral-500">
+            {sidText.split(/[\s,]+/).map(x => x.trim()).filter(Boolean).length} system_id
+          </span>
+          <button
+            onClick={handleMergeFromSystemIds}
+            disabled={merging || !sidText.trim()}
+            className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white text-sm rounded-lg"
+          >
+            {merging ? 'Building…' : '＋ Tạo gangsheet label'}
+          </button>
+        </div>
+      </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-end bg-white p-3 rounded-xl border border-neutral-200">
