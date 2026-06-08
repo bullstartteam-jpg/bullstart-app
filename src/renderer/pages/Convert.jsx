@@ -12,6 +12,7 @@ import {
   runQrBgNow,
 } from '../services/converter';
 import { useAuth } from '../contexts/AuthContext';
+import { notify } from '../components/Dialog';
 
 const LEVEL_COLOR = {
   info: 'text-neutral-500',
@@ -29,9 +30,27 @@ export default function Convert() {
   const { user } = useAuth();
   const [s, setS] = useState(null);
   const [bg, setBg] = useState(null);
+  const [sel, setSel] = useState(() => new Set());
 
   useEffect(() => subscribeQrConverter(setS), []);
   useEffect(() => subscribeQrBgJob(setBg), []);
+
+  const flagged = bg?.flagged || [];
+  const toggleSel = (id) => setSel(prev => {
+    const n = new Set(prev);
+    n.has(id) ? n.delete(id) : n.add(id);
+    return n;
+  });
+  const allSelected = flagged.length > 0 && flagged.every(f => sel.has(f.order_id));
+  const toggleAll = () => setSel(allSelected ? new Set() : new Set(flagged.map(f => f.order_id)));
+  const copyText = async (text, msg) => {
+    try { await navigator.clipboard.writeText(text); notify(msg, { title: 'Copy', kind: 'success' }); }
+    catch { notify('Copy thất bại', { title: 'Copy', kind: 'error' }); }
+  };
+  const copyList = (list) => {
+    const ids = list.map(f => f.system_id);
+    if (ids.length) copyText(ids.join('\n'), `Đã copy ${ids.length} system_id`);
+  };
 
   if (!user?.convert) {
     return (
@@ -180,26 +199,57 @@ export default function Convert() {
         </div>
 
         <div className="px-4 pb-4">
-          <h4 className="text-xs font-semibold text-neutral-600 mb-2">Đơn nền đen ({bg?.flagged?.length ?? 0})</h4>
-          {!bg?.flagged?.length ? (
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-xs font-semibold text-neutral-600">Đơn nền đen ({flagged.length})</h4>
+            {flagged.length > 0 && (
+              <div className="flex items-center gap-2">
+                <button onClick={() => copyList(flagged.filter(f => sel.has(f.order_id)))}
+                  disabled={sel.size === 0}
+                  className="px-2.5 py-1 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white text-xs rounded-lg">
+                  Copy đã chọn ({sel.size})
+                </button>
+                <button onClick={() => copyList(flagged)}
+                  className="px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg">
+                  Copy tất cả
+                </button>
+              </div>
+            )}
+          </div>
+          {!flagged.length ? (
             <p className="text-xs text-neutral-400">Chưa phát hiện đơn nào.</p>
           ) : (
-            <div className="max-h-[360px] overflow-y-auto border border-neutral-100 rounded-lg">
+            <div className="max-h-[460px] overflow-y-auto border border-neutral-100 rounded-lg">
               <table className="w-full text-xs">
                 <thead className="text-neutral-500 bg-[#faf8f6] sticky top-0">
                   <tr>
-                    <th className="text-left px-3 py-2">System ID</th>
+                    <th className="px-2 py-2 w-8 text-center">
+                      <input type="checkbox" checked={allSelected} onChange={toggleAll} className="accent-orange-500" />
+                    </th>
                     <th className="text-left px-3 py-2">Ảnh _qr</th>
+                    <th className="text-left px-3 py-2">System ID</th>
                     <th className="text-left px-3 py-2">Phát hiện</th>
                     <th className="px-3 py-2"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {bg.flagged.map(f => (
-                    <tr key={f.order_id} className="border-t border-neutral-50">
-                      <td className="px-3 py-2 font-mono text-red-600">{f.system_id}</td>
+                  {flagged.map(f => (
+                    <tr key={f.order_id}
+                      className={`border-t border-neutral-50 ${sel.has(f.order_id) ? 'bg-orange-50/60' : 'hover:bg-neutral-50'}`}>
+                      <td className="px-2 py-2 text-center">
+                        <input type="checkbox" checked={sel.has(f.order_id)} onChange={() => toggleSel(f.order_id)} className="accent-orange-500" />
+                      </td>
                       <td className="px-3 py-2">
-                        <a href={f.url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline truncate inline-block max-w-[220px] align-bottom">{f.url}</a>
+                        <a href={f.url} target="_blank" rel="noreferrer" title="Mở ảnh gốc">
+                          <img src={f.url} alt={f.system_id} loading="lazy"
+                            className="w-28 h-20 object-contain bg-neutral-900 rounded border border-neutral-200" />
+                        </a>
+                      </td>
+                      <td className="px-3 py-2">
+                        <button onClick={() => copyText(f.system_id, `Đã copy ${f.system_id}`)}
+                          title="Click để copy system_id"
+                          className="font-mono text-red-600 hover:text-red-700 hover:underline">
+                          {f.system_id} 📋
+                        </button>
                       </td>
                       <td className="px-3 py-2 text-neutral-500">{fmt(f.ts)}</td>
                       <td className="px-3 py-2 text-right">
