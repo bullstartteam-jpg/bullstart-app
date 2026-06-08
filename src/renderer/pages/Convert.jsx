@@ -6,6 +6,10 @@ import {
   pauseQrConverter,
   resumeQrConverter,
   runQrNow,
+  subscribeQrBgJob,
+  startQrBgJob,
+  stopQrBgJob,
+  runQrBgNow,
 } from '../services/converter';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -24,8 +28,10 @@ function fmt(ts) {
 export default function Convert() {
   const { user } = useAuth();
   const [s, setS] = useState(null);
+  const [bg, setBg] = useState(null);
 
   useEffect(() => subscribeQrConverter(setS), []);
+  useEffect(() => subscribeQrBgJob(setBg), []);
 
   if (!user?.convert) {
     return (
@@ -138,6 +144,73 @@ export default function Convert() {
               ))
             )}
           </div>
+        </div>
+      </div>
+
+      {/* QR background check */}
+      <div className="mt-8 bg-white rounded-xl border border-neutral-200 shadow-sm">
+        <div className="px-4 py-3 border-b border-neutral-100 flex justify-between items-center">
+          <div>
+            <h3 className="text-sm font-semibold text-neutral-700">QR background check</h3>
+            <p className="text-[11px] text-neutral-500 mt-0.5">
+              Quét đơn <b>chưa shipped</b>: dò ảnh <span className="font-mono">front_qr</span> có nền đen ở chỗ barcode (không quét được). Chạy mỗi 2 phút.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {bg && (
+              <span className={`px-2 py-1 rounded text-xs font-medium ${
+                !bg.enabled ? 'bg-neutral-100 text-neutral-500'
+                : bg.running ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600'}`}>
+                {!bg.enabled ? 'Off' : bg.running ? 'Scanning' : 'Idle'}
+              </span>
+            )}
+            {!bg?.enabled
+              ? <button onClick={startQrBgJob} className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white text-sm rounded-lg">Start</button>
+              : <button onClick={stopQrBgJob} className="px-3 py-1.5 bg-neutral-200 hover:bg-neutral-300 text-neutral-700 text-sm rounded-lg">Stop</button>}
+            <button onClick={runQrBgNow} disabled={!bg?.enabled || bg?.running}
+              className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">Run now</button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 p-4">
+          <Stat label="To scan" value={bg?.pendingCount ?? 0} hint="Orders queued this poll" tone="text-orange-600" />
+          <Stat label="Scanned" value={bg?.processedTotal ?? 0} hint="Since login" tone="text-green-600" />
+          <Stat label="Flagged (đen)" value={bg?.flagged?.length ?? 0} hint="Black background found" tone="text-red-500" />
+          <Stat label="Last poll" value={fmt(bg?.lastTickAt)} hint={bg?.nextTickAt ? `Next ~${fmt(bg.nextTickAt)}` : '—'} tone="text-neutral-700" />
+        </div>
+
+        <div className="px-4 pb-4">
+          <h4 className="text-xs font-semibold text-neutral-600 mb-2">Đơn nền đen ({bg?.flagged?.length ?? 0})</h4>
+          {!bg?.flagged?.length ? (
+            <p className="text-xs text-neutral-400">Chưa phát hiện đơn nào.</p>
+          ) : (
+            <div className="max-h-[360px] overflow-y-auto border border-neutral-100 rounded-lg">
+              <table className="w-full text-xs">
+                <thead className="text-neutral-500 bg-[#faf8f6] sticky top-0">
+                  <tr>
+                    <th className="text-left px-3 py-2">System ID</th>
+                    <th className="text-left px-3 py-2">Ảnh _qr</th>
+                    <th className="text-left px-3 py-2">Phát hiện</th>
+                    <th className="px-3 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bg.flagged.map(f => (
+                    <tr key={f.order_id} className="border-t border-neutral-50">
+                      <td className="px-3 py-2 font-mono text-red-600">{f.system_id}</td>
+                      <td className="px-3 py-2">
+                        <a href={f.url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline truncate inline-block max-w-[220px] align-bottom">{f.url}</a>
+                      </td>
+                      <td className="px-3 py-2 text-neutral-500">{fmt(f.ts)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <a href={`#/orders/${f.order_id}`} className="text-orange-600 hover:text-orange-700">Mở đơn</a>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -276,6 +276,101 @@ const autoCloseJob = createJob({
   },
 });
 
+// ---------------- QR background-check job ----------------
+// Scans not-yet-shipped orders' front_qr design images for a dark/black
+// background in the barcode area (where the Code 128 is stamped). A black
+// background there makes the barcode unscannable. Flagged orders are recorded
+// on the server (qr_bg_status='black') and surfaced in the job's flagged list.
+
+const qrBgJob = createJob({
+  name: 'qr-bg-check',
+  storageKey: 'converter_qr_bg_auto',
+  pollMs: 120_000,     // 2 minutes — scanning loads full images, keep it light
+  async runOnce({ state, pushLog, emit }) {
+    const res = await api.get('/conversion/qr-bg/pending');
+    const items = res.data?.items || [];
+    state.pending = items.map(i => ({ system_id: i.system_id, target_key: i.key, value: i.url }));
+    state.pendingCount = items.length;
+    if (!state.flagged) state.flagged = [];
+    emit();
+
+    for (const item of items) {
+      if (state.paused || !state.enabled) break;
+      try {
+        const img = await loadImage(item.url);
+        const { lightFraction, dark } = barcodeRegionDarkness(img);
+        const status = dark ? 'black' : 'ok';
+        await api.post('/conversion/qr-bg/result', { order_id: item.order_id, status });
+        state.processedTotal += 1;
+
+        if (dark) {
+          // Keep newest first, de-dupe by order, cap the list.
+          state.flagged = [
+            { order_id: item.order_id, system_id: item.system_id, url: item.url, ts: Date.now() },
+            ...state.flagged.filter(f => f.order_id !== item.order_id),
+          ].slice(0, 300);
+          pushLog('error', item.system_id, item.key, `Black background at barcode (light ${(lightFraction * 100).toFixed(0)}%)`);
+        } else {
+          pushLog('ok', item.system_id, item.key, `OK (light ${(lightFraction * 100).toFixed(0)}%)`);
+        }
+        state.pending = state.pending.filter(p => p.system_id !== item.system_id);
+        state.pendingCount = state.pending.length;
+        emit();
+      } catch (err) {
+        state.errorTotal += 1;
+        pushLog('error', item.system_id, item.key, err?.message || String(err));
+        emit();
+      }
+    }
+  },
+});
+
+/**
+ * Measure how "light" the barcode panel area is on a composed front_qr image.
+ * The barcode is stamped at a fixed bottom-left panel (see composeImage):
+ * x≈190, 350×130 box, 60px above the bottom, after a 38px text gap. We sample
+ * that box and return the fraction of light pixels. A readable barcode (dark
+ * bars on a light background) has plenty of light pixels; a black design
+ * background shows almost none → flag it.
+ */
+function barcodeRegionDarkness(img) {
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  // Layout coords are absolute on the 2100px-tall target canvas; scale by the
+  // actual height in case the stored image was resized proportionally.
+  const scale = h / 2100;
+  const MARGIN_X = 190, MARGIN_Y = 60, PANEL_PAD = 10, TEXT_BAND = 28;
+  const BARCODE_W = 350, BARCODE_H = 130;
+  let rx = (MARGIN_X + PANEL_PAD) * scale;
+  let ry = (2100 - MARGIN_Y - PANEL_PAD - BARCODE_H) * scale + TEXT_BAND * scale;
+  let rw = BARCODE_W * scale;
+  let rh = BARCODE_H * scale;
+  // Clamp to image bounds.
+  rx = Math.max(0, Math.floor(rx)); ry = Math.max(0, Math.floor(ry));
+  rw = Math.min(Math.floor(rw), w - rx); rh = Math.min(Math.floor(rh), h - ry);
+  if (rw <= 2 || rh <= 2) return { lightFraction: 1, dark: false };
+
+  const c = document.createElement('canvas');
+  c.width = rw; c.height = rh;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, rx, ry, rw, rh, 0, 0, rw, rh);
+  const { data } = ctx.getImageData(0, 0, rw, rh);
+
+  let light = 0, total = 0;
+  // Sample every 2px in each axis to keep it cheap.
+  for (let y = 0; y < rh; y += 2) {
+    for (let x = 0; x < rw; x += 2) {
+      const i = (y * rw + x) * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum > 150) light++;
+      total++;
+    }
+  }
+  const lightFraction = total ? light / total : 1;
+  // < ~10% light → the barcode region is essentially black → unreadable.
+  return { lightFraction, dark: lightFraction < 0.10 };
+}
+
 // ---------------- Public API ----------------
 
 // QR job (seller _qr conversion).
@@ -309,6 +404,15 @@ export const stopAutoCloseJob = autoCloseJob.stop;
 export const runAutoCloseNow = autoCloseJob.runNow;
 export const isAutoCloseAutoEnabled = autoCloseJob.isAutoEnabled;
 
+// QR background-check job.
+export const subscribeQrBgJob = qrBgJob.subscribe;
+export const startQrBgJob = qrBgJob.start;
+export const stopQrBgJob = qrBgJob.stop;
+export const pauseQrBgJob = qrBgJob.pause;
+export const resumeQrBgJob = qrBgJob.resume;
+export const runQrBgNow = qrBgJob.runNow;
+export const isQrBgAutoEnabled = qrBgJob.isAutoEnabled;
+
 /**
  * Restore each job's previously-persisted auto flag. Called by AuthContext
  * after login so users see whichever jobs they had on resume automatically.
@@ -318,6 +422,7 @@ export function autoStartConverters() {
   if (labelJob.isAutoEnabled()) labelJob.start();
   if (assignJob.isAutoEnabled()) assignJob.start();
   if (autoCloseJob.isAutoEnabled()) autoCloseJob.start();
+  if (qrBgJob.isAutoEnabled()) qrBgJob.start();
 }
 
 /** Stop both jobs (called on logout). Preserves the persisted auto flags so
@@ -327,6 +432,7 @@ export function stopAllConverters() {
   labelJob.softStop();
   assignJob.softStop();
   autoCloseJob.softStop();
+  qrBgJob.softStop();
 }
 
 // ---------------- Resize-reconvert (replace existing _qr in place) ----------------
