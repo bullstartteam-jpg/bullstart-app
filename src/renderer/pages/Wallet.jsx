@@ -28,12 +28,12 @@ export default function Wallet() {
   // Admin can pick a specific user; sellers only see their own (server enforces).
   const [filters, setFilters] = useState({ user_id: '', date_from: '', date_to: '' });
 
-  // VNPay deposit — admin uses this to credit their OWN wallet via VNPay.
-  // The backend forces user_id to the authenticated user, so this is not a
-  // way to deposit for a different account (use Manual Deposit for that).
+  // VNPay deposit. Admin can pick a target user to top up on their behalf
+  // (vnpayUserId); sellers always credit their own wallet (server enforces).
   const [showVnpay, setShowVnpay] = useState(false);
   const [vnpayRate, setVnpayRate] = useState(null);  // { vnd_to_usd_rate, min_vnd }
   const [vnpayVnd, setVnpayVnd] = useState('');
+  const [vnpayUserId, setVnpayUserId] = useState('');
   const [vnpayBusy, setVnpayBusy] = useState(false);
 
   useEffect(() => {
@@ -55,7 +55,9 @@ export default function Wallet() {
     }
     setVnpayBusy(true);
     try {
-      const res = await api.post('/wallet/vnpay/create', { vnd_amount: vnd });
+      const payload = { vnd_amount: vnd };
+      if (hasRole('admin') && vnpayUserId) payload.user_id = vnpayUserId;
+      const res = await api.post('/wallet/vnpay/create', payload);
       const { payment_url } = res.data;
       if (window.electronAPI?.openExternal) {
         await window.electronAPI.openExternal(payment_url);
@@ -64,6 +66,7 @@ export default function Wallet() {
       }
       setShowVnpay(false);
       setVnpayVnd('');
+      setVnpayUserId('');
       await notify('Đã mở trang thanh toán VNPay. Sau khi pay xong, ví sẽ tự cộng USD theo tỷ giá hiện tại.', {
         title: 'VNPay', kind: 'success',
       });
@@ -316,8 +319,8 @@ export default function Wallet() {
             <div>
               <h3 className="text-base font-semibold text-blue-700">Deposit qua VNPay</h3>
               <p className="text-xs text-neutral-500 mt-1">
-                Chuyển khoản VNPay (ATM / QR / Visa) → wallet của <strong>chính bạn</strong> tự cộng USD theo tỷ giá hiện tại.
-                Nạp hộ user khác → dùng <strong>Manual Deposit</strong>.
+                Chuyển khoản VNPay (ATM / QR / Visa) → wallet tự cộng USD theo tỷ giá hiện tại.
+                {hasRole('admin') && ' Admin có thể chọn user để nạp hộ khách.'}
               </p>
             </div>
             <button onClick={() => setShowVnpay(false)} className="text-xs text-neutral-400 hover:text-neutral-700">✕</button>
@@ -336,6 +339,21 @@ export default function Wallet() {
                   <div className="font-semibold text-neutral-800">{vnpayRate.min_vnd.toLocaleString()} ₫</div>
                 </div>
               </div>
+              {hasRole('admin') && (
+                <div>
+                  <label className="text-xs text-neutral-500">Nạp cho user</label>
+                  <select
+                    value={vnpayUserId}
+                    onChange={e => setVnpayUserId(e.target.value)}
+                    className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
+                  >
+                    <option value="">— Chính tôi —</option>
+                    {users.map(u => (
+                      <option key={u.id} value={u.id}>{u.name} ({u.email})</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <label className="text-xs text-neutral-500">Số tiền VND</label>
                 <input
