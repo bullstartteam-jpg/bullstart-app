@@ -294,6 +294,7 @@ const qrBgJob = createJob({
     if (!state.flagged) state.flagged = [];
     emit();
 
+    const tickBlack = [];   // system_ids found black this tick → one Telegram digest
     for (const item of items) {
       if (state.paused || !state.enabled) break;
       try {
@@ -304,6 +305,7 @@ const qrBgJob = createJob({
         state.processedTotal += 1;
 
         if (dark) {
+          tickBlack.push(item.system_id);
           // Keep newest first, de-dupe by order, cap the list.
           state.flagged = [
             { order_id: item.order_id, system_id: item.system_id, url: item.url, ts: Date.now() },
@@ -321,6 +323,18 @@ const qrBgJob = createJob({
         pushLog('error', item.system_id, item.key, err?.message || String(err));
         emit();
       }
+    }
+
+    // One Telegram digest per tick listing the newly black-flagged system_ids.
+    // checked_at gating means each order is reported once. Best-effort.
+    if (tickBlack.length) {
+      try {
+        const r = await api.post('/conversion/qr-bg/notify', { system_ids: tickBlack });
+        pushLog('info', null, 'notify', `Sent ${r.data?.sent ?? tickBlack.length} system_id(s) to Telegram`);
+      } catch (err) {
+        pushLog('error', null, 'notify', `Telegram notify failed: ${err?.message || String(err)}`);
+      }
+      emit();
     }
   },
 });
