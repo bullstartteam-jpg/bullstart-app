@@ -4,6 +4,7 @@ import logo from '../assets/logo.png';
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: '◉', module: 'dashboard' },
+  { path: '/reports', label: 'Reports', icon: '▥', module: 'dashboard' },
   { path: '/orders', label: 'Orders', icon: '◈', module: 'orders' },
   { path: '/products', label: 'Products', icon: '◇', module: 'products' },
   { path: '/inventory', label: 'Inventory', icon: '▤', module: 'inventory' },

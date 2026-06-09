@@ -3,6 +3,7 @@ import { useAuth } from './contexts/AuthContext';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Reports from './pages/Reports';
 import Orders from './pages/Orders';
 import OrderDetail from './pages/OrderDetail';
 import OrderCreate from './pages/OrderCreate';
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route index element={<Dashboard />} />
+          <Route path="reports" element={<Reports />} />
           <Route path="orders" element={<Orders />} />
           <Route path="orders/create" element={<OrderCreate />} />
           <Route path="orders/:id" element={<OrderDetail />} />
