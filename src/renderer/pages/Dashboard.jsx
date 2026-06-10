@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { hasOrderFailure, countOrderFailures, URL_FAILURES_EVENT } from '../services/urlFailureCache';
 
 const STATUS_COLORS = {
   new_order: 'bg-blue-100 text-blue-600',
@@ -24,10 +25,20 @@ export default function Dashboard() {
   const { hasRole } = useAuth();
   const isSeller = hasRole('seller');
 
+  // Re-render when the background image-URL check writes new failures so the
+  // recent-orders rows flag issues without a manual reload (same as Orders).
+  const [, setUrlFailTick] = useState(0);
+
   useEffect(() => {
     api.get('/dashboard').then(res => {
       setStats(res.data);
     }).finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    const onUpdate = () => setUrlFailTick(t => t + 1);
+    window.addEventListener(URL_FAILURES_EVENT, onUpdate);
+    return () => window.removeEventListener(URL_FAILURES_EVENT, onUpdate);
   }, []);
 
   const copyWarehouse = async () => {
@@ -100,7 +111,12 @@ export default function Dashboard() {
           <div className="space-y-2">
             {stats.recent_orders?.map(order => (
               <div key={order.id} className="flex justify-between items-center text-sm">
-                <span className="text-orange-500 font-mono">{order.ref_id}</span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-orange-500 font-mono">{order.ref_id}</span>
+                  {hasOrderFailure(order.id) && (
+                    <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[10px] leading-none" title={`${countOrderFailures(order.id)} image URL(s) failed validation`}>!</span>
+                  )}
+                </span>
                 <span className="text-neutral-500">${order.total_cost}</span>
               </div>
             ))}

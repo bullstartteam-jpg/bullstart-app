@@ -20,6 +20,7 @@ import GangsheetLabel from './pages/GangsheetLabel';
 import AutoPay from './pages/AutoPay';
 import Profile from './pages/Profile';
 import { DialogHost } from './components/Dialog';
+import { ToastHost } from './components/Toast';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -54,6 +55,7 @@ export default function App() {
         </Route>
       </Routes>
       <DialogHost />
+      <ToastHost />
     </>
   );
 }
