@@ -11,13 +11,19 @@ permissions:
 jobs:
   release:
     strategy:
+      # Don't let a mac failure cancel the Windows build.
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
             target: --win
+            optional: false
           - os: macos-latest
             target: --mac
+            optional: true   # no Apple signing configured → tolerate failure
     runs-on: ${{ matrix.os }}
+    # The mac job is best-effort: its failure won't mark the run as failed.
+    continue-on-error: ${{ matrix.optional }}
 
     steps:
       - name: Checkout
