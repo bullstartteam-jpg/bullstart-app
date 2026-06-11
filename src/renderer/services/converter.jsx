@@ -403,7 +403,10 @@ function barcodeRegionDarkness(img) {
     for (let x = 0; x < rw; x += 2) {
       const i = (y * rw + x) * 4;
       const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      if (lum > 150) light++;
+      // Transparent pixels are the print substrate (white/film), not a black
+      // background — count them as light so plain transparent/white designs
+      // aren't falsely flagged as "black barcode".
+      if (data[i + 3] < 128 || lum > 150) light++;
       total++;
     }
   }
@@ -897,17 +900,16 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
   // Code 128 barcode (system_id) + text, stamped at a FIXED bottom-left panel —
   // no design detection. Size & position match the original convert layout.
-  const barcodeCanvas = generateBarcodeCanvas(systemId);
-
   const MARGIN_X = 190;
   const MARGIN_Y = 60;
   const PANEL_PAD = 10;
-  const TEXT_H = 22;
+  const TEXT_FONT = 32;          // system_id text size (was 18 — enlarged per request)
+  const TEXT_H = TEXT_FONT + 8;  // band height reserved for the text row
   const TEXT_TO_BAR = 6;
   const BARCODE_W = 350;
   const BARCODE_H = 130;
 
-  ctx.font = 'bold 18px sans-serif';
+  ctx.font = `bold ${TEXT_FONT}px sans-serif`;
   const textW = Math.ceil(ctx.measureText(codeText).width);
   const innerW = Math.max(BARCODE_W, textW);
   const panelW = innerW + PANEL_PAD * 2;
@@ -915,7 +917,16 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   const panelX = MARGIN_X;
   const panelY = canvas.height - MARGIN_Y - panelH;
 
-  ctx.fillStyle = '#000000';
+  // A black/dark design under this panel makes a black barcode + black text
+  // invisible (and the Code 128 unscannable). Sample the panel region of the
+  // already-drawn design and, when it's dark, invert the overlay to white so
+  // it stays readable on the dark background.
+  const onDark = regionIsDark(ctx, panelX, panelY, panelW, panelH);
+  const fgColor = onDark ? '#ffffff' : '#000000';
+  const barColor = onDark ? 'ffffff' : '000000';
+  const barcodeCanvas = generateBarcodeCanvas(systemId, 3, barColor);
+
+  ctx.fillStyle = fgColor;
   ctx.textBaseline = 'top';
   // Center the system_id text over the barcode below.
   ctx.textAlign = 'center';
@@ -936,8 +947,11 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
 
 // Code 128 barcode of `value` rendered to its own canvas via bwip-js. `scale`
 // is px-per-module; a quiet zone (paddingwidth) keeps the start/stop codes
-// readable after lossy compression / thermal-printer drift.
-function generateBarcodeCanvas(value, scale = 3) {
+// readable after lossy compression / thermal-printer drift. `barColor` is a
+// 6-digit hex (no #) — pass 'ffffff' to invert the bars white for stamping on
+// a dark design (the gaps stay transparent so the dark background shows through
+// and provides the contrast).
+function generateBarcodeCanvas(value, scale = 3, barColor = '000000') {
   const c = document.createElement('canvas');
   bwipjs.toCanvas(c, {
     bcid: 'code128',
@@ -947,8 +961,48 @@ function generateBarcodeCanvas(value, scale = 3) {
     includetext: false,
     paddingwidth: 10,
     paddingheight: 4,
+    barcolor: barColor,
   });
   return c;
+}
+
+/**
+ * Sample a rectangular region of an already-drawn canvas and report whether it
+ * is a genuinely BLACK background — the only case where the barcode/text must
+ * be inverted to white. Used by composeImage before stamping the overlay.
+ *
+ * Two things make a pixel count as "black background" and BOTH are required:
+ *   - opaque (alpha ≥ 128). Designs are composited on a TRANSPARENT canvas, so
+ *     un-painted areas are (0,0,0,0) — visually the white/film print substrate,
+ *     NOT a dark background. Counting those as dark was the bug that turned the
+ *     barcode white on plain white/transparent designs.
+ *   - dark (luminance < 80).
+ * We only invert when such black pixels dominate the panel (> 50%), so a black
+ * barcode stays black unless the area behind it is actually filled black.
+ */
+function regionIsDark(ctx, x, y, w, h) {
+  x = Math.max(0, Math.floor(x));
+  y = Math.max(0, Math.floor(y));
+  w = Math.floor(w);
+  h = Math.floor(h);
+  if (w <= 2 || h <= 2) return false;
+  let data;
+  try {
+    ({ data } = ctx.getImageData(x, y, w, h));
+  } catch {
+    return false; // tainted canvas or out-of-bounds — fall back to black overlay
+  }
+  let darkOpaque = 0, total = 0;
+  for (let py = 0; py < h; py += 2) {
+    for (let px = 0; px < w; px += 2) {
+      const i = (py * w + px) * 4;
+      total++;
+      if (data[i + 3] < 128) continue;            // transparent → print substrate, not black
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum < 80) darkOpaque++;                 // opaque AND dark → real black bg
+    }
+  }
+  return total ? (darkOpaque / total) > 0.5 : false;
 }
 
 function canvasToBlob(canvas, type = 'image/png', quality) {

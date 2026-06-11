@@ -19,6 +19,8 @@ import ConvertLabel from './pages/ConvertLabel';
 import Gangsheet from './pages/Gangsheet';
 import GangsheetLabel from './pages/GangsheetLabel';
 import AutoPay from './pages/AutoPay';
+import Reprint from './pages/Reprint';
+import Reasons from './pages/Reasons';
 import Profile from './pages/Profile';
 import { DialogHost } from './components/Dialog';
 
@@ -50,6 +52,8 @@ export default function App() {
           <Route path="convert" element={<Convert />} />
           <Route path="convert-label" element={<ConvertLabel />} />
           <Route path="auto-pay" element={<AutoPay />} />
+          <Route path="reprint" element={<Reprint />} />
+          <Route path="reasons" element={<Reasons />} />
           <Route path="gangsheet" element={<Gangsheet />} />
           <Route path="gangsheet-label" element={<GangsheetLabel />} />
           <Route path="profile" element={<Profile />} />

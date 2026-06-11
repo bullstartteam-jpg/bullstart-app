@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -72,6 +72,9 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Orders older than 1 day still not shipped (SLA warning) */}
+      <StaleOrders data={stats.stale_unshipped} />
+
       {/* Stats cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard label="Total Orders" value={stats.total_orders} />
@@ -86,6 +89,9 @@ export default function Dashboard() {
         {stats.total_users !== undefined && <StatCard label="Total Users" value={stats.total_users} />}
         {stats.total_wallet_balance !== undefined && <StatCard label="Wallet Balance" value={`$${stats.total_wallet_balance}`} />}
       </div>
+
+      {/* End-of-month projection (actual shipped + projection for the remaining days) */}
+      <MonthProjection />
 
       {/* Completed (shipped) orders per day — by completed_time, last 30 days */}
       <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm mb-6">
@@ -146,6 +152,193 @@ export default function Dashboard() {
             ))}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function StaleOrders({ data }) {
+  if (!data) return null;
+  const items = data.items || [];
+  const count = data.count || 0;
+
+  const age = iso => {
+    if (!iso) return '';
+    const h = Math.floor((Date.now() - new Date(iso).getTime()) / 3600000);
+    const d = Math.floor(h / 24);
+    return d > 0 ? `${d} ngày ${h % 24}h` : `${h}h`;
+  };
+  // Order date+time in Vietnam local time (created_at is stored UTC).
+  const fmtDate = iso => iso
+    ? new Date(iso).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+    : '';
+
+  if (count === 0) {
+    return (
+      <div className="mb-6 bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-sm text-emerald-700">
+        ✅ Không có đơn nào quá 1 ngày chưa shipped.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-6 bg-red-50 border border-red-200 rounded-xl p-4 shadow-sm">
+      <div className="flex justify-between items-center mb-3">
+        <h3 className="text-sm font-semibold text-red-700">⚠️ Đơn quá 1 ngày chưa shipped</h3>
+        <span className="text-xs font-semibold text-red-600">{count} đơn{count > items.length ? ` (hiện ${items.length})` : ''}</span>
+      </div>
+      <div className="max-h-72 overflow-y-auto">
+        <table className="w-full text-sm">
+          <tbody>
+            {items.map(o => (
+              <tr key={o.id} className="border-b border-red-100/70">
+                <td className="py-1.5 pr-2 font-mono text-orange-600">{o.system_id}</td>
+                <td className="py-1.5 pr-2">
+                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[o.status] || 'bg-neutral-100 text-neutral-600'}`}>{o.status}</span>
+                </td>
+                <td className="py-1.5 pr-2 text-neutral-500 whitespace-nowrap font-mono text-xs">{fmtDate(o.created_at)}</td>
+                <td className="py-1.5 pr-2 text-right text-red-600 font-semibold whitespace-nowrap">{age(o.created_at)}</td>
+                {o.user && <td className="py-1.5 pl-3 text-neutral-500 text-right whitespace-nowrap">{o.user}</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MonthProjection() {
+  // Profit per order is a "what-if" rate the operator can tweak; default $1.8.
+  const [rate, setRate] = useState(() => localStorage.getItem('dash_profit_per_order') || '1.8');
+  useEffect(() => {
+    const n = parseFloat(rate);
+    if (Number.isFinite(n) && n > 0) localStorage.setItem('dash_profit_per_order', rate);
+  }, [rate]);
+
+  // Daily growth rate (%/day) applied LINEARLY to the remaining days. Empty =
+  // use the trend auto-detected from this month's data. Persisted when set.
+  const [growthOverride, setGrowthOverride] = useState(() => localStorage.getItem('dash_growth_override') ?? '');
+  useEffect(() => {
+    if (growthOverride === '') localStorage.removeItem('dash_growth_override');
+    else localStorage.setItem('dash_growth_override', growthOverride);
+  }, [growthOverride]);
+
+  const pad = n => String(n).padStart(2, '0');
+  const now = new Date();
+  const curMonth = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
+
+  // Selectable months: current + previous 5.
+  const months = useMemo(() => {
+    const out = [];
+    const d = new Date(now.getFullYear(), now.getMonth(), 1);
+    for (let i = 0; i < 6; i++) {
+      out.push({ value: `${d.getFullYear()}-${pad(d.getMonth() + 1)}`, label: `${pad(d.getMonth() + 1)}/${d.getFullYear()}` });
+      d.setMonth(d.getMonth() - 1);
+    }
+    return out;
+  }, []);
+  const [month, setMonth] = useState(curMonth);
+  const [rows, setRows] = useState(null);
+
+  // Pull the actual shipped-per-day for the selected month (same source as the
+  // shipped chart). Past months are already complete → we just total them.
+  useEffect(() => {
+    const [y, m] = month.split('-').map(Number);
+    const lastDay = new Date(y, m, 0).getDate();
+    setRows(null);
+    api.get('/dashboard/shipped-report', {
+      params: { date_field: 'completed_time', date_from: `${month}-01`, date_to: `${month}-${pad(lastDay)}` },
+    }).then(r => setRows(r.data?.rows || [])).catch(() => setRows([]));
+  }, [month]);
+
+  const [y, m] = month.split('-').map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const isCurrent = month === curMonth;
+  const daysElapsed = isCurrent ? now.getDate() : daysInMonth;
+
+  const shipped = rows ? rows.reduce((n, r) => n + r.count, 0) : 0;
+  const avgPerDay = daysElapsed > 0 ? shipped / daysElapsed : 0;
+  const remainingDays = Math.max(0, daysInMonth - daysElapsed);
+
+  // Least-squares slope (orders/day) over this month's shipped days — the data
+  // trend. Used to auto-suggest a growth rate.
+  const slope = useMemo(() => {
+    if (!rows || rows.length < 2) return 0;
+    const ys = rows.map(r => r.count);
+    const n = ys.length;
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (let i = 0; i < n; i++) { sx += i; sy += ys[i]; sxx += i * i; sxy += i * ys[i]; }
+    const d = n * sxx - sx * sx;
+    return d ? (n * sxy - sx * sy) / d : 0;
+  }, [rows]);
+
+  // Auto growth %/day from the trend, clamped so a steep short run can't blow
+  // up the projection. Empty input → use this; otherwise use the typed value.
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const autoGrowthPct = avgPerDay > 0 ? clamp((slope / avgPerDay) * 100, -15, 15) : 0;
+  const growthPct = growthOverride === '' ? autoGrowthPct : (parseFloat(growthOverride) || 0);
+  const g = growthPct / 100;
+
+  // Total the actual shipped, and project the remaining days as a LINEAR ramp
+  // off the current daily average: day k ahead ≈ avg × (1 + g·k). A finished
+  // (past) month is its actual total — no projection.
+  const projRemaining = avgPerDay * (remainingDays + g * remainingDays * (remainingDays + 1) / 2);
+  const projectedShipped = isCurrent ? shipped + Math.round(Math.max(0, projRemaining)) : shipped;
+
+  const rateNum = parseFloat(rate) || 0;
+  const money = n => `$${Math.round(n).toLocaleString()}`;
+
+  return (
+    <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm mb-6">
+      <div className="flex justify-between items-center mb-3 gap-3 flex-wrap">
+        <h3 className="text-sm font-semibold text-neutral-600">
+          {isCurrent ? 'Doanh thu / dự báo cuối tháng' : 'Tổng shipped tháng'}
+        </h3>
+        <div className="flex items-center gap-3">
+          <select value={month} onChange={e => setMonth(e.target.value)}
+            className="px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+            {months.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          {isCurrent && (
+            <label className="flex items-center gap-2 text-xs text-neutral-500" title="Áp dụng tuyến tính cho các ngày còn lại. Để trống = tự động theo xu hướng.">
+              Tăng trưởng %/ngày
+              <input type="number" step="0.5" value={growthOverride}
+                onChange={e => setGrowthOverride(e.target.value)}
+                placeholder={autoGrowthPct.toFixed(1)}
+                className="w-20 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm text-right font-mono" />
+            </label>
+          )}
+          <label className="flex items-center gap-2 text-xs text-neutral-500">
+            Lãi / đơn ($)
+            <input type="number" step="0.1" min="0" value={rate} onChange={e => setRate(e.target.value)}
+              className="w-20 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm text-right font-mono" />
+          </label>
+        </div>
+      </div>
+
+      {rows === null ? (
+        <div className="h-20 flex items-center text-neutral-400 text-sm">Loading…</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard label="Đã shipped" value={shipped.toLocaleString()} />
+            <StatCard label="Lãi thực tế" value={money(shipped * rateNum)} color="text-green-600" />
+            {isCurrent && <StatCard label="TB shipped / ngày" value={avgPerDay.toFixed(1)} />}
+            {isCurrent && <StatCard label="Lãi dự kiến cả tháng" value={money(projectedShipped * rateNum)} color="text-green-600" />}
+          </div>
+          <p className="text-xs text-neutral-400 mt-3">
+            {isCurrent
+              ? <>
+                  {shipped.toLocaleString()} shipped trong {daysElapsed}/{daysInMonth} ngày · TB {avgPerDay.toFixed(1)}/ngày
+                  {' · '}tăng trưởng {growthPct >= 0 ? '+' : ''}{growthPct.toFixed(1)}%/ngày
+                  {growthOverride === '' ? ' (tự động)' : ''}
+                  {' '}(xu hướng dữ liệu {slope >= 0 ? '+' : ''}{slope.toFixed(0)} đơn/ngày)
+                  {' → '}dự kiến {projectedShipped.toLocaleString()} đơn × ${rate || 0} = {money(projectedShipped * rateNum)}
+                </>
+              : <>Tháng đã đủ số shipped — {shipped.toLocaleString()} đơn × ${rate || 0} = {money(shipped * rateNum)} (không cần dự đoán)</>}
+          </p>
+        </>
       )}
     </div>
   );

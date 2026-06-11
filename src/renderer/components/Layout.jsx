@@ -15,6 +15,8 @@ const navItems = [
   { path: '/convert', label: 'Convert', icon: '⟲', requiresConvert: true },
   { path: '/convert-label', label: 'Convert Label', icon: '🏷', requiresStaff: true, requiresConvert: true },
   { path: '/auto-pay', label: 'Auto-pay', icon: '🤖', requiresStaff: true },
+  { path: '/reprint', label: 'Reprint', icon: '🔁', requiresStaff: true },
+  { path: '/reasons', label: 'Reasons', icon: '🏷', requiresStaff: true },
   { path: '/gangsheet', label: 'Gangsheet', icon: '▦', requiresStaff: true },
   { path: '/gangsheet-label', label: 'Gangsheet Label', icon: '📦', requiresStaff: true },
 ];

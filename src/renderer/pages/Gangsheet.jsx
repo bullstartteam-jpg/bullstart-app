@@ -215,6 +215,23 @@ function ComposeTab() {
   const [subTab, setSubTab] = useState('all');
   // fulfill_status multi-filter (empty Set = all non-shipped).
   const [statuses, setStatuses] = useState(new Set());
+  // Partner phân chia: gang tạo trong lần này sẽ tự gán cho các partner đã chọn
+  // (PUT /gangsheets/{id}/partners) nên partner thấy đơn trong partner-bullstart.
+  // Rỗng = không phân chia.
+  const [partnerUsers, setPartnerUsers] = useState([]);
+  const [selectedPartners, setSelectedPartners] = useState(new Set());
+
+  useEffect(() => {
+    api.get('/gangsheets/partner-users')
+      .then(res => setPartnerUsers(res.data || []))
+      .catch(() => {});
+  }, []);
+
+  const togglePartner = (id) => setSelectedPartners(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   const fetchPending = async () => {
     setLoading(true);
@@ -375,7 +392,17 @@ function ComposeTab() {
           order_ids: built.orderIds,
           meta_ids: built.metaIds,
         });
-        out.push(res.data.gangsheet);
+        const created = res.data.gangsheet;
+        // 3) Phân chia: gán gang vừa tạo cho các partner đã chọn (nếu có).
+        if (selectedPartners.size > 0 && created?.id) {
+          try {
+            await api.put(`/gangsheets/${created.id}/partners`, { user_ids: [...selectedPartners] });
+            created.partners = partnerUsers.filter(u => selectedPartners.has(u.id));
+          } catch (e) {
+            console.error('[gangsheet] partner assign failed', e);
+          }
+        }
+        out.push(created);
       }
       setResults(out);
       setSelectedIds(new Set());
@@ -438,6 +465,20 @@ function ComposeTab() {
             <button onClick={() => setStatuses(new Set())} className="text-xs text-neutral-400 hover:text-neutral-600 ml-1">× bỏ lọc</button>
           )}
         </div>
+
+        {/* Phân chia cho partner: gang tạo ra trong lần Generate này sẽ tự gán
+            cho các partner chọn ở đây (họ thấy đơn trong app partner-bullstart). */}
+        {partnerUsers.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-xs text-neutral-500 mr-1">Phân chia cho partner:</span>
+            {partnerUsers.map(u => (
+              <SubChip key={u.id} active={selectedPartners.has(u.id)} onClick={() => togglePartner(u.id)}>{u.name}</SubChip>
+            ))}
+            {selectedPartners.size > 0 && (
+              <button onClick={() => setSelectedPartners(new Set())} className="text-xs text-neutral-400 hover:text-neutral-600 ml-1">× bỏ chọn</button>
+            )}
+          </div>
+        )}
 
         {/* Sub-tabs: All + một chip cho mỗi bucket gang thật
             (mặt × Scratch × chất liệu), auto theo pending orders. */}
@@ -1411,9 +1452,10 @@ function ManageTab({ isAdmin }) {
             className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
         </div>
         <div>
-          <label className="text-xs text-neutral-500 block">Line ID</label>
-          <input type="text" value={filters.line_id} onChange={e => setFilters(f => ({ ...f, line_id: e.target.value }))} placeholder="e.g. GC"
-            className="mt-1 w-32 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono" />
+          <label className="text-xs text-neutral-500 block">Line ID / System ID <span className="text-neutral-400">(nhiều, cách nhau dấu phẩy / xuống dòng)</span></label>
+          <textarea value={filters.line_id} onChange={e => setFilters(f => ({ ...f, line_id: e.target.value }))} rows={1}
+            placeholder="e.g. GC, PS_C3071, PS_C3405"
+            className="mt-1 w-64 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono resize-y align-bottom" />
         </div>
         <button type="submit" className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Apply</button>
         <button type="button" onClick={clearFilters} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Clear</button>
