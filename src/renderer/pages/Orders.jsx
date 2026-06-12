@@ -7,6 +7,18 @@ import { buildInvoicePdf } from '../services/invoicePdf';
 import { PreviewModal } from '../components/Preview';
 import { driveThumb, isPreviewable } from '../utils/drive';
 
+// Delivery-tracking status → badge colors (matches web-bullstart).
+const TRACKING_COLOR = {
+  delivered: 'bg-emerald-100 text-emerald-700',
+  in_transit: 'bg-blue-100 text-blue-700',
+  out_for_delivery: 'bg-cyan-100 text-cyan-700',
+  accepted: 'bg-neutral-100 text-neutral-600',
+  pre_shipment: 'bg-neutral-100 text-neutral-500',
+  delivery_attempted: 'bg-orange-100 text-orange-700',
+  exception: 'bg-red-100 text-red-700',
+  unknown: 'bg-neutral-100 text-neutral-500',
+};
+
 // Group an order's thumbnails by item so each row shows variant + its
 // designs/mockups together. Data is already eager-loaded by the orders index
 // (items.productVariant.product + items.metas) — no extra hub queries.
@@ -1079,10 +1091,17 @@ export default function Orders() {
                       [a.city, a.state, a.zipcode].filter(Boolean).join(' '),
                       a.country,
                     ].filter(Boolean).join(' · ') : '';
-                    const has = order.tracking_id || order.shipping_label || addrLine;
+                    const t = order.tracking;
+                    const has = order.tracking_id || order.shipping_label || addrLine || t;
                     if (!has) return <span className="text-neutral-300">—</span>;
                     return (
                       <div className="space-y-0.5 max-w-[240px]">
+                        {t?.status && (
+                          <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${TRACKING_COLOR[t.status] || 'bg-neutral-100 text-neutral-500'}`}
+                            title={t.status_description || t.status}>
+                            {t.status.replace(/_/g, ' ')}
+                          </span>
+                        )}
                         {order.tracking_id && (
                           <div className="font-mono text-neutral-700 truncate" title={order.tracking_id}>{order.tracking_id}</div>
                         )}
