@@ -1280,21 +1280,9 @@ function FindTab() {
   );
 }
 
-// Track which gangsheets the current admin has already downloaded. Stored
-// per-machine in localStorage so the checkmark survives reloads but doesn't
-// require backend changes / a shared table.
-const DOWNLOADED_KEY = 'gangsheet_downloaded_ids';
-function loadDownloadedSet() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(DOWNLOADED_KEY) || '[]');
-    return new Set(Array.isArray(raw) ? raw : []);
-  } catch {
-    return new Set();
-  }
-}
-function saveDownloadedSet(s) {
-  localStorage.setItem(DOWNLOADED_KEY, JSON.stringify([...s]));
-}
+// The "đã làm / downloaded" mark now lives on the gangsheet row
+// (gangsheets.downloaded_at, toggled via POST /gangsheets/{id}/toggle-downloaded)
+// so it is shared across machines + users — no more per-machine localStorage.
 
 // Category of a gangsheet, parsed from the filename tail after the date token
 // (MMMDD), e.g. "..._JUN06_gloss-300gsm.pdf" → "gloss-300gsm",
@@ -1312,7 +1300,6 @@ function ManageTab({ isAdmin }) {
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
-  const [downloadedSet, setDownloadedSet] = useState(loadDownloadedSet);
   // Bulk-select state for the Manage tab. Reset whenever the visible page
   // changes so a hidden selection can't survive a page flip.
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -1323,21 +1310,32 @@ function ManageTab({ isAdmin }) {
   // two_size — so the loaded page is easy to tell apart. 'all' = no filter.
   const [subTab, setSubTab] = useState('all');
 
-  const markDownloaded = (id) => {
-    setDownloadedSet(prev => {
-      const next = new Set(prev);
-      next.add(id);
-      saveDownloadedSet(next);
-      return next;
-    });
+  // Patch a single gang in the loaded list (optimistic UI for the downloaded mark).
+  const patchGang = (id, patch) => setList(prev => ({
+    ...prev,
+    data: prev.data.map(g => (g.id === id ? { ...g, ...patch } : g)),
+  }));
+
+  const toggleDownloaded = async (g) => {
+    const prev = { downloaded_at: g.downloaded_at, downloaded_by: g.downloaded_by };
+    patchGang(g.id, { downloaded_at: g.downloaded_at ? null : new Date().toISOString() });
+    try {
+      const res = await api.post(`/gangsheets/${g.id}/toggle-downloaded`);
+      patchGang(g.id, { downloaded_at: res.data.downloaded_at, downloaded_by: res.data.downloaded_by });
+    } catch {
+      patchGang(g.id, prev);   // revert on failure
+    }
   };
-  const toggleDownloaded = (id) => {
-    setDownloadedSet(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      saveDownloadedSet(next);
-      return next;
-    });
+  // Auto-mark on actual download (only if not already marked).
+  const markDownloaded = async (g) => {
+    if (g.downloaded_at) return;
+    patchGang(g.id, { downloaded_at: new Date().toISOString() });
+    try {
+      const res = await api.post(`/gangsheets/${g.id}/toggle-downloaded`);
+      patchGang(g.id, { downloaded_at: res.data.downloaded_at, downloaded_by: res.data.downloaded_by });
+    } catch {
+      patchGang(g.id, { downloaded_at: null });
+    }
   };
 
   const fetchList = async () => {
@@ -1470,7 +1468,7 @@ function ManageTab({ isAdmin }) {
           </button>
         )}
         <span className="text-xs text-neutral-500 ml-auto">
-          <span className="font-semibold text-emerald-600">{[...downloadedSet].filter(id => list.data.some(g => g.id === id)).length}</span>
+          <span className="font-semibold text-emerald-600">{list.data.filter(g => g.downloaded_at).length}</span>
           {' / '}
           <span className="font-semibold">{list.data.length}</span>
           {' downloaded · Total: '}
@@ -1531,7 +1529,7 @@ function ManageTab({ isAdmin }) {
             ) : visible.length === 0 ? (
               <tr><td colSpan={isAdmin ? 10 : 9} className="p-6 text-center text-neutral-400">No gangsheets found.</td></tr>
             ) : visible.map(g => {
-              const isDl = downloadedSet.has(g.id);
+              const isDl = !!g.downloaded_at;
               const isSel = selectedIds.has(g.id);
               return (
               <tr key={g.id} className={`border-b border-neutral-100 hover:bg-orange-50/30 ${isSel ? 'bg-orange-50/60' : isDl ? 'bg-green-50/40' : ''}`}>
@@ -1547,8 +1545,8 @@ function ManageTab({ isAdmin }) {
                 )}
                 <td className="px-3 py-2 text-center">
                   <button
-                    onClick={() => toggleDownloaded(g.id)}
-                    title={isDl ? 'Đã download — click để bỏ đánh dấu' : 'Chưa download — click để đánh dấu'}
+                    onClick={() => toggleDownloaded(g)}
+                    title={isDl ? `Đã làm${g.downloaded_by?.name ? ' bởi ' + g.downloaded_by.name : ''} — click để bỏ` : 'Chưa làm — click để đánh dấu'}
                     className={`w-6 h-6 rounded border-2 flex items-center justify-center text-base transition ${
                       isDl
                         ? 'bg-emerald-500 border-emerald-600 text-white'
@@ -1558,7 +1556,13 @@ function ManageTab({ isAdmin }) {
                     ✓
                   </button>
                 </td>
-                <td className="px-3 py-2 font-mono text-xs text-neutral-700 truncate max-w-[260px]">{g.filename}</td>
+                <td className="px-3 py-2 font-mono text-xs text-neutral-700 truncate max-w-[260px]">
+                  {g.is_duplicate && (
+                    <span className="mr-1.5 px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-sans font-semibold"
+                      title={`Trùng order với gang #${(g.duplicate_gang_ids || []).join(', #')}`}>duplicate</span>
+                  )}
+                  {g.filename}
+                </td>
                 <td className="px-3 py-2 font-mono text-xs text-neutral-500">
                   {g.first_system_id}{g.first_system_id !== g.last_system_id && <> → {g.last_system_id}</>}
                 </td>
@@ -1574,7 +1578,7 @@ function ManageTab({ isAdmin }) {
                       href={g.file_url}
                       target="_blank"
                       rel="noreferrer"
-                      onClick={() => markDownloaded(g.id)}
+                      onClick={() => markDownloaded(g)}
                       className="text-xs text-orange-500 hover:text-orange-600"
                     >
                       Download
