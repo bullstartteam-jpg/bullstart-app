@@ -12,6 +12,16 @@ export default function ResendModal({ order, onClose, onCreated }) {
   const [note, setNote] = useState('');
   const [pricing, setPricing] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [editAddr, setEditAddr] = useState(false);
+  // Address prefilled from the original order; editable (resend often ships to
+  // a corrected address). Sent as override only when the operator edits it.
+  const A = order.address || {};
+  const [addr, setAddr] = useState({
+    first_name: A.first_name || '', last_name: A.last_name || '',
+    address_1: A.address_1 || '', address_2: A.address_2 || '',
+    city: A.city || '', state: A.state || '', zipcode: A.zipcode || '',
+    country: A.country || '', phone: A.phone || '', email: A.email || '',
+  });
 
   useEffect(() => {
     api.get('/orders/resend-quota').then(res => {
@@ -33,7 +43,7 @@ export default function ResendModal({ order, onClose, onCreated }) {
   const create = async () => {
     setBusy(true);
     try {
-      const res = await api.post(`/orders/${order.id}/resend`, { method, reason, note });
+      const res = await api.post(`/orders/${order.id}/resend`, { method, reason, note, address: addr });
       await notify(`Đã tạo đơn resend ${res.data.order.system_id} — tổng $${res.data.pricing.total}. Vào đơn mới để thanh toán.`,
         { title: 'Resend', kind: 'success' });
       onCreated?.(res.data.order);
@@ -77,7 +87,39 @@ export default function ResendModal({ order, onClose, onCreated }) {
               <input value={note} onChange={e => setNote(e.target.value)} className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
             </div>
 
-            <div className="text-xs text-neutral-500">Quota free tháng này: <b className="text-neutral-700">{cfg.free_remaining}</b>/{cfg.free_quota} còn lại (đã dùng {cfg.used})</div>
+            {/* Shipping address (prefilled from original; editable). */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs text-neutral-500">Địa chỉ giao</label>
+                <button type="button" onClick={() => setEditAddr(e => !e)} className="text-xs text-orange-600">{editAddr ? 'Thu gọn' : 'Sửa địa chỉ'}</button>
+              </div>
+              {!editAddr ? (
+                <div className="text-xs text-neutral-600 bg-[#faf8f6] border border-neutral-200 rounded-lg p-2 leading-relaxed">
+                  {[addr.first_name, addr.last_name].filter(Boolean).join(' ') || <span className="text-neutral-400">— chưa có tên —</span>}<br />
+                  {[addr.address_1, addr.address_2].filter(Boolean).join(', ')}<br />
+                  {[addr.city, addr.state, addr.zipcode].filter(Boolean).join(' ')} {addr.country}
+                  {addr.phone && <><br />📞 {addr.phone}</>}
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    ['first_name', 'First name'], ['last_name', 'Last name'],
+                    ['address_1', 'Address 1'], ['address_2', 'Address 2'],
+                    ['city', 'City'], ['state', 'State'],
+                    ['zipcode', 'Zip'], ['country', 'Country'],
+                    ['phone', 'Phone'], ['email', 'Email'],
+                  ].map(([k, ph]) => (
+                    <input key={k} value={addr[k]} onChange={e => setAddr(a => ({ ...a, [k]: e.target.value }))}
+                      placeholder={ph} className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="text-sm bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+              Resend free tháng này: <b className="text-emerald-700">{cfg.free_remaining}</b>/{cfg.free_quota} còn lại
+              <span className="text-neutral-500"> (đã dùng {cfg.used})</span>
+            </div>
 
             {pricing && (
               <div className="bg-neutral-50 rounded-lg p-3 text-sm space-y-1">

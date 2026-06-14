@@ -168,6 +168,7 @@ function EditUserModal({ user, roles, tiers, onClose, onSaved }) {
     wallet: user.wallet ?? 0,
     auto_pay: user.auto_pay ?? false,
     auto_pay_delay_hours: user.auto_pay_delay_hours ?? 0,
+    resend_free_quota: user.resend_free_quota ?? '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -185,6 +186,7 @@ function EditUserModal({ user, roles, tiers, onClose, onSaved }) {
         wallet: form.wallet === '' ? 0 : Number(form.wallet),
         auto_pay: !!form.auto_pay,
         auto_pay_delay_hours: form.auto_pay_delay_hours === '' ? 0 : Number(form.auto_pay_delay_hours),
+        resend_free_quota: form.resend_free_quota === '' ? null : Number(form.resend_free_quota),
       };
       if (form.password && form.password.length >= 6) {
         payload.password = form.password;
@@ -221,6 +223,10 @@ function EditUserModal({ user, roles, tiers, onClose, onSaved }) {
           <div>
             <label className="text-xs text-neutral-500">Wallet</label>
             <input type="text" inputMode="decimal" value={form.wallet} onChange={e => setForm(f => ({ ...f, wallet: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+          </div>
+          <div>
+            <label className="text-xs text-neutral-500">Resend free / tháng (trống = mặc định)</label>
+            <input type="number" min={0} max={1000} value={form.resend_free_quota} onChange={e => setForm(f => ({ ...f, resend_free_quota: e.target.value }))} placeholder="mặc định" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
           </div>
           <div>
             <label className="text-xs text-neutral-500">Role</label>
