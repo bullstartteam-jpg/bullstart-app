@@ -6,6 +6,11 @@ import { notify, askConfirm } from '../components/Dialog';
 import { buildInvoicePdf } from '../services/invoicePdf';
 import { PreviewModal } from '../components/Preview';
 import { driveThumb, isPreviewable } from '../utils/drive';
+import {
+  subscribeFetchTrackingJob, startFetchTrackingJob, stopFetchTrackingJob,
+  runFetchTrackingNow, isFetchTrackingAutoEnabled,
+  pauseFetchTrackingJob, resumeFetchTrackingJob,
+} from '../services/converter';
 
 // Delivery-tracking status → badge colors (matches web-bullstart).
 const TRACKING_COLOR = {
@@ -18,6 +23,17 @@ const TRACKING_COLOR = {
   exception: 'bg-red-100 text-red-700',
   unknown: 'bg-neutral-100 text-neutral-500',
 };
+const TRACKING_STATUSES = [
+  { value: 'none', label: 'Chưa quét' },
+  { value: 'pre_shipment', label: 'Pre-shipment' },
+  { value: 'accepted', label: 'Accepted' },
+  { value: 'in_transit', label: 'In transit' },
+  { value: 'out_for_delivery', label: 'Out for delivery' },
+  { value: 'delivery_attempted', label: 'Delivery attempted' },
+  { value: 'exception', label: 'Exception' },
+  { value: 'delivered', label: 'Delivered' },
+  { value: 'unknown', label: 'Unknown' },
+];
 
 // Group an order's thumbnails by item so each row shows variant + its
 // designs/mockups together. Data is already eager-loaded by the orders index
@@ -86,7 +102,7 @@ export default function Orders() {
   // order and back keeps the user on the same page they were browsing.
   // Cleared when they hit "Clear all" or close the app.
   const [filters, setFilters] = useState(() => {
-    const def = { status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', tracking_id: '', user_id: '', date_from: '', date_to: '', page: 1, per_page: 20 };
+    const def = { status: '', tracking_status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', tracking_id: '', user_id: '', date_from: '', date_to: '', page: 1, per_page: 20 };
     try {
       const saved = JSON.parse(sessionStorage.getItem('orders_filters') || 'null');
       return saved && typeof saved === 'object' ? { ...def, ...saved } : def;
@@ -133,6 +149,7 @@ export default function Orders() {
     setLoading(true);
     const params = { page: filters.page, per_page: filters.per_page || 20 };
     if (filters.status !== '') params.status = filters.status;
+    if (filters.tracking_status) params.tracking_status = filters.tracking_status;
     if (filters.paid) params.paid = filters.paid;
     if (filters.ship_type) params.ship_type = filters.ship_type;
     if (filters.ref_id) params.ref_id = filters.ref_id;
@@ -149,7 +166,7 @@ export default function Orders() {
     }).finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.paid, filters.ship_type, filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page]);
+  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.tracking_status, filters.paid, filters.ship_type, filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -337,6 +354,16 @@ export default function Orders() {
   const [dupRefreshing, setDupRefreshing] = useState(false);
 
   // Tracking-fetch queue — processes orders one at a time like the converter.
+  // Auto fetch-tracking job (runs in-app like the converter jobs, no server cron).
+  const [ftJob, setFtJob] = useState(null);
+  const [ftAuto, setFtAuto] = useState(isFetchTrackingAutoEnabled());
+  const [ftPanelOpen, setFtPanelOpen] = useState(false);
+  useEffect(() => subscribeFetchTrackingJob(setFtJob), []);
+  const toggleFetchTrackingAuto = () => {
+    if (ftAuto) { stopFetchTrackingJob(); setFtAuto(false); }
+    else { startFetchTrackingJob(); setFtAuto(true); setFtPanelOpen(true); }
+  };
+
   const [showTracking, setShowTracking] = useState(false);
   const [trackingQueue, setTrackingQueue] = useState([]);   // [{id, system_id, shipping_label}]
   const [trackingDone, setTrackingDone] = useState(0);
@@ -355,6 +382,7 @@ export default function Orders() {
   const handleExport = async () => {
     const params = {};
     if (filters.status !== '') params.status = filters.status;
+    if (filters.tracking_status) params.tracking_status = filters.tracking_status;
     if (filters.paid) params.paid = filters.paid;
     if (filters.ship_type) params.ship_type = filters.ship_type;
     if (filters.ref_id) params.ref_id = filters.ref_id;
@@ -390,6 +418,7 @@ export default function Orders() {
     // filters so admin sees one consistent dataset across both exports.
     const params = {};
     if (filters.status !== '') params.status = filters.status;
+    if (filters.tracking_status) params.tracking_status = filters.tracking_status;
     if (filters.paid) params.paid = filters.paid;
     if (filters.ship_type) params.ship_type = filters.ship_type;
     if (filters.ref_id) params.ref_id = filters.ref_id;
@@ -721,13 +750,29 @@ export default function Orders() {
             Invoice VNPay {selected.length > 0 ? `(${selected.length})` : ''}
           </button>
           {isStaff && (
-            <button
-              onClick={openTrackingModal}
-              className="px-4 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 text-sm rounded-lg transition-colors"
-              title="Open the tracking-fetch queue — processes orders without tracking one at a time"
-            >
-              Fetch Tracking
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={openTrackingModal}
+                className="px-4 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 text-sm rounded-lg transition-colors"
+                title="Mở queue fetch tracking thủ công (xử lý từng đơn)"
+              >
+                Fetch Tracking
+              </button>
+              <button
+                onClick={toggleFetchTrackingAuto}
+                title="Tự động fetch tracking trong app (như convert), không cần cron server"
+                className={`px-3 py-2 text-sm rounded-l-lg transition-colors ${ftAuto ? 'bg-emerald-500 hover:bg-emerald-600 text-white' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-600'}`}
+              >
+                Auto {ftAuto ? 'ON' : 'OFF'}{ftAuto && ftJob?.running ? ' …' : ''}
+              </button>
+              <button
+                onClick={() => setFtPanelOpen(o => !o)}
+                title="Bảng quản lý auto fetch tracking"
+                className={`px-2 py-2 text-sm rounded-r-lg transition-colors ${ftAuto ? 'bg-emerald-500 hover:bg-emerald-600 text-white' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-600'}`}
+              >
+                {ftPanelOpen ? '▴' : '▾'}
+              </button>
+            </div>
           )}
           {isStaff && (
             <button
@@ -860,6 +905,16 @@ export default function Orders() {
           <option value="stamp">stamp</option>
         </select>
 
+        <select
+          value={filters.tracking_status || ''}
+          onChange={e => setFilters(f => ({ ...f, tracking_status: e.target.value, page: 1 }))}
+          className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none"
+          title="Filter by tracking status"
+        >
+          <option value="">All Tracking</option>
+          {TRACKING_STATUSES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+
         {isStaff && (
           <select
             value={filters.user_id}
@@ -981,6 +1036,41 @@ export default function Orders() {
           </div>
         )}
       </div>
+
+      {/* Auto fetch-tracking — management panel */}
+      {isStaff && ftPanelOpen && (
+        <div className="mb-4 bg-white rounded-xl border border-neutral-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+            <h3 className="text-sm font-semibold text-neutral-700">Auto Fetch Tracking</h3>
+            <div className="flex items-center gap-2">
+              <span className={`px-2 py-0.5 rounded text-xs font-medium ${ftAuto ? (ftJob?.running ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700') : 'bg-neutral-100 text-neutral-500'}`}>
+                {!ftAuto ? 'Tắt' : ftJob?.paused ? 'Tạm dừng' : ftJob?.running ? 'Đang chạy' : 'Chờ tick'}
+              </span>
+              <button onClick={toggleFetchTrackingAuto} className={`px-3 py-1 text-xs rounded-lg ${ftAuto ? 'bg-neutral-200 text-neutral-700' : 'bg-emerald-500 text-white'}`}>
+                {ftAuto ? 'Tắt auto' : 'Bật auto'}
+              </button>
+              <button onClick={() => runFetchTrackingNow()} disabled={!ftAuto} className="px-3 py-1 text-xs rounded-lg bg-blue-100 text-blue-700 disabled:opacity-40">Chạy ngay</button>
+              {ftJob?.paused
+                ? <button onClick={() => resumeFetchTrackingJob()} className="px-3 py-1 text-xs rounded-lg bg-neutral-100 text-neutral-700">Tiếp tục</button>
+                : <button onClick={() => pauseFetchTrackingJob()} disabled={!ftAuto} className="px-3 py-1 text-xs rounded-lg bg-neutral-100 text-neutral-700 disabled:opacity-40">Tạm dừng</button>}
+            </div>
+          </div>
+          <div className="flex gap-4 text-xs text-neutral-500 mb-2 flex-wrap">
+            <span>Chờ xử lý: <b className="text-neutral-700">{ftJob?.pendingCount ?? 0}</b></span>
+            <span>Đã lấy: <b className="text-emerald-600">{ftJob?.processedTotal ?? 0}</b></span>
+            <span>Lỗi: <b className="text-red-500">{ftJob?.errorTotal ?? 0}</b></span>
+            <span className="ml-auto">Tick: {ftJob?.lastTickAt ? new Date(ftJob.lastTickAt).toLocaleTimeString() : '—'} · kế tiếp {ftJob?.nextTickAt ? new Date(ftJob.nextTickAt).toLocaleTimeString() : '—'}</span>
+          </div>
+          <div className="max-h-56 overflow-y-auto text-xs font-mono space-y-0.5 border-t border-neutral-100 pt-2">
+            {(ftJob?.log || []).map((l, i) => (
+              <div key={i} className={l.level === 'error' ? 'text-red-600' : l.level === 'ok' ? 'text-emerald-600' : 'text-neutral-600'}>
+                [{new Date(l.ts).toLocaleTimeString()}] {l.system_id ? `${l.system_id} · ` : ''}{l.message}
+              </div>
+            ))}
+            {(!ftJob?.log || ftJob.log.length === 0) && <div className="text-neutral-400">Chưa có hoạt động.</div>}
+          </div>
+        </div>
+      )}
 
       {/* Table */}
       <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden shadow-sm">

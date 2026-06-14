@@ -7,6 +7,7 @@ import { UrlPreview, PreviewModal } from '../components/Preview';
 import { isPreviewable } from '../utils/drive';
 import { notify, askConfirm } from '../components/Dialog';
 import UploadButton from '../components/UploadButton';
+import ResendModal from '../components/ResendModal';
 
 const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
@@ -20,6 +21,7 @@ export default function OrderDetail() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({});
   const [previewUrl, setPreviewUrl] = useState(null);
+  const [showResend, setShowResend] = useState(false);
   // Catalog used by the per-item accessory editor (only fetched when an
   // editor opens for the first time — avoids paying the cost on every view).
   const [products, setProducts] = useState(null);
@@ -181,6 +183,11 @@ export default function OrderDetail() {
           <button onClick={() => setEditing(!editing)} className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">
             {editing ? 'Cancel' : 'Edit'}
           </button>
+          {!order.resend_of_order_id && (
+            <button onClick={() => setShowResend(true)} className="px-4 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 text-sm rounded-lg" title="Tạo đơn gửi lại từ đơn này">
+              Tạo resend
+            </button>
+          )}
           {(hasRole('admin') || hasRole('support')) && (
             <button onClick={handleReconvert} title="Delete _qr metas so converter rebuilds them" className="px-4 py-2 bg-blue-50 hover:bg-blue-100 text-blue-600 text-sm rounded-lg">Reconvert</button>
           )}
@@ -430,6 +437,13 @@ export default function OrderDetail() {
       </div>
 
       <PreviewModal url={previewUrl} onClose={() => setPreviewUrl(null)} />
+      {showResend && (
+        <ResendModal
+          order={order}
+          onClose={() => setShowResend(false)}
+          onCreated={(o) => { setShowResend(false); navigate(`/orders/${o.id}`); }}
+        />
+      )}
     </div>
   );
 }

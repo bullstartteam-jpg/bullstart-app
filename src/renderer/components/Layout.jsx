@@ -1,6 +1,8 @@
+import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import logo from '../assets/logo.png';
+import { getUiPrefs } from '../utils/uiPrefs';
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: '◉', module: 'dashboard' },
@@ -25,6 +27,15 @@ export default function Layout() {
   const { user, logout, hasPermission } = useAuth();
   const navigate = useNavigate();
 
+  // Live UI prefs (show/hide logo + app name), saved per-machine in Settings.
+  const [uiPrefs, setUiPrefsState] = useState(getUiPrefs);
+  useEffect(() => {
+    const sync = () => setUiPrefsState(getUiPrefs());
+    window.addEventListener('ui-prefs-changed', sync);
+    window.addEventListener('storage', sync);
+    return () => { window.removeEventListener('ui-prefs-changed', sync); window.removeEventListener('storage', sync); };
+  }, []);
+
   const handleLogout = async () => {
     await logout();
     navigate('/login');
@@ -46,8 +57,8 @@ export default function Layout() {
       {/* Sidebar */}
       <aside className="w-56 bg-white border-r border-neutral-200 flex flex-col shadow-sm">
         <div className="p-4 border-b border-neutral-200 titlebar-drag flex items-center gap-2">
-          <img src={logo} alt="BullStart" className="h-8" />
-          <h1 className="text-lg font-bold text-neutral-800 tracking-wide">BULLSTART</h1>
+          {uiPrefs.showLogo && <img src={logo} alt="BullStart" className="h-8" />}
+          {uiPrefs.showAppName && <h1 className="text-lg font-bold text-neutral-800 tracking-wide">BULLSTART</h1>}
         </div>
 
         <nav className="flex-1 p-2 space-y-1 overflow-y-auto">

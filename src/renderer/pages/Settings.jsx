@@ -3,6 +3,7 @@ import api from '../services/api';
 import UploadButton from '../components/UploadButton';
 import { notify } from '../components/Dialog';
 import { setGangMarks } from '../services/gangsheetBuilder';
+import { getUiPrefs, setUiPrefs } from '../utils/uiPrefs';
 
 export default function Settings() {
   const [tab, setTab] = useState('roles');
@@ -31,6 +32,8 @@ export default function Settings() {
     { id: 'vnpay', label: 'VNPay Merchant' },
     { id: 'bank', label: 'Bank Transfer' },
     { id: 'stamp', label: 'Stamp Shipping' },
+    { id: 'resend', label: 'Resend' },
+    { id: 'appearance', label: 'Giao diện' },
     { id: 'qr', label: 'QR Portal' },
     { id: 'gangsheet', label: 'Gangsheet Auto' },
   ];
@@ -56,6 +59,8 @@ export default function Settings() {
       {tab === 'vnpay' && <VnpayMerchantTab />}
       {tab === 'bank' && <BankTransferTab />}
       {tab === 'stamp' && <StampConfigTab />}
+      {tab === 'resend' && <ResendConfigTab />}
+      {tab === 'appearance' && <AppearanceTab />}
       {tab === 'qr' && <QrConfigTab />}
       {tab === 'gangsheet' && <GangsheetAutomationTab />}
     </div>
@@ -271,6 +276,115 @@ function StampConfigTab() {
           {saving ? 'Saving…' : 'Save changes'}
         </button>
       </section>
+    </div>
+  );
+}
+
+function AppearanceTab() {
+  const [prefs, setPrefs] = useState(getUiPrefs);
+  const toggle = (k) => setPrefs(setUiPrefs({ [k]: !prefs[k] }));
+  return (
+    <div className="space-y-4 max-w-md">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm space-y-3">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Sidebar</h3>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" checked={prefs.showLogo} onChange={() => toggle('showLogo')} /> Hiện logo
+        </label>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" checked={prefs.showAppName} onChange={() => toggle('showAppName')} /> Hiện tên app
+        </label>
+        <p className="text-[11px] text-neutral-500">Lưu trên máy này; áp dụng ngay.</p>
+      </section>
+    </div>
+  );
+}
+
+function ResendConfigTab() {
+  const [c, setC] = useState(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { api.get('/settings/resend-config').then(res => setC(res.data)); }, []);
+  if (!c) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const setMethod = (i, k, v) => setC(p => ({ ...p, methods: p.methods.map((m, j) => j === i ? { ...m, [k]: v } : m) }));
+  const setReason = (i, k, v) => setC(p => ({ ...p, reasons: p.reasons.map((r, j) => j === i ? { ...r, [k]: v } : r) }));
+  const setQuota = (k, v) => setC(p => ({ ...p, quota: { ...p.quota, [k]: v } }));
+  const addMethod = () => setC(p => ({ ...p, methods: [...p.methods, { key: '', label: '', price: 0, ship_type: 'seller_ship', desc: '' }] }));
+  const delMethod = (i) => setC(p => ({ ...p, methods: p.methods.filter((_, j) => j !== i) }));
+  const addReason = () => setC(p => ({ ...p, reasons: [...p.reasons, { key: '', label: '', base_support: 'quota' }] }));
+  const delReason = (i) => setC(p => ({ ...p, reasons: p.reasons.filter((_, j) => j !== i) }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/resend-config', {
+        methods: c.methods.map(m => ({ ...m, price: Number(m.price) || 0 })),
+        reasons: c.reasons,
+        quota: { default_free: Number(c.quota.default_free) || 0, after_free_support_pct: Number(c.quota.after_free_support_pct) || 0 },
+      });
+      setC(res.data);
+      notify('Saved resend config', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  const inp = 'px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-sm';
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-2">Phương thức gửi lại</h3>
+        <div className="space-y-2">
+          {c.methods.map((m, i) => (
+            <div key={i} className="flex gap-2 items-center flex-wrap">
+              <input className={`${inp} w-24 font-mono`} placeholder="key" value={m.key} onChange={e => setMethod(i, 'key', e.target.value)} />
+              <input className={`${inp} flex-1 min-w-[160px]`} placeholder="label" value={m.label} onChange={e => setMethod(i, 'label', e.target.value)} />
+              <input className={`${inp} w-20 text-right`} type="number" step="0.01" placeholder="$" value={m.price} onChange={e => setMethod(i, 'price', e.target.value)} />
+              <select className={inp} value={m.ship_type} onChange={e => setMethod(i, 'ship_type', e.target.value)}>
+                <option value="seller_ship">seller_ship (tracking)</option>
+                <option value="stamp">stamp</option>
+                <option value="tiktok_ship">tiktok_ship</option>
+              </select>
+              <input className={`${inp} flex-1 min-w-[140px]`} placeholder="desc" value={m.desc || ''} onChange={e => setMethod(i, 'desc', e.target.value)} />
+              <button onClick={() => delMethod(i)} className="text-red-400 hover:text-red-600 text-xs">✕</button>
+            </div>
+          ))}
+        </div>
+        <button onClick={addMethod} className="mt-2 text-xs text-orange-600">+ thêm phương thức</button>
+      </section>
+
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Trường hợp resend (reason)</h3>
+        <p className="text-[11px] text-neutral-500 mb-2">base_support: <b>quota</b> = free theo quota tháng rồi % · <b>full</b> = luôn free base · <b>none</b> = seller trả full base.</p>
+        <div className="space-y-2">
+          {c.reasons.map((r, i) => (
+            <div key={i} className="flex gap-2 items-center flex-wrap">
+              <input className={`${inp} w-28 font-mono`} placeholder="key" value={r.key} onChange={e => setReason(i, 'key', e.target.value)} />
+              <input className={`${inp} flex-1 min-w-[180px]`} placeholder="label" value={r.label} onChange={e => setReason(i, 'label', e.target.value)} />
+              <select className={inp} value={r.base_support} onChange={e => setReason(i, 'base_support', e.target.value)}>
+                <option value="quota">quota</option>
+                <option value="full">full (free base)</option>
+                <option value="none">none (trả full)</option>
+              </select>
+              <button onClick={() => delReason(i)} className="text-red-400 hover:text-red-600 text-xs">✕</button>
+            </div>
+          ))}
+        </div>
+        <button onClick={addReason} className="mt-2 text-xs text-orange-600">+ thêm reason</button>
+      </section>
+
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-2">Quota tháng (mặc định mỗi seller)</h3>
+        <div className="grid grid-cols-2 gap-3 max-w-md">
+          <NumField label="Số đơn free base / tháng" value={c.quota.default_free} onChange={v => setQuota('default_free', v)} step="1" />
+          <NumField label="% hỗ trợ base sau khi hết free" value={c.quota.after_free_support_pct} onChange={v => setQuota('after_free_support_pct', v)} step="1" />
+        </div>
+        <p className="text-[11px] text-neutral-500 mt-2">Override theo từng seller ở trang Users (resend_free_quota). Seller luôn trả đủ shipping.</p>
+      </section>
+
+      <button onClick={save} disabled={saving} className="px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+        {saving ? 'Saving…' : 'Save changes'}
+      </button>
     </div>
   );
 }

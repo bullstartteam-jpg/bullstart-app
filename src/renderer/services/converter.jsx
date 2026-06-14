@@ -415,6 +415,62 @@ function barcodeRegionDarkness(img) {
   return { lightFraction, dark: lightFraction < 0.10 };
 }
 
+// ---------------- Auto Fetch-Tracking job ----------------
+// Fills tracking_id for orders that have a shipping_label but no tracking yet —
+// same work as the manual "Fetch Tracking" queue on Orders, but auto on a timer
+// (app-side, no server cron). Calls the carrier via the Electron main process
+// then saves the number to the hub.
+
+const fetchTrackingJob = createJob({
+  name: 'fetch-tracking',
+  storageKey: 'fetch_tracking_auto',
+  pollMs: 120_000,     // every 2 minutes
+  async runOnce({ state, pushLog, emit }) {
+    if (!window.electronAPI?.fetchTracking) {
+      pushLog('error', null, null, 'Cần app desktop (Electron) để fetch tracking.');
+      return;
+    }
+    const res = await api.get('/orders/pending-tracking', { params: { limit: 200 } });
+    const items = res.data?.data || [];
+    state.pending = items.map(i => ({ system_id: i.system_id, id: i.id }));
+    state.pendingCount = items.length;
+    emit();
+
+    let consecutiveFails = 0;
+    for (const item of items) {
+      if (state.paused || !state.enabled) break;
+      if (!item.shipping_label) continue;
+      try {
+        const result = await window.electronAPI.fetchTracking(item.shipping_label);
+        const tk = result?.tracking_id;
+        if (!tk) {
+          pushLog('error', item.system_id, 'tracking', 'No tracking in carrier response');
+          state.errorTotal += 1;
+        } else {
+          await api.post(`/orders/${item.id}/save-tracking`, { tracking_id: tk });
+          state.processedTotal += 1;
+          pushLog('ok', item.system_id, 'tracking', `tracking = ${tk}${result.carrier ? ` (${result.carrier})` : ''}`);
+          consecutiveFails = 0;
+        }
+        state.pending = state.pending.filter(p => p.id !== item.id);
+        state.pendingCount = state.pending.length;
+      } catch (err) {
+        state.errorTotal += 1;
+        consecutiveFails += 1;
+        pushLog('error', item.system_id, 'tracking', err?.response?.data?.message || err?.message || String(err));
+        // Carrier hiccup → stop this tick after several in a row; retry next tick.
+        if (consecutiveFails >= 5) {
+          pushLog('error', null, null, 'Dừng tick: 5 lỗi liên tiếp (thử lại lần sau).');
+          break;
+        }
+      }
+      emit();
+      // Carrier-friendly spacing between calls.
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  },
+});
+
 // ---------------- Public API ----------------
 
 // QR job (seller _qr conversion).
@@ -457,6 +513,15 @@ export const resumeQrBgJob = qrBgJob.resume;
 export const runQrBgNow = qrBgJob.runNow;
 export const isQrBgAutoEnabled = qrBgJob.isAutoEnabled;
 
+// Auto fetch-tracking job.
+export const subscribeFetchTrackingJob = fetchTrackingJob.subscribe;
+export const startFetchTrackingJob = fetchTrackingJob.start;
+export const stopFetchTrackingJob = fetchTrackingJob.stop;
+export const pauseFetchTrackingJob = fetchTrackingJob.pause;
+export const resumeFetchTrackingJob = fetchTrackingJob.resume;
+export const runFetchTrackingNow = fetchTrackingJob.runNow;
+export const isFetchTrackingAutoEnabled = fetchTrackingJob.isAutoEnabled;
+
 /**
  * Restore each job's previously-persisted auto flag. Called by AuthContext
  * after login so users see whichever jobs they had on resume automatically.
@@ -467,9 +532,10 @@ export function autoStartConverters() {
   if (assignJob.isAutoEnabled()) assignJob.start();
   if (autoCloseJob.isAutoEnabled()) autoCloseJob.start();
   if (qrBgJob.isAutoEnabled()) qrBgJob.start();
+  if (fetchTrackingJob.isAutoEnabled()) fetchTrackingJob.start();
 }
 
-/** Stop both jobs (called on logout). Preserves the persisted auto flags so
+/** Stop all jobs (called on logout). Preserves the persisted auto flags so
  *  the next login resumes whatever each was set to. */
 export function stopAllConverters() {
   qrJob.softStop();
@@ -477,6 +543,7 @@ export function stopAllConverters() {
   assignJob.softStop();
   autoCloseJob.softStop();
   qrBgJob.softStop();
+  fetchTrackingJob.softStop();
 }
 
 // ---------------- Resize-reconvert (replace existing _qr in place) ----------------
