@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { notify } from '../components/Dialog';
 
 const STATUS_COLORS = {
   new_order: 'bg-blue-100 text-blue-600',
@@ -25,10 +27,10 @@ export default function Dashboard() {
   const { hasRole } = useAuth();
   const isSeller = hasRole('seller');
 
+  const loadDashboard = () => api.get('/dashboard').then(res => setStats(res.data));
+
   useEffect(() => {
-    api.get('/dashboard').then(res => {
-      setStats(res.data);
-    }).finally(() => setLoading(false));
+    loadDashboard().finally(() => setLoading(false));
 
     // Completed (shipped) orders per day — last 30 days by completed_time.
     const z = n => String(n).padStart(2, '0');
@@ -97,26 +99,9 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Shipped (7d) but tracking chưa run — grouped by seller */}
+      {/* Shipped (7d) but tracking chưa run — grouped by seller; select + check via ShipEngine */}
       {stats.shipped_tracking?.not_run_by_seller?.length > 0 && (
-        <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm mb-6">
-          <h3 className="text-sm font-semibold text-red-700 mb-3">🚦 Chưa run tracking · ship 7 ngày · theo seller ({stats.shipped_tracking.not_run})</h3>
-          <div className="space-y-3">
-            {stats.shipped_tracking.not_run_by_seller.map(s => (
-              <div key={s.user_id} className="border-b border-neutral-100 last:border-0 pb-2 last:pb-0">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm font-medium text-neutral-800">{s.user || `User #${s.user_id}`}</span>
-                  <span className="text-xs font-bold text-red-600">{s.count}</span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {s.orders.map(o => (
-                    <span key={o.id} title={o.status} className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-600">{o.system_id}</span>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <TrackingNotRun data={stats.shipped_tracking} onChecked={loadDashboard} />
       )}
 
       {/* End-of-month projection (actual shipped + projection for the remaining days) */}
@@ -182,6 +167,160 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// "Chưa run tracking" list: pick orders (per-seller or individually) and run an
+// on-demand ShipEngine check; orders whose status moves off pre_shipment drop
+// out of the list after the dashboard reloads. Each system_id links to its order.
+function TrackingNotRun({ data, onChecked }) {
+  const navigate = useNavigate();
+  const groups = data?.not_run_by_seller || [];
+  const [selected, setSelected] = useState(() => new Set());
+  const [changedIds, setChangedIds] = useState(() => new Set());
+  const [busy, setBusy] = useState(false);
+  // ShipEngine API key — entered & stored from the app (hub AppSetting).
+  const [keyInfo, setKeyInfo] = useState(null);  // {has_key, from_app}
+  const [showKey, setShowKey] = useState(false);
+  const [keyInput, setKeyInput] = useState('');
+  const [keyBusy, setKeyBusy] = useState(false);
+
+  const allIds = useMemo(() => groups.flatMap(s => s.orders.map(o => o.id)), [groups]);
+
+  const loadKey = () => api.get('/tracking/shipengine-key').then(res => setKeyInfo(res.data)).catch(() => setKeyInfo(null));
+  useEffect(() => { loadKey(); }, []);
+
+  const saveKey = async () => {
+    if (keyBusy) return;
+    setKeyBusy(true);
+    try {
+      await api.put('/tracking/shipengine-key', { api_key: keyInput.trim() });
+      setKeyInput('');
+      setShowKey(false);
+      await loadKey();
+      notify('Đã lưu ShipEngine key', { title: 'ShipEngine', kind: 'success' });
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Lưu key thất bại', { title: 'ShipEngine', kind: 'error' });
+    } finally {
+      setKeyBusy(false);
+    }
+  };
+
+  const toggle = (id) => setSelected(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const toggleGroup = (s) => setSelected(prev => {
+    const next = new Set(prev);
+    const ids = s.orders.map(o => o.id);
+    const allOn = ids.every(id => next.has(id));
+    ids.forEach(id => (allOn ? next.delete(id) : next.add(id)));
+    return next;
+  });
+
+  const check = async () => {
+    if (!selected.size || busy) return;
+    setBusy(true);
+    try {
+      const res = await api.post('/tracking/check', { order_ids: [...selected] });
+      setChangedIds(new Set((res.data.results || []).filter(r => r.changed).map(r => r.id)));
+      notify(res.data.message || 'Đã check tracking', { title: 'Check tracking', kind: 'success' });
+      setSelected(new Set());
+      onChecked?.();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Check tracking thất bại', { title: 'Check tracking', kind: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!groups.length) return null;
+
+  return (
+    <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm mb-6">
+      <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
+        <h3 className="text-sm font-semibold text-red-700">🚦 Chưa run tracking · ship 7 ngày · theo seller ({data.not_run})</h3>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowKey(v => !v)}
+            className={`text-xs ${keyInfo && !keyInfo.has_key ? 'text-red-500' : 'text-neutral-500'} hover:text-neutral-700`}
+            title="Nhập ShipEngine API key (lưu trên server qua app)"
+          >
+            ⚙ {keyInfo ? (keyInfo.has_key ? 'Key đã đặt' : 'Chưa có key') : 'Key'}
+          </button>
+          <button
+            onClick={() => setSelected(selected.size ? new Set() : new Set(allIds))}
+            className="text-xs text-neutral-500 hover:text-neutral-700"
+          >
+            {selected.size ? 'Bỏ chọn' : 'Chọn hết'}
+          </button>
+          <button
+            onClick={check}
+            disabled={!selected.size || busy}
+            className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs rounded-lg"
+            title="Gửi tracking các đơn đã chọn sang ShipEngine kiểm tra & cập nhật nếu đổi"
+          >
+            {busy ? 'Đang check…' : `Check tracking (${selected.size})`}
+          </button>
+        </div>
+      </div>
+
+      {showKey && (
+        <div className="mb-3 flex items-end gap-2 bg-neutral-50 border border-neutral-200 rounded-lg p-3">
+          <div className="flex-1">
+            <label className="text-xs text-neutral-500 block mb-1">
+              ShipEngine API key {keyInfo?.has_key && <span className="text-emerald-600">(đang có{keyInfo.from_app ? '' : ' — từ server .env'})</span>}
+            </label>
+            <input
+              type="password"
+              value={keyInput}
+              onChange={e => setKeyInput(e.target.value)}
+              placeholder={keyInfo?.has_key ? 'Nhập key mới để thay (để trống = xoá, dùng .env)' : 'bk47…'}
+              className="w-full px-3 py-2 bg-white border border-neutral-200 rounded-lg text-sm font-mono"
+            />
+          </div>
+          <button onClick={saveKey} disabled={keyBusy} className="px-3 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs rounded-lg">
+            {keyBusy ? 'Đang lưu…' : 'Lưu'}
+          </button>
+        </div>
+      )}
+      <div className="space-y-3">
+        {groups.map(s => {
+          const ids = s.orders.map(o => o.id);
+          const allOn = ids.length > 0 && ids.every(id => selected.has(id));
+          return (
+            <div key={s.user_id} className="border-b border-neutral-100 last:border-0 pb-2 last:pb-0">
+              <div className="flex items-center justify-between mb-1">
+                <button onClick={() => toggleGroup(s)} className="text-sm font-medium text-neutral-800 hover:text-orange-600">
+                  {allOn ? '☑' : '☐'} {s.user || `User #${s.user_id}`}
+                </button>
+                <span className="text-xs font-bold text-red-600">{s.count}</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {s.orders.map(o => {
+                  const on = selected.has(o.id);
+                  return (
+                    <span
+                      key={o.id}
+                      title={o.status}
+                      className={`inline-flex items-center gap-1 font-mono text-[11px] px-1.5 py-0.5 rounded border ${
+                        on ? 'bg-orange-50 border-orange-300' : 'bg-neutral-100 border-transparent'
+                      } ${changedIds.has(o.id) ? 'ring-1 ring-emerald-400' : ''}`}
+                    >
+                      <input type="checkbox" checked={on} onChange={() => toggle(o.id)} className="accent-orange-500 cursor-pointer" />
+                      <button onClick={() => navigate(`/orders/${o.id}`)} className="text-neutral-600 hover:text-orange-600 hover:underline">
+                        {o.system_id}
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
