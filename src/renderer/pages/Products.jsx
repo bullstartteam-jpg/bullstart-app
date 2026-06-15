@@ -35,6 +35,23 @@ export default function Products() {
     fetchProducts();
   };
 
+  // Deep-copy a product (variants + prices + accessories + materials) into a new
+  // one under a different name, then jump to it. Stock/line_id start fresh.
+  const handleDuplicate = async (product, e) => {
+    e.stopPropagation();
+    const name = prompt(
+      'Tên sản phẩm mới — copy toàn bộ variants, giá, accessories, materials (stock & line ID để trống):',
+      `${product.name} (Copy)`
+    );
+    if (name == null || !name.trim()) return;
+    try {
+      const res = await api.post(`/products/${product.id}/duplicate`, { name: name.trim() });
+      navigate(`/products/${res.data.product.id}`);
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Nhân bản thất bại');
+    }
+  };
+
   return (
     <div className="p-6">
       <div className="flex justify-between items-center mb-4">
@@ -92,7 +109,10 @@ export default function Products() {
               </span>
             </div>
             {hasRole('admin') && (
-              <button onClick={e => { e.stopPropagation(); handleDelete(product.id); }} className="mt-3 text-xs text-red-500 hover:text-red-600">Delete</button>
+              <div className="mt-3 flex gap-3">
+                <button onClick={e => handleDuplicate(product, e)} className="text-xs text-orange-500 hover:text-orange-600">Nhân bản</button>
+                <button onClick={e => { e.stopPropagation(); handleDelete(product.id); }} className="text-xs text-red-500 hover:text-red-600">Delete</button>
+              </div>
             )}
           </div>
         ))}
