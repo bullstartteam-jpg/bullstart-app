@@ -508,15 +508,15 @@ export default function OrderCreate() {
                   {product && accessories.length > 0 && (
                     <div className="pt-2 border-t border-neutral-100 space-y-2">
                       <div className="flex justify-between items-center">
-                        <label className="text-xs text-neutral-500">Accessories</label>
+                        <label className="text-xs text-neutral-500">Add ons</label>
                         <button
                           type="button"
                           onClick={() => addAccessory(i)}
                           className="text-xs text-orange-500 hover:text-orange-600"
-                        >+ Add Accessory</button>
+                        >+ Add on</button>
                       </div>
                       {(item.accessories || []).length === 0 ? (
-                        <p className="text-xs text-neutral-400">No accessories. Click "+ Add Accessory" to attach one or more.</p>
+                        <p className="text-xs text-neutral-400">No add-ons. Click "+ Add on" to attach one or more.</p>
                       ) : (
                         <div className="space-y-2">
                           {(item.accessories || []).map((row, ai) => {
@@ -530,7 +530,7 @@ export default function OrderCreate() {
                                     onChange={e => updateAccessory(i, ai, { accessory_id: e.target.value, accessory_item_id: '' })}
                                     className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
                                   >
-                                    <option value="">— Select accessory —</option>
+                                    <option value="">— Select add-on —</option>
                                     {accessories.map(a => (
                                       <option key={a.id} value={a.id}>{a.name}</option>
                                     ))}
@@ -553,7 +553,7 @@ export default function OrderCreate() {
                                   type="button"
                                   onClick={() => removeAccessory(i, ai)}
                                   className="px-2 py-2 text-red-400 hover:text-red-600 text-sm"
-                                  title="Remove this accessory"
+                                  title="Remove this add-on"
                                 >×</button>
                               </div>
                             );

@@ -50,7 +50,7 @@ function orderItemGroups(order) {
     const accSrc = (it.accessory_prices && it.accessory_prices.length) ? it.accessory_prices
       : (it.accessory_price ? [it.accessory_price] : []);
     const accessories = accSrc.map(a => ({
-      type: a.accessory?.name || 'Accessory',
+      type: a.accessory?.name || 'Add on',
       code: a.accessory_code || a.style || '',
     }));
 
@@ -1133,7 +1133,7 @@ export default function Orders() {
                               <div className="flex flex-wrap gap-1 text-[10px]">
                                 {g.materialName && <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700" title="Material">🧶 {g.materialName}</span>}
                                 {g.accessories.map((a, ai) => (
-                                  <span key={ai} className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700" title="Accessory">
+                                  <span key={ai} className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700" title="Add on">
                                     {a.type}{a.code ? `: ${a.code}` : ''}
                                   </span>
                                 ))}

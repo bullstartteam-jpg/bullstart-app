@@ -213,7 +213,7 @@ export default function Inventory() {
   const handleResync = async () => {
     const ok = await askConfirm(
       'Tính lại stock từ lịch sử?\n\n' +
-      'Mỗi variant + accessory: stock = Σ imports − Σ shipped (order item qty).\n' +
+      'Mỗi variant + add-on: stock = Σ imports − Σ shipped (order item qty).\n' +
       'Mọi đơn đã shipped sẽ được đánh dấu "đã trừ" để tương lai không trừ lặp.\n\n' +
       'An toàn để chạy nhiều lần.',
       { title: 'Resync stock', okText: 'Tính lại' }
@@ -273,7 +273,7 @@ export default function Inventory() {
         <div className="flex gap-2">
           <button
             onClick={handleDownloadTemplate}
-            title="Tải file CSV mẫu (có sẵn list variants + accessories)"
+            title="Tải file CSV mẫu (có sẵn list variants + add-ons)"
             className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg"
           >
             ⬇ Template
@@ -322,7 +322,7 @@ export default function Inventory() {
           <div className="text-sm text-neutral-700">
             <div className="font-semibold text-emerald-700 mb-1">Import CSV — nhập kho hàng loạt</div>
             <ol className="text-xs text-neutral-600 space-y-0.5 list-decimal list-inside">
-              <li>Bấm <b>⬇ Template</b> phía trên để tải file CSV mẫu (đã có sẵn list mọi variant + accessory).</li>
+              <li>Bấm <b>⬇ Template</b> phía trên để tải file CSV mẫu (đã có sẵn list mọi variant + add-on).</li>
               <li>Mở file trong Excel/Sheets, điền các cột: <code className="bg-neutral-100 px-1 rounded">price_mode</code> (per_item / per_package), <code className="bg-neutral-100 px-1 rounded">quantity</code> hoặc <code className="bg-neutral-100 px-1 rounded">package_size + package_count</code>, <code className="bg-neutral-100 px-1 rounded">unit_price</code>, <code className="bg-neutral-100 px-1 rounded">notes</code>.</li>
               <li>Dòng nào <b>để trống <code>price_mode</code></b> sẽ bị bỏ qua — không bắt buộc điền hết file.</li>
               <li>Save as CSV (UTF-8) rồi upload bên dưới.</li>
@@ -372,7 +372,7 @@ export default function Inventory() {
                 className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
               >
                 <option value="variant">Product variant</option>
-                <option value="accessory">Accessory</option>
+                <option value="accessory">Add on</option>
                 <option value="material">Material (chất liệu)</option>
                 <option value="supply">Supply (label paper, etc.)</option>
               </select>
@@ -395,14 +395,14 @@ export default function Inventory() {
               </div>
             ) : form.target === 'accessory' ? (
               <div className="md:col-span-2">
-                <label className="text-xs text-neutral-500">Accessory (stock dùng chung mọi tier)</label>
+                <label className="text-xs text-neutral-500">Add on (stock dùng chung mọi tier)</label>
                 <select
                   value={form.accessory_id}
                   onChange={e => setForm({ ...form, accessory_id: e.target.value })}
                   required
                   className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
                 >
-                  <option value="">— pick an accessory —</option>
+                  <option value="">— pick an add-on —</option>
                   {accessoryOptions.map(a => (
                     <option key={a.id} value={a.id}>{a.display} (stock {a.stock})</option>
                   ))}
@@ -624,7 +624,7 @@ export default function Inventory() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <StockTable title="Product variants" rows={stock.variants || []} />
             <StockTable title="Materials (chất liệu / loại giấy)" rows={stock.materials || []} />
-            <StockTable title="Accessories" rows={stock.accessories || []} />
+            <StockTable title="Add ons" rows={stock.accessories || []} />
           </div>
         </div>
       )}

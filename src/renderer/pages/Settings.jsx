@@ -370,7 +370,7 @@ function ResendConfigTab() {
                 <button onClick={() => delReason(i)} className="text-red-400 hover:text-red-600 text-xs ml-auto">✕</button>
               </div>
               <div className="flex gap-4 flex-wrap pl-1">
-                {(c.fee_components || [{ key: 'base_cost', label: 'Base cost' }, { key: '2nd_fee', label: 'Phí mặt thêm' }, { key: 'accessory', label: 'Accessory' }]).map(fc => (
+                {(c.fee_components || [{ key: 'base_cost', label: 'Base cost' }, { key: '2nd_fee', label: 'Phí mặt thêm' }, { key: 'accessory', label: 'Add on' }]).map(fc => (
                   <label key={fc.key} className="flex items-center gap-1 text-xs text-neutral-600">
                     {fc.label}
                     <input type="number" min={0} max={100} value={r.support?.[fc.key] ?? 0}

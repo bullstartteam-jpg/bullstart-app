@@ -162,7 +162,7 @@ export default function ConvertLabel() {
                 <thead className="text-neutral-500 bg-[#faf8f6]">
                   <tr>
                     <th className="text-left px-3 py-2">System ID</th>
-                    <th className="text-left px-3 py-2">Accessory</th>
+                    <th className="text-left px-3 py-2">Add on</th>
                     <th className="text-left px-3 py-2">Source label</th>
                   </tr>
                 </thead>

@@ -45,7 +45,7 @@ export default function ProductDetail() {
   };
 
   const handleDeleteAccessory = async (accessoryId) => {
-    if (!confirm('Delete this accessory and all its prices?')) return;
+    if (!confirm('Delete this add-on and all its prices?')) return;
     await api.delete(`/accessories/${accessoryId}`);
     fetchProduct();
   };
@@ -266,10 +266,10 @@ export default function ProductDetail() {
       {/* Accessories */}
       <div className="bg-white rounded-xl border border-neutral-200 p-4 mt-6 shadow-sm">
         <div className="flex justify-between items-center mb-3">
-          <h3 className="text-sm font-semibold text-neutral-600">Accessories</h3>
+          <h3 className="text-sm font-semibold text-neutral-600">Add ons</h3>
           {hasRole('admin') && (
             <button onClick={() => setShowAccessoryForm(!showAccessoryForm)} className="text-xs text-orange-500 hover:text-orange-600">
-              {showAccessoryForm ? 'Cancel' : '+ Add Accessory'}
+              {showAccessoryForm ? 'Cancel' : '+ Add on'}
             </button>
           )}
         </div>
@@ -285,7 +285,7 @@ export default function ProductDetail() {
         )}
 
         {(!product.accessories || product.accessories.length === 0) ? (
-          <p className="text-neutral-400 text-xs">No accessories yet.</p>
+          <p className="text-neutral-400 text-xs">No add-ons yet.</p>
         ) : (
           <div className="space-y-3">
             {product.accessories.map(acc => (
@@ -770,7 +770,7 @@ function AccessoryRow({ accessory, tiers, isAdmin, onDeleteAccessory, onDeletePr
         )}
         {isAdmin && !editingName && (
           <div className="flex gap-3 items-center">
-            <label className="flex items-center gap-1 text-xs text-neutral-500 cursor-pointer" title="Hiện chip + tag tên gangsheet riêng cho accessory này (tắt với add-on vật lý như envelope)">
+            <label className="flex items-center gap-1 text-xs text-neutral-500 cursor-pointer" title="Hiện chip + tag tên gangsheet riêng cho add-on này (tắt với add-on vật lý như envelope)">
               <input
                 type="checkbox"
                 checked={accessory.gangsheet_split ?? true}

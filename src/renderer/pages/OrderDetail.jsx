@@ -365,7 +365,7 @@ export default function OrderDetail() {
             <tr className="text-neutral-500 text-xs border-b border-neutral-200">
               <th className="pb-2 text-left">Product</th>
               <th className="pb-2 text-left">Type</th>
-              <th className="pb-2 text-left">Accessory</th>
+              <th className="pb-2 text-left">Add on</th>
               <th className="pb-2 text-left">Mockup Front</th>
               <th className="pb-2 text-left">Mockup Back</th>
               <th className="pb-2 text-center">Qty</th>
@@ -485,7 +485,7 @@ function ItemAccessoriesCell({ item, accList, canEdit, ownerTierId, products, on
         .map(r => Number(r.accessory_item_id))
         .filter(Boolean);
       const res = await api.put(`/order-items/${item.id}/accessories`, { accessory_ids });
-      await notify(res.data.message, { title: 'Accessories', kind: 'success' });
+      await notify(res.data.message, { title: 'Add ons', kind: 'success' });
       setEditing(false);
       onSaved?.();
     } catch (err) {
@@ -517,7 +517,7 @@ function ItemAccessoriesCell({ item, accList, canEdit, ownerTierId, products, on
           <button
             onClick={startEdit}
             className="mt-1 text-[11px] text-orange-600 hover:text-orange-700"
-          >Edit accessories</button>
+          >Edit add-ons</button>
         )}
       </div>
     );
@@ -531,7 +531,7 @@ function ItemAccessoriesCell({ item, accList, canEdit, ownerTierId, products, on
   return (
     <div className="space-y-1.5">
       {rows.length === 0 && (
-        <p className="text-[11px] text-neutral-400">No accessories. Click + to add.</p>
+        <p className="text-[11px] text-neutral-400">No add-ons. Click + to add.</p>
       )}
       {rows.map((row, ri) => {
         const selectedAcc = accessories.find(a => String(a.id) === String(row.accessory_id));
@@ -543,7 +543,7 @@ function ItemAccessoriesCell({ item, accList, canEdit, ownerTierId, products, on
               onChange={e => updateRow(ri, { accessory_id: e.target.value, accessory_item_id: '' })}
               className="px-1.5 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-[11px] flex-1 min-w-0"
             >
-              <option value="">— Accessory —</option>
+              <option value="">— Add on —</option>
               {accessories.map(a => (
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
