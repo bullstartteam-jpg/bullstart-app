@@ -310,8 +310,10 @@ function ResendConfigTab() {
   const setQuota = (k, v) => setC(p => ({ ...p, quota: { ...p.quota, [k]: v } }));
   const addMethod = () => setC(p => ({ ...p, methods: [...p.methods, { key: '', label: '', price: 0, ship_type: 'seller_ship', desc: '' }] }));
   const delMethod = (i) => setC(p => ({ ...p, methods: p.methods.filter((_, j) => j !== i) }));
-  const addReason = () => setC(p => ({ ...p, reasons: [...p.reasons, { key: '', label: '', base_support: 'quota' }] }));
+  const addReason = () => setC(p => ({ ...p, reasons: [...p.reasons, { key: '', label: '', quota_based: true, support: { base_cost: 0, '2nd_fee': 0, accessory: 0 } }] }));
   const delReason = (i) => setC(p => ({ ...p, reasons: p.reasons.filter((_, j) => j !== i) }));
+  const setSupportPct = (i, comp, v) => setC(p => ({ ...p, reasons: p.reasons.map((r, j) =>
+    j === i ? { ...r, support: { ...(r.support || {}), [comp]: v === '' ? 0 : Number(v) } } : r) }));
 
   const save = async () => {
     setSaving(true);
@@ -355,18 +357,28 @@ function ResendConfigTab() {
 
       <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-neutral-700 mb-1">Trường hợp resend (reason)</h3>
-        <p className="text-[11px] text-neutral-500 mb-2">base_support: <b>quota</b> = free theo quota tháng rồi % · <b>full</b> = luôn free base · <b>none</b> = seller trả full base.</p>
+        <p className="text-[11px] text-neutral-500 mb-2">Mỗi reason đặt <b>% xưởng hỗ trợ</b> cho từng khoản phí (0–100). <b>Theo quota</b>: bật = chỉ hỗ trợ trong số đơn free/tháng, hết quota thì hỗ trợ × {c.quota.after_free_support_pct}%. Shipping luôn seller trả.</p>
         <div className="space-y-2">
           {c.reasons.map((r, i) => (
-            <div key={i} className="flex gap-2 items-center flex-wrap">
-              <input className={`${inp} w-28 font-mono`} placeholder="key" value={r.key} onChange={e => setReason(i, 'key', e.target.value)} />
-              <input className={`${inp} flex-1 min-w-[180px]`} placeholder="label" value={r.label} onChange={e => setReason(i, 'label', e.target.value)} />
-              <select className={inp} value={r.base_support} onChange={e => setReason(i, 'base_support', e.target.value)}>
-                <option value="quota">quota</option>
-                <option value="full">full (free base)</option>
-                <option value="none">none (trả full)</option>
-              </select>
-              <button onClick={() => delReason(i)} className="text-red-400 hover:text-red-600 text-xs">✕</button>
+            <div key={i} className="border border-neutral-100 rounded-lg p-2 space-y-2">
+              <div className="flex gap-2 items-center flex-wrap">
+                <input className={`${inp} w-28 font-mono`} placeholder="key" value={r.key} onChange={e => setReason(i, 'key', e.target.value)} />
+                <input className={`${inp} flex-1 min-w-[180px]`} placeholder="label" value={r.label} onChange={e => setReason(i, 'label', e.target.value)} />
+                <label className="flex items-center gap-1 text-xs text-neutral-600">
+                  <input type="checkbox" checked={!!r.quota_based} onChange={e => setReason(i, 'quota_based', e.target.checked)} /> theo quota
+                </label>
+                <button onClick={() => delReason(i)} className="text-red-400 hover:text-red-600 text-xs ml-auto">✕</button>
+              </div>
+              <div className="flex gap-4 flex-wrap pl-1">
+                {(c.fee_components || [{ key: 'base_cost', label: 'Base cost' }, { key: '2nd_fee', label: 'Phí mặt thêm' }, { key: 'accessory', label: 'Accessory' }]).map(fc => (
+                  <label key={fc.key} className="flex items-center gap-1 text-xs text-neutral-600">
+                    {fc.label}
+                    <input type="number" min={0} max={100} value={r.support?.[fc.key] ?? 0}
+                      onChange={e => setSupportPct(i, fc.key, e.target.value)}
+                      className="w-16 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-sm text-right" />%
+                  </label>
+                ))}
+              </div>
             </div>
           ))}
         </div>

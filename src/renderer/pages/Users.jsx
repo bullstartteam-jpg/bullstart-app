@@ -171,6 +171,16 @@ function EditUserModal({ user, roles, tiers, onClose, onSaved }) {
     resend_free_quota: user.resend_free_quota ?? '',
   });
   const [saving, setSaving] = useState(false);
+  // Per-seller resend support % override (empty cell = use global config).
+  const [resendCfg, setResendCfg] = useState(null);
+  const [override, setOverride] = useState(() => user.resend_support_override || {});
+  useEffect(() => { api.get('/settings/resend-config').then(r => setResendCfg(r.data)).catch(() => setResendCfg({ reasons: [], fee_components: [] })); }, []);
+  const setOv = (rk, comp, v) => setOverride(prev => {
+    const next = { ...prev, [rk]: { ...(prev[rk] || {}) } };
+    if (v === '') delete next[rk][comp]; else next[rk][comp] = Number(v);
+    if (Object.keys(next[rk]).length === 0) delete next[rk];
+    return next;
+  });
 
   const handleSave = async (e) => {
     e.preventDefault();
@@ -187,6 +197,7 @@ function EditUserModal({ user, roles, tiers, onClose, onSaved }) {
         auto_pay: !!form.auto_pay,
         auto_pay_delay_hours: form.auto_pay_delay_hours === '' ? 0 : Number(form.auto_pay_delay_hours),
         resend_free_quota: form.resend_free_quota === '' ? null : Number(form.resend_free_quota),
+        resend_support_override: Object.keys(override).length ? override : null,
       };
       if (form.password && form.password.length >= 6) {
         payload.password = form.password;
@@ -227,6 +238,27 @@ function EditUserModal({ user, roles, tiers, onClose, onSaved }) {
           <div>
             <label className="text-xs text-neutral-500">Resend free / tháng (trống = mặc định)</label>
             <input type="number" min={0} max={1000} value={form.resend_free_quota} onChange={e => setForm(f => ({ ...f, resend_free_quota: e.target.value }))} placeholder="mặc định" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+          </div>
+          <div className="col-span-2">
+            <label className="text-xs text-neutral-500">Override % hỗ trợ resend (trống = dùng config chung)</label>
+            <div className="mt-1 border border-neutral-200 rounded-lg p-2 space-y-1.5 bg-[#faf8f6]">
+              {!resendCfg ? <div className="text-xs text-neutral-400">Loading…</div> : (resendCfg.reasons || []).map(r => (
+                <div key={r.key} className="flex items-center gap-2 flex-wrap text-xs">
+                  <span className="w-32 text-neutral-600 truncate" title={r.label}>{r.label}</span>
+                  {(resendCfg.fee_components || []).map(fc => (
+                    <label key={fc.key} className="flex items-center gap-1 text-neutral-500">
+                      {fc.label}
+                      <input type="number" min={0} max={100}
+                        value={override[r.key]?.[fc.key] ?? ''}
+                        placeholder={`${r.support?.[fc.key] ?? 0}`}
+                        onChange={e => setOv(r.key, fc.key, e.target.value)}
+                        className="w-14 px-1.5 py-1 bg-white border border-neutral-200 rounded text-right" />%
+                    </label>
+                  ))}
+                </div>
+              ))}
+              {resendCfg && (resendCfg.reasons || []).length === 0 && <div className="text-xs text-neutral-400">Chưa có reason nào.</div>}
+            </div>
           </div>
           <div>
             <label className="text-xs text-neutral-500">Role</label>

@@ -122,11 +122,35 @@ export default function ResendModal({ order, onClose, onCreated }) {
             </div>
 
             {pricing && (
-              <div className="bg-neutral-50 rounded-lg p-3 text-sm space-y-1">
-                <div className="flex justify-between"><span>Shipping</span><span>${pricing.shipping}</span></div>
-                <div className="flex justify-between text-neutral-500"><span>Base cost</span><span>${pricing.base}</span></div>
-                {pricing.support > 0 && <div className="flex justify-between text-emerald-600"><span>Xưởng hỗ trợ base</span><span>−${pricing.support}</span></div>}
-                <div className="flex justify-between font-bold border-t border-neutral-200 pt-1 mt-1"><span>Tổng seller trả</span><span className="text-orange-600">${pricing.total}</span></div>
+              <div className="bg-neutral-50 rounded-lg p-3 text-sm">
+                <div className="text-xs text-neutral-400 mb-1.5">Chi tiết phí đơn này</div>
+                <div className="space-y-1">
+                  {(pricing.components || []).filter(c => c.amount > 0 || c.key === 'base_cost').map(c => (
+                    <div key={c.key} className="flex justify-between items-baseline">
+                      <span className="text-neutral-600">
+                        {c.label}
+                        {c.supported && c.support_amount > 0 && (
+                          <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">
+                            {c.support_pct >= 100 ? 'FREE' : `hỗ trợ ${c.support_pct}%`}
+                          </span>
+                        )}
+                      </span>
+                      <span className={c.charged === 0 ? 'text-emerald-600' : 'text-neutral-700'}>
+                        {c.charged === 0
+                          ? <><span className="line-through text-neutral-400 mr-1">${c.amount}</span>$0</>
+                          : (c.support_amount > 0 ? <><span className="line-through text-neutral-400 mr-1">${c.amount}</span>${c.charged}</> : `$${c.amount}`)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {pricing.support > 0 && (
+                  <div className="flex justify-between text-emerald-600 text-xs mt-1.5 pt-1.5 border-t border-neutral-200">
+                    <span>Xưởng hỗ trợ tổng</span><span>−${pricing.support}</span>
+                  </div>
+                )}
+                <div className="flex justify-between font-bold border-t border-neutral-200 pt-1.5 mt-1.5">
+                  <span>Tổng seller trả</span><span className="text-orange-600">${pricing.total}</span>
+                </div>
               </div>
             )}
 

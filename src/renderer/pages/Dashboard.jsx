@@ -88,7 +88,36 @@ export default function Dashboard() {
         <StatCard label="Shipping Cost" value={`$${stats.total_shipping_cost}`} />
         {stats.total_users !== undefined && <StatCard label="Total Users" value={stats.total_users} />}
         {stats.total_wallet_balance !== undefined && <StatCard label="Wallet Balance" value={`$${stats.total_wallet_balance}`} />}
+        {stats.shipped_tracking && (
+          <StatCard
+            label={`Tracking đã run · ship 7 ngày${stats.shipped_tracking.shipped ? ` (${stats.shipped_tracking.tracking_ran}/${stats.shipped_tracking.shipped})` : ''}`}
+            value={stats.shipped_tracking.rate === null ? '—' : `${Number(stats.shipped_tracking.rate).toFixed(1)}%`}
+            color={trackingRateColor(stats.shipped_tracking.rate)}
+          />
+        )}
       </div>
+
+      {/* Shipped (7d) but tracking chưa run — grouped by seller */}
+      {stats.shipped_tracking?.not_run_by_seller?.length > 0 && (
+        <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm mb-6">
+          <h3 className="text-sm font-semibold text-red-700 mb-3">🚦 Chưa run tracking · ship 7 ngày · theo seller ({stats.shipped_tracking.not_run})</h3>
+          <div className="space-y-3">
+            {stats.shipped_tracking.not_run_by_seller.map(s => (
+              <div key={s.user_id} className="border-b border-neutral-100 last:border-0 pb-2 last:pb-0">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-medium text-neutral-800">{s.user || `User #${s.user_id}`}</span>
+                  <span className="text-xs font-bold text-red-600">{s.count}</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {s.orders.map(o => (
+                    <span key={o.id} title={o.status} className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-600">{o.system_id}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* End-of-month projection (actual shipped + projection for the remaining days) */}
       <MonthProjection />
@@ -370,6 +399,14 @@ function CompletedChart({ rows }) {
       </div>
     </div>
   );
+}
+
+// Tracking run-rate color: red < 80%, amber < 95%, green otherwise.
+function trackingRateColor(rate) {
+  if (rate === null || rate === undefined) return 'text-neutral-800';
+  if (rate < 80) return 'text-red-500';
+  if (rate < 95) return 'text-amber-500';
+  return 'text-green-600';
 }
 
 function StatCard({ label, value, color = 'text-neutral-800' }) {
