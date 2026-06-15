@@ -40,7 +40,7 @@ export default function Products() {
   const handleDuplicate = async (product, e) => {
     e.stopPropagation();
     const name = prompt(
-      'Tên sản phẩm mới — copy toàn bộ variants, giá, accessories, materials (stock & line ID để trống):',
+      'Tên sản phẩm mới — copy toàn bộ variants, giá, add-ons, materials (stock & line ID để trống):',
       `${product.name} (Copy)`
     );
     if (name == null || !name.trim()) return;
