@@ -9,6 +9,9 @@ export default function Products() {
   const [search, setSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ name: '', style: '', line_id: '' });
+  const [dup, setDup] = useState(null);        // product pending duplicate (drives the modal)
+  const [dupName, setDupName] = useState('');
+  const [dupBusy, setDupBusy] = useState(false);
   const { hasRole } = useAuth();
   const navigate = useNavigate();
 
@@ -37,18 +40,26 @@ export default function Products() {
 
   // Deep-copy a product (variants + prices + accessories + materials) into a new
   // one under a different name, then jump to it. Stock/line_id start fresh.
-  const handleDuplicate = async (product, e) => {
+  // Electron's renderer has no window.prompt(), so the new name is collected
+  // via an inline modal instead.
+  const openDuplicate = (product, e) => {
     e.stopPropagation();
-    const name = prompt(
-      'Tên sản phẩm mới — copy toàn bộ variants, giá, add-ons, materials (stock & line ID để trống):',
-      `${product.name} (Copy)`
-    );
-    if (name == null || !name.trim()) return;
+    setDup(product);
+    setDupName(`${product.name} (Copy)`);
+  };
+
+  const submitDuplicate = async (e) => {
+    e.preventDefault();
+    if (!dupName.trim() || dupBusy) return;
+    setDupBusy(true);
     try {
-      const res = await api.post(`/products/${product.id}/duplicate`, { name: name.trim() });
+      const res = await api.post(`/products/${dup.id}/duplicate`, { name: dupName.trim() });
+      setDup(null);
       navigate(`/products/${res.data.product.id}`);
     } catch (err) {
       alert(err?.response?.data?.message || 'Nhân bản thất bại');
+    } finally {
+      setDupBusy(false);
     }
   };
 
@@ -110,13 +121,38 @@ export default function Products() {
             </div>
             {hasRole('admin') && (
               <div className="mt-3 flex gap-3">
-                <button onClick={e => handleDuplicate(product, e)} className="text-xs text-orange-500 hover:text-orange-600">Nhân bản</button>
+                <button onClick={e => openDuplicate(product, e)} className="text-xs text-orange-500 hover:text-orange-600">Nhân bản</button>
                 <button onClick={e => { e.stopPropagation(); handleDelete(product.id); }} className="text-xs text-red-500 hover:text-red-600">Delete</button>
               </div>
             )}
           </div>
         ))}
       </div>
+
+      {/* Duplicate-product modal (replaces native prompt, unsupported in Electron) */}
+      {dup && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => !dupBusy && setDup(null)}>
+          <form onSubmit={submitDuplicate} onClick={e => e.stopPropagation()} className="bg-white rounded-xl p-5 w-[440px] max-w-[92vw] shadow-xl">
+            <h3 className="text-lg font-bold text-neutral-800 mb-1">Nhân bản sản phẩm</h3>
+            <p className="text-xs text-neutral-500 mb-3">
+              Copy toàn bộ variants, giá, add-ons, materials từ <span className="font-medium">{dup.name}</span>. Stock và Line ID để trống.
+            </p>
+            <label className="text-xs text-neutral-500">Tên sản phẩm mới</label>
+            <input
+              autoFocus
+              value={dupName}
+              onChange={e => setDupName(e.target.value)}
+              className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button type="button" onClick={() => setDup(null)} disabled={dupBusy} className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-800">Huỷ</button>
+              <button type="submit" disabled={dupBusy || !dupName.trim()} className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">
+                {dupBusy ? 'Đang nhân bản…' : 'Nhân bản'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }
