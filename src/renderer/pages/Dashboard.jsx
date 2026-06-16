@@ -187,6 +187,12 @@ function TrackingNotRun({ data, onChecked }) {
   const [keyBusy, setKeyBusy] = useState(false);
 
   const allIds = useMemo(() => groups.flatMap(s => s.orders.map(o => o.id)), [groups]);
+  // id -> system_id, so a selection by order id can be copied as readable system ids.
+  const sysById = useMemo(() => {
+    const m = new Map();
+    groups.forEach(s => s.orders.forEach(o => m.set(o.id, o.system_id)));
+    return m;
+  }, [groups]);
 
   const loadKey = () => api.get('/tracking/shipengine-key').then(res => setKeyInfo(res.data)).catch(() => setKeyInfo(null));
   useEffect(() => { loadKey(); }, []);
@@ -219,6 +225,17 @@ function TrackingNotRun({ data, onChecked }) {
     ids.forEach(id => (allOn ? next.delete(id) : next.add(id)));
     return next;
   });
+
+  const copySelected = async () => {
+    if (!selected.size) return;
+    const text = [...selected].map(id => sysById.get(id)).filter(Boolean).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      notify(`Đã copy ${selected.size} system id`, { title: 'Copy', kind: 'success' });
+    } catch {
+      notify('Copy thất bại', { title: 'Copy', kind: 'error' });
+    }
+  };
 
   const check = async () => {
     if (!selected.size || busy) return;
@@ -255,6 +272,14 @@ function TrackingNotRun({ data, onChecked }) {
             className="text-xs text-neutral-500 hover:text-neutral-700"
           >
             {selected.size ? 'Bỏ chọn' : 'Chọn hết'}
+          </button>
+          <button
+            onClick={copySelected}
+            disabled={!selected.size}
+            className="px-3 py-1.5 bg-white border border-neutral-200 text-neutral-700 disabled:opacity-50 text-xs rounded-lg hover:bg-neutral-50"
+            title="Copy system id các đơn đã chọn"
+          >
+            Copy system id ({selected.size})
           </button>
           <button
             onClick={check}
