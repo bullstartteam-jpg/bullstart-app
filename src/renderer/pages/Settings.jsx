@@ -343,6 +343,7 @@ function TelegramTab() {
   const [groupsLoading, setGroupsLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [reporting, setReporting] = useState(false);
+  const [settingHook, setSettingHook] = useState(false);
 
   // App-side cron — interval persisted per-device in localStorage.
   const [cronInterval, setCronInterval] = useState(() => localStorage.getItem(CRON_KEY) || 'off');
@@ -431,6 +432,18 @@ function TelegramTab() {
     }
   };
 
+  const handleSetWebhook = async () => {
+    setSettingHook(true);
+    try {
+      const res = await api.post('/settings/telegram/set-webhook', {});
+      notify(`Webhook registered:\n${res.data.url}`, { title: 'Telegram', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Set webhook failed', { title: 'Telegram', kind: 'error' });
+    } finally {
+      setSettingHook(false);
+    }
+  };
+
   const fireReport = async (silent = false) => {
     setReporting(true);
     try {
@@ -474,6 +487,8 @@ function TelegramTab() {
         <h3 className="text-sm font-semibold text-neutral-700 mb-3">Telegram Settings</h3>
         <div className="grid grid-cols-2 gap-3">
           <TextField label="Bot Token"               value={data.bot_token}         onChange={v => setField('bot_token', v)} full />
+          <TextField label="Bot Username (without @, for user link)" value={data.bot_username ?? ''} onChange={v => setField('bot_username', v)} />
+          <TextField label="Webhook Secret (for /login linking)"     value={data.webhook_secret ?? ''} onChange={v => setField('webhook_secret', v)} />
           <TextField label="Default Report Days"     value={String(data.report_days ?? 0)} onChange={v => setField('report_days', parseInt(v || '0', 10))} />
           <TextField label="Default Chat ID"         value={data.default_chat_id}   onChange={v => setField('default_chat_id', v)} />
           <TextField label="Default Thread/Topic ID (optional)" value={data.default_thread_id ?? ''} onChange={v => setField('default_thread_id', v === '' ? null : parseInt(v, 10))} full />
@@ -496,7 +511,14 @@ function TelegramTab() {
           <button onClick={handleTest} disabled={testing || !data.default_chat_id} className="px-5 py-2 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 text-blue-700 text-sm rounded-lg font-medium">
             {testing ? 'Sending…' : 'Send test message'}
           </button>
+          <button onClick={handleSetWebhook} disabled={settingHook || !data.bot_token} className="px-5 py-2 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 text-emerald-700 text-sm rounded-lg font-medium">
+            {settingHook ? 'Registering…' : 'Register webhook'}
+          </button>
         </div>
+        <p className="text-[11px] text-neutral-500 mt-2">
+          Set Bot Token, Bot Username, Webhook Secret and your APP_URL (or ngrok URL) → Save → Register webhook.
+          Users then DM the bot <span className="font-mono">/login email password</span> to receive order notifications.
+        </p>
       </section>
 
       {/* Group picker */}

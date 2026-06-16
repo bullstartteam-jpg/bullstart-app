@@ -6,7 +6,6 @@ import { driveThumb, isPreviewable } from '../utils/drive';
 import { UrlPreview, PreviewModal } from '../components/Preview';
 import { notify, askConfirm } from '../components/Dialog';
 import UploadButton from '../components/UploadButton';
-import { validateImageUrl, collectItemUrls, runWithConcurrency } from '../utils/imageUrlCheck';
 import { runImportUrlCheck } from '../services/importUrlCheck';
 
 const META_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
@@ -201,36 +200,10 @@ export default function OrderCreate() {
     return api.post('/orders', payload);
   };
 
-  // Validate every pasted image URL across all items before saving. Blocks the
-  // create when any URL is unreachable / no-permission / not an image, and lists
-  // exactly which field failed and why. Returns true when all URLs are valid.
-  const validateItemImageUrls = async () => {
-    const candidates = [];
-    form.items.forEach((it, idx) => {
-      collectItemUrls(it).forEach(c => candidates.push({ ...c, itemNo: idx + 1 }));
-    });
-    if (!candidates.length) return true;
-    const results = await runWithConcurrency(candidates, 5, (c) => validateImageUrl(c.url));
-    const failures = candidates
-      .map((c, i) => ({ c, r: results[i] }))
-      .filter(({ r }) => r && !r.ok)
-      .map(({ c, r }) => `Item ${c.itemNo} · ${c.label}: ${r.reason}`);
-    if (failures.length) {
-      await notify(failures.join('\n'), { title: 'Invalid image URLs', kind: 'error' });
-      return false;
-    }
-    return true;
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const urlsOk = await validateItemImageUrls();
-      if (!urlsOk) {
-        setLoading(false);
-        return;
-      }
       let res;
       try {
         res = await submitOrder();
@@ -250,9 +223,18 @@ export default function OrderCreate() {
       }
       navigate(`/orders/${res.data.order.id}`);
     } catch (err) {
-      const errs = err.response?.data?.errors;
-      const msg = err.response?.data?.message || (errs ? Object.values(errs).flat().join('\n') : 'Error');
-      notify(msg, { title: 'Create order failed', kind: 'error' });
+      // Server-side image-URL validation rejects the create with 422 + a list
+      // of failed fields (replaces the old client-side pre-check). Show exactly
+      // which item/field failed and why, then let the user fix and retry.
+      const failures = err.response?.data?.failures;
+      if (err.response?.status === 422 && Array.isArray(failures)) {
+        const lines = failures.map(f => `Item ${f.item_no} · ${f.label}: ${f.reason}`);
+        notify(lines.join('\n'), { title: 'Invalid image URLs', kind: 'error' });
+      } else {
+        const errs = err.response?.data?.errors;
+        const msg = err.response?.data?.message || (errs ? Object.values(errs).flat().join('\n') : 'Error');
+        notify(msg, { title: 'Create order failed', kind: 'error' });
+      }
     } finally {
       setLoading(false);
     }
@@ -289,11 +271,10 @@ export default function OrderCreate() {
         }
       }
       setCsvResult(res.data);
-      // Don't block on URL validation — fire the app-wide background job. It
-      // survives navigation away from this page and reports progress + result
-      // via toasts; broken URLs are recorded to the cache the Orders list /
-      // Order detail surface.
-      runImportUrlCheck({ createdCount: res.data?.created_count || 0, userId: user?.id });
+      // Validation runs server-side (the import dispatched a background job per
+      // created order). Follow that work and surface a progress + result toast,
+      // like the old client-side check did — but now reading DB-backed status.
+      runImportUrlCheck({ orderIds: res.data?.created_ids || [], userId: user?.id });
     } catch (err) {
       notify(err.response?.data?.message || 'Error', { title: 'Import failed', kind: 'error' });
     } finally {

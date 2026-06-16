@@ -55,7 +55,7 @@ export async function validateImageUrl(url) {
 
 // Collect the image-URL fields of one order item that should be validated.
 // Skips empty / non-URL values and generated `_qr` metas. Field keys match the
-// shape stored by urlFailureCache: `mockup_front`, `mockup_back`, `meta:<key>`.
+// shape stored on the server: `mockup_front`, `mockup_back`, `meta:<key>`.
 export function collectItemUrls(item) {
   const out = [];
   if (isPreviewable(item?.mockup_front)) {

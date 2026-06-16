@@ -10,6 +10,8 @@ export default function Profile() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPw, setSavingPw] = useState(false);
+  const [botUsername, setBotUsername] = useState('');
+  const [unlinking, setUnlinking] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -17,12 +19,39 @@ export default function Profile() {
     }
   }, [user?.id]);
 
+  // Pull the Telegram bot username (global config) so we can build the t.me link.
+  useEffect(() => {
+    api.get('/me').then(res => setBotUsername(res.data.telegram_bot_username || '')).catch(() => {});
+  }, []);
+
   const reloadMe = async () => {
     try {
       const res = await api.get('/me');
       setUser(res.data.user);
       localStorage.setItem('user', JSON.stringify(res.data.user));
+      setBotUsername(res.data.telegram_bot_username || '');
     } catch {}
+  };
+
+  const openTelegramBot = () => {
+    if (!botUsername) return;
+    const url = `https://t.me/${botUsername}`;
+    if (window.electronAPI?.openExternal) window.electronAPI.openExternal(url);
+    else window.open(url, '_blank', 'noreferrer');
+  };
+
+  const handleUnlinkTelegram = async () => {
+    if (!confirm('Unlink Telegram? You will stop receiving order notifications.')) return;
+    setUnlinking(true);
+    try {
+      await api.post('/telegram/unlink');
+      await reloadMe();
+      alert('Telegram unlinked');
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error');
+    } finally {
+      setUnlinking(false);
+    }
   };
 
   const handleSaveProfile = async (e) => {
@@ -107,6 +136,41 @@ export default function Profile() {
         <Stat label="Tier" value={user.tier?.name || '-'} />
         <Stat label="Wallet" value={`$${user.wallet ?? 0}`} tone="text-green-600" />
         <Stat label="Convert" value={user.convert ? 'On' : 'Off'} tone={user.convert ? 'text-blue-600' : 'text-neutral-400'} />
+      </div>
+
+      {/* Telegram notifications */}
+      <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
+        <h3 className="text-sm font-semibold text-neutral-700">Telegram notifications</h3>
+        {user.telegram_linked_at ? (
+          <p className="text-sm text-green-600">
+            ✓ Linked
+            <span className="text-xs text-neutral-500 ml-2">since {new Date(user.telegram_linked_at).toLocaleString()}</span>
+          </p>
+        ) : (
+          <p className="text-sm text-neutral-500">Not linked yet — link your account to get a Telegram message when you create orders.</p>
+        )}
+
+        <div className="text-xs text-neutral-600 bg-[#faf8f6] border border-neutral-200 rounded-lg p-3 space-y-1">
+          <p className="font-semibold text-neutral-700">How to link:</p>
+          <ol className="list-decimal list-inside space-y-0.5">
+            <li>Open the Telegram bot{botUsername ? <> (<span className="font-mono">@{botUsername}</span>)</> : ''}.</li>
+            <li>Send: <code className="font-mono bg-white px-1 rounded border border-neutral-200">/login {user.email} your_password</code></li>
+          </ol>
+          <p className="text-neutral-400">Your password is only used once to link and the message is auto-deleted.</p>
+        </div>
+
+        <div className="flex gap-2 flex-wrap">
+          {botUsername && (
+            <button onClick={openTelegramBot} className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-sm rounded-lg">
+              Open Telegram bot
+            </button>
+          )}
+          {user.telegram_linked_at && (
+            <button onClick={handleUnlinkTelegram} disabled={unlinking} className="px-4 py-2 bg-red-50 hover:bg-red-100 disabled:opacity-50 text-red-500 text-sm rounded-lg">
+              {unlinking ? 'Unlinking…' : 'Unlink'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Edit profile */}

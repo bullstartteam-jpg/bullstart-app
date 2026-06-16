@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { hasOrderFailure, countOrderFailures, URL_FAILURES_EVENT } from '../services/urlFailureCache';
+import { hasOrderFailure, countOrderFailures, syncOrders, URL_FAILURES_EVENT } from '../services/urlFailureCache';
 
 const STATUS_COLORS = {
   new_order: 'bg-blue-100 text-blue-600',
@@ -32,6 +32,10 @@ export default function Dashboard() {
   useEffect(() => {
     api.get('/dashboard').then(res => {
       setStats(res.data);
+      // Validate the recent-orders rows: shows stored badges immediately, then
+      // checks any not-yet-validated order in the client (the dashboard payload
+      // omits item URLs, so syncOrders fetches each by id) with a progress toast.
+      syncOrders((res.data?.recent_orders || []).map(o => o.id));
     }).finally(() => setLoading(false));
   }, []);
 

@@ -7,8 +7,7 @@ import { UrlPreview, PreviewModal } from '../components/Preview';
 import { isPreviewable } from '../utils/drive';
 import { notify, askConfirm } from '../components/Dialog';
 import UploadButton from '../components/UploadButton';
-import { validateImageUrl, collectItemUrls, runWithConcurrency } from '../utils/imageUrlCheck';
-import { getOrderFailures, setOrderResult, URL_FAILURES_EVENT } from '../services/urlFailureCache';
+import { getOrderFailures, syncOrders, recheckOrder, fetchOrdersStatus, URL_FAILURES_EVENT } from '../services/urlFailureCache';
 
 const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
@@ -34,33 +33,30 @@ export default function OrderDetail() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({});
   const [previewUrl, setPreviewUrl] = useState(null);
-  // Image-URL validation failures for this order, read from the local cache that
-  // the CSV-import background check populates. Refreshes on the shared event so
-  // a re-check (or a finishing background run) shows immediately.
+  // Image-URL validation failures for this order, read from the server-backed
+  // store. syncOrders fetches the latest status (and triggers background
+  // validation if the order was never checked); the shared event then refreshes
+  // this view so a re-check or a finishing background run shows immediately.
   const [urlFailures, setUrlFailures] = useState(null);
   const [rechecking, setRechecking] = useState(false);
   useEffect(() => {
     const refresh = () => setUrlFailures(getOrderFailures(id));
     refresh();
     window.addEventListener(URL_FAILURES_EVENT, refresh);
+    // Show stored status immediately; actual (re)validation of an unchecked
+    // order happens once the order (with items) loads — see fetchOrder.
+    fetchOrdersStatus([id]).catch(() => {});
     return () => window.removeEventListener(URL_FAILURES_EVENT, refresh);
   }, [id]);
 
-  // Re-validate every image URL on this order on demand and update the cache.
+  // Re-validate every image URL on this order on demand (client-side, saved to DB).
   const recheckUrls = async () => {
     if (!order) return;
     setRechecking(true);
     try {
-      const itemFailures = {};
-      for (const item of order.items || []) {
-        const urls = collectItemUrls(item);
-        if (!urls.length) continue;
-        const results = await runWithConcurrency(urls, 5, (c) => validateImageUrl(c.url));
-        const fields = {};
-        urls.forEach((c, i) => { if (results[i] && !results[i].ok) fields[c.field] = results[i].reason; });
-        if (Object.keys(fields).length) itemFailures[item.id] = fields;
-      }
-      setOrderResult(order.id, itemFailures, Date.now());
+      await recheckOrder(order);
+    } catch {
+      notify('Re-check failed', { title: 'Image URL check', kind: 'error' });
     } finally {
       setRechecking(false);
     }
@@ -79,6 +75,10 @@ export default function OrderDetail() {
     api.get(`/orders/${id}`).then(res => {
       const o = res.data.order;
       setOrder(o);
+      // Validate this order's images in the client if it was never checked
+      // (skips shipped + already-validated); persists the result to the DB.
+      // Silent — the detail view has its own inline "Re-check images" feedback.
+      syncOrders([o], { toast: false });
       const a = o.address || {};
       setForm({
         status: o.status,

@@ -6,7 +6,7 @@ import { notify, askConfirm } from '../components/Dialog';
 import { buildInvoicePdf } from '../services/invoicePdf';
 import { PreviewModal } from '../components/Preview';
 import { driveThumb, isPreviewable } from '../utils/drive';
-import { hasOrderFailure, countOrderFailures, URL_FAILURES_EVENT } from '../services/urlFailureCache';
+import { hasOrderFailure, countOrderFailures, syncOrders, URL_FAILURES_EVENT } from '../services/urlFailureCache';
 
 // Group an order's thumbnails by item so each row shows variant + its
 // designs/mockups together. Data is already eager-loaded by the orders index
@@ -143,6 +143,11 @@ export default function Orders() {
     api.get('/orders', { params }).then(res => {
       setOrders(res.data.data);
       setMeta(res.data);
+      // Image-URL validation: reads stored status for the visible orders, then
+      // validates (in the client) any not-yet-checked, non-shipped order and
+      // saves the result to the DB. Runs in the background — the warning badges
+      // appear as each order finishes.
+      syncOrders(res.data.data || []);
     }).finally(() => setLoading(false));
   };
 

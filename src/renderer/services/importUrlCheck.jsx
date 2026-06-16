@@ -1,65 +1,36 @@
-// App-wide background job that validates the image URLs of the orders created
-// by a CSV import. Lives at module scope (not inside a component) so it keeps
-// running — and keeps reporting progress via toasts — after the user navigates
-// away from the Create Order page.
+// Post-import image-URL check.
 //
-// Flow: import inserts the data first; the caller then fires this and returns.
-// We fetch the just-created orders (the /orders index sorts id desc and
-// auto-scopes sellers, so page 1 is the newest rows), validate each item's
-// image URLs, record failures to urlFailureCache (which the Orders list /
-// Order detail surface), and show a single progress toast + a completion toast.
+// Thin helper over syncOrders: it batch-fetches the just-created orders (with
+// items) in one request, then hands them to syncOrders, which validates each
+// in the client, saves the result to the DB, and shows the bottom-right
+// progress + summary toast — the same path the Orders list / Dashboard use.
 
 import api from './api';
-import { validateImageUrl, collectItemUrls, runWithConcurrency } from '../utils/imageUrlCheck';
-import { setOrderResult } from './urlFailureCache';
-import { pushToast, updateToast } from '../components/Toast';
+import { syncOrders } from './urlFailureCache';
 
-let running = false;
+// `orderIds` are the ids returned by POST /orders/import-csv (created_ids).
+export async function runImportUrlCheck({ orderIds, userId } = {}) {
+  const ids = [...new Set((orderIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) return;
 
-export async function runImportUrlCheck({ createdCount, userId } = {}) {
-  if (!createdCount) return;
-  if (running) return; // one CSV import at a time — ignore re-entry.
-  running = true;
+  // Batch-fetch the newest page (import rows are the newest, id desc) so we get
+  // full order objects with items in one request instead of one-per-order.
+  const idSet = new Set(ids);
+  const params = { page: 1, per_page: Math.min(ids.length, 100) };
+  if (userId) params.user_id = userId;
 
-  const id = pushToast({ kind: 'progress', title: 'Image URL check', message: 'Starting…' });
+  let orders = [];
   try {
-    const params = { page: 1, per_page: Math.min(createdCount, 100) };
-    if (userId) params.user_id = userId;
     const res = await api.get('/orders', { params });
-    const orders = res.data?.data || [];
-    const checkedAt = Date.now();
-    const total = orders.length;
-    let issues = 0;
-    let done = 0;
-
-    for (const order of orders) {
-      const itemFailures = {};
-      for (const item of order.items || []) {
-        const urls = collectItemUrls(item);
-        if (!urls.length) continue;
-        const results = await runWithConcurrency(urls, 5, (c) => validateImageUrl(c.url));
-        const fields = {};
-        urls.forEach((c, i) => { if (results[i] && !results[i].ok) fields[c.field] = results[i].reason; });
-        if (Object.keys(fields).length) itemFailures[item.id] = fields;
-      }
-      if (Object.keys(itemFailures).length) issues++;
-      setOrderResult(order.id, itemFailures, checkedAt);
-      done++;
-      updateToast(id, { message: `Checking image URLs… ${done}/${total} orders` });
-    }
-
-    updateToast(id, {
-      kind: issues ? 'warning' : 'success',
-      sticky: issues > 0,
-      durationMs: 6000,
-      message: issues
-        ? `${issues} of ${total} order(s) have image URL issues.`
-        : `All ${total} imported order(s) have valid image URLs.`,
-      action: issues ? { label: 'View orders', onClick: () => { window.location.hash = '#/orders'; } } : undefined,
-    });
+    orders = (res.data?.data || []).filter((o) => idSet.has(o.id));
   } catch {
-    updateToast(id, { kind: 'error', sticky: false, durationMs: 6000, message: 'Background image URL check failed.' });
-  } finally {
-    running = false;
+    orders = [];
   }
+
+  // Any ids beyond the first page (very large import) fall back to bare ids;
+  // syncOrders fetches their items individually.
+  const fetched = new Set(orders.map((o) => o.id));
+  const rest = ids.filter((id) => !fetched.has(id));
+
+  syncOrders([...orders, ...rest]);
 }
