@@ -176,7 +176,10 @@ export default function Dashboard() {
 // out of the list after the dashboard reloads. Each system_id links to its order.
 function TrackingNotRun({ data, onChecked }) {
   const navigate = useNavigate();
-  const groups = data?.not_run_by_seller || [];
+  // Bucketed by ship day, each day split per seller (falls back to the flat
+  // by-seller payload wrapped as a single day for older API responses).
+  const days = data?.not_run_by_day
+    || (data?.not_run_by_seller ? [{ date: null, count: data.not_run, sellers: data.not_run_by_seller }] : []);
   const [selected, setSelected] = useState(() => new Set());
   const [changedIds, setChangedIds] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
@@ -186,13 +189,23 @@ function TrackingNotRun({ data, onChecked }) {
   const [keyInput, setKeyInput] = useState('');
   const [keyBusy, setKeyBusy] = useState(false);
 
-  const allIds = useMemo(() => groups.flatMap(s => s.orders.map(o => o.id)), [groups]);
+  const allIds = useMemo(
+    () => days.flatMap(d => d.sellers.flatMap(s => s.orders.map(o => o.id))),
+    [days],
+  );
   // id -> system_id, so a selection by order id can be copied as readable system ids.
   const sysById = useMemo(() => {
     const m = new Map();
-    groups.forEach(s => s.orders.forEach(o => m.set(o.id, o.system_id)));
+    days.forEach(d => d.sellers.forEach(s => s.orders.forEach(o => m.set(o.id, o.system_id))));
     return m;
-  }, [groups]);
+  }, [days]);
+
+  // Ship day label: 'YYYY-MM-DD' → "T6 13/06" (anchored at noon to dodge tz shift).
+  const fmtDay = (date) => {
+    if (!date) return 'Khác';
+    const d = new Date(`${date}T12:00:00`);
+    return d.toLocaleDateString('vi-VN', { weekday: 'short', day: '2-digit', month: '2-digit' });
+  };
 
   const loadKey = () => api.get('/tracking/shipengine-key').then(res => setKeyInfo(res.data)).catch(() => setKeyInfo(null));
   useEffect(() => { loadKey(); }, []);
@@ -218,13 +231,14 @@ function TrackingNotRun({ data, onChecked }) {
     next.has(id) ? next.delete(id) : next.add(id);
     return next;
   });
-  const toggleGroup = (s) => setSelected(prev => {
+  const toggleIds = (ids) => setSelected(prev => {
     const next = new Set(prev);
-    const ids = s.orders.map(o => o.id);
     const allOn = ids.every(id => next.has(id));
     ids.forEach(id => (allOn ? next.delete(id) : next.add(id)));
     return next;
   });
+  const toggleGroup = (s) => toggleIds(s.orders.map(o => o.id));
+  const toggleDay = (d) => toggleIds(d.sellers.flatMap(s => s.orders.map(o => o.id)));
 
   const copySelected = async () => {
     if (!selected.size) return;
@@ -253,12 +267,12 @@ function TrackingNotRun({ data, onChecked }) {
     }
   };
 
-  if (!groups.length) return null;
+  if (!days.length) return null;
 
   return (
     <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm mb-6">
       <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
-        <h3 className="text-sm font-semibold text-red-700">🚦 Chưa run tracking · ship 7 ngày · theo seller ({data.not_run})</h3>
+        <h3 className="text-sm font-semibold text-red-700">🚦 Chưa run tracking · ship 7 ngày · theo ngày ({data.not_run})</h3>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowKey(v => !v)}
@@ -311,34 +325,50 @@ function TrackingNotRun({ data, onChecked }) {
           </button>
         </div>
       )}
-      <div className="space-y-3">
-        {groups.map(s => {
-          const ids = s.orders.map(o => o.id);
-          const allOn = ids.length > 0 && ids.every(id => selected.has(id));
+      <div className="space-y-4">
+        {days.map(d => {
+          const dayIds = d.sellers.flatMap(s => s.orders.map(o => o.id));
+          const dayAllOn = dayIds.length > 0 && dayIds.every(id => selected.has(id));
           return (
-            <div key={s.user_id} className="border-b border-neutral-100 last:border-0 pb-2 last:pb-0">
-              <div className="flex items-center justify-between mb-1">
-                <button onClick={() => toggleGroup(s)} className="text-sm font-medium text-neutral-800 hover:text-orange-600">
-                  {allOn ? '☑' : '☐'} {s.user || `User #${s.user_id}`}
+            <div key={d.date || 'other'} className="rounded-lg border border-neutral-200">
+              <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-[#faf8f6] rounded-t-lg border-b border-neutral-200">
+                <button onClick={() => toggleDay(d)} className="text-sm font-semibold text-neutral-800 hover:text-orange-600">
+                  {dayAllOn ? '☑' : '☐'} 📅 {fmtDay(d.date)}
                 </button>
-                <span className="text-xs font-bold text-red-600">{s.count}</span>
+                <span className="text-xs font-bold text-red-600">{d.count}</span>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {s.orders.map(o => {
-                  const on = selected.has(o.id);
+              <div className="p-3 space-y-3">
+                {d.sellers.map(s => {
+                  const ids = s.orders.map(o => o.id);
+                  const allOn = ids.length > 0 && ids.every(id => selected.has(id));
                   return (
-                    <span
-                      key={o.id}
-                      title={o.status}
-                      className={`inline-flex items-center gap-1 font-mono text-[11px] px-1.5 py-0.5 rounded border ${
-                        on ? 'bg-orange-50 border-orange-300' : 'bg-neutral-100 border-transparent'
-                      } ${changedIds.has(o.id) ? 'ring-1 ring-emerald-400' : ''}`}
-                    >
-                      <input type="checkbox" checked={on} onChange={() => toggle(o.id)} className="accent-orange-500 cursor-pointer" />
-                      <button onClick={() => navigate(`/orders/${o.id}`)} className="text-neutral-600 hover:text-orange-600 hover:underline">
-                        {o.system_id}
-                      </button>
-                    </span>
+                    <div key={s.user_id} className="border-b border-neutral-100 last:border-0 pb-2 last:pb-0">
+                      <div className="flex items-center justify-between mb-1">
+                        <button onClick={() => toggleGroup(s)} className="text-sm font-medium text-neutral-800 hover:text-orange-600">
+                          {allOn ? '☑' : '☐'} {s.user || `User #${s.user_id}`}
+                        </button>
+                        <span className="text-xs font-bold text-red-600">{s.count}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {s.orders.map(o => {
+                          const on = selected.has(o.id);
+                          return (
+                            <span
+                              key={o.id}
+                              title={o.status}
+                              className={`inline-flex items-center gap-1 font-mono text-[11px] px-1.5 py-0.5 rounded border ${
+                                on ? 'bg-orange-50 border-orange-300' : 'bg-neutral-100 border-transparent'
+                              } ${changedIds.has(o.id) ? 'ring-1 ring-emerald-400' : ''}`}
+                            >
+                              <input type="checkbox" checked={on} onChange={() => toggle(o.id)} className="accent-orange-500 cursor-pointer" />
+                              <button onClick={() => navigate(`/orders/${o.id}`)} className="text-neutral-600 hover:text-orange-600 hover:underline">
+                                {o.system_id}
+                              </button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
                   );
                 })}
               </div>

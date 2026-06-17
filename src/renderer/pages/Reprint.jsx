@@ -23,6 +23,15 @@ export default function Reprint() {
   const inputRef = useRef(null);
 
   const refocus = () => inputRef.current?.focus();
+  // Refocus the scan box only if the user isn't actively in another control.
+  // Without this guard, opening a <select> blurs the input, and the delayed
+  // refocus steals focus back → the native dropdown closes immediately.
+  const INTERACTIVE = ['SELECT', 'INPUT', 'TEXTAREA', 'BUTTON', 'OPTION', 'A'];
+  const refocusUnlessInteracting = () => {
+    const ae = document.activeElement;
+    if (ae && ae !== inputRef.current && INTERACTIVE.includes(ae.tagName)) return;
+    refocus();
+  };
 
   const load = async () => {
     const [rp, rs] = await Promise.all([api.get('/reprints'), api.get('/reasons')]);
@@ -164,7 +173,7 @@ export default function Reprint() {
   };
 
   return (
-    <div className="p-6 space-y-4" onClick={refocus}>
+    <div className="p-6 space-y-4" onClick={refocusUnlessInteracting}>
       <h2 className="text-xl font-bold text-neutral-800">Reprint</h2>
 
       {/* Scan box */}
@@ -176,7 +185,7 @@ export default function Reprint() {
           ref={inputRef}
           value={scan}
           onChange={e => setScan(e.target.value)}
-          onBlur={() => setTimeout(refocus, 50)}
+          onBlur={() => setTimeout(refocusUnlessInteracting, 50)}
           autoFocus
           placeholder="Đưa máy quét vào đây…"
           className="w-full px-3 py-2 bg-[#faf8f6] border border-orange-300 rounded-lg text-base font-mono focus:outline-none focus:ring-2 focus:ring-orange-400"
@@ -189,7 +198,7 @@ export default function Reprint() {
           {activeReason && (
             <button type="button" onClick={() => setActiveReason(null)} className="text-xs text-neutral-400 hover:text-red-500">bỏ</button>
           )}
-          <select value="" onClick={e => e.stopPropagation()} onChange={e => { const r = reasons.find(x => x.id === Number(e.target.value)); if (r) setActiveReason(r); }}
+          <select value="" onClick={e => e.stopPropagation()} onChange={e => { const r = reasons.find(x => x.id === Number(e.target.value)); if (r) setActiveReason(r); setTimeout(refocus, 0); }}
             className="ml-auto px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded-lg text-xs">
             <option value="">+ chọn reason thủ công</option>
             {reasons.map(r => <option key={r.id} value={r.id}>{r.name} ({r.code})</option>)}
@@ -236,7 +245,7 @@ export default function Reprint() {
                 <td className="px-3 py-2"><input type="checkbox" checked={checked.has(r.id)} onClick={e => e.stopPropagation()} onChange={() => toggleCheck(r.id)} /></td>
                 <td className="px-3 py-2 font-mono text-orange-600">{r.system_id}</td>
                 <td className="px-3 py-2">
-                  <select value={r.reason_id || ''} onClick={e => e.stopPropagation()} onChange={e => setReason(r, e.target.value)}
+                  <select value={r.reason_id || ''} onClick={e => e.stopPropagation()} onChange={e => { setReason(r, e.target.value); setTimeout(refocus, 0); }}
                     className={`px-2 py-1 rounded text-xs border ${r.reason_id ? 'bg-white border-neutral-200' : 'bg-yellow-50 border-yellow-300 text-yellow-700'}`}>
                     <option value="">— chưa có reason —</option>
                     {reasons.map(rs => <option key={rs.id} value={rs.id}>{rs.name}</option>)}

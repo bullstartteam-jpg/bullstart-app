@@ -23,10 +23,20 @@ export default function Wallet() {
   // Split deposit vs paid into separate tabs. Each tab paginates independently;
   // switching tabs resets the page back to 1 so users don't land on an empty
   // page 5 when the new filter only has 2 results.
-  const [activeTab, setActiveTab] = useState('deposits'); // 'deposits' | 'paid'
+  const [activeTab, setActiveTab] = useState('deposits'); // 'deposits' | 'paid' | 'refunds'
   // Filter state — applies to both the table view and the CSV export.
   // Admin can pick a specific user; sellers only see their own (server enforces).
-  const [filters, setFilters] = useState({ user_id: '', date_from: '', date_to: '' });
+  const [filters, setFilters] = useState({ user_id: '', date_from: '', date_to: '', search: '' });
+  // Separate text state so typing debounces into `filters.search` (which drives
+  // the request) rather than firing a query on every keystroke.
+  const [searchInput, setSearchInput] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setFilters(f => (f.search === searchInput.trim() ? f : { ...f, search: searchInput.trim() }));
+      setPage(1);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   // VNPay deposit. Admin can pick a target user to top up on their behalf
   // (vnpayUserId); sellers always credit their own wallet (server enforces).
@@ -90,10 +100,12 @@ export default function Wallet() {
   const { hasRole, user: authUser } = useAuth();
 
   const buildParams = (extra = {}) => {
-    const p = { type: activeTab === 'paid' ? 'paid' : 'deposit', ...extra };
+    const TAB_TYPE = { paid: 'paid', refunds: 'refund', deposits: 'deposit' };
+    const p = { type: TAB_TYPE[activeTab] || 'deposit', ...extra };
     if (filters.user_id)   p.user_id   = filters.user_id;
     if (filters.date_from) p.date_from = filters.date_from;
     if (filters.date_to)   p.date_to   = filters.date_to;
+    if (filters.search)    p.search    = filters.search;
     return p;
   };
 
@@ -124,7 +136,7 @@ export default function Wallet() {
       })
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, activeTab, filters.user_id, filters.date_from, filters.date_to]);
+  }, [page, activeTab, filters.user_id, filters.date_from, filters.date_to, filters.search]);
 
   const switchTab = (tab) => {
     if (tab === activeTab) return;
@@ -197,7 +209,11 @@ export default function Wallet() {
   // refunded by mistake.
   const [selectedTxIds, setSelectedTxIds] = useState(new Set());
   const [bulkRefunding, setBulkRefunding] = useState(false);
-  useEffect(() => { setSelectedTxIds(new Set()); }, [page, activeTab, filters.user_id, filters.date_from, filters.date_to]);
+  useEffect(() => { setSelectedTxIds(new Set()); }, [page, activeTab, filters.user_id, filters.date_from, filters.date_to, filters.search]);
+
+  // A paid tx can be refunded only once — already-refunded rows (refunded_at
+  // set, e.g. via the keep-history bulk refund) are excluded from selection.
+  const isRefundable = (t) => t.type === 'paid' && !t.refunded_at;
 
   const toggleSelectTx = (id) => setSelectedTxIds(prev => {
     const next = new Set(prev);
@@ -205,11 +221,38 @@ export default function Wallet() {
     return next;
   });
   const toggleSelectAllTx = () => {
-    const eligible = transactions.filter(t => t.type === 'paid').map(t => t.id);
-    if (eligible.every(id => selectedTxIds.has(id))) {
+    const eligible = transactions.filter(isRefundable).map(t => t.id);
+    if (eligible.length > 0 && eligible.every(id => selectedTxIds.has(id))) {
       setSelectedTxIds(new Set());
     } else {
       setSelectedTxIds(new Set(eligible));
+    }
+  };
+
+  const handleBulkRefund = async () => {
+    const ids = [...selectedTxIds];
+    if (ids.length === 0) return;
+    const ok = await askConfirm(
+      `Refund ${ids.length} transaction(s)?\n\n` +
+      `Số tiền sẽ được cộng lại vào wallet user, tạo thêm 1 transaction refund (giữ lại transaction paid gốc), và paid_cost của đơn liên quan trừ về như chưa pay.`,
+      { title: 'Confirm refund', okText: 'Refund' }
+    );
+    if (!ok) return;
+    setBulkRefunding(true);
+    try {
+      const res = await api.post('/wallet/transactions/bulk-refund', { transaction_ids: ids });
+      const errs = res.data.errors || [];
+      const tone = errs.length ? 'warning' : 'success';
+      notify(
+        `${res.data.message}${errs.length ? `\n\nSkipped: ${errs.length}\n• ${errs.slice(0, 5).join('\n• ')}` : ''}`,
+        { title: 'Bulk refund', kind: tone }
+      );
+      setSelectedTxIds(new Set());
+      refreshAll();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Bulk refund failed', { title: 'Bulk refund failed', kind: 'error' });
+    } finally {
+      setBulkRefunding(false);
     }
   };
 
@@ -279,14 +322,24 @@ export default function Wallet() {
         <h2 className="text-xl font-bold text-neutral-800">Wallet</h2>
         <div className="flex gap-2">
           {hasRole('admin') && activeTab === 'paid' && selectedTxIds.size > 0 && (
-            <button
-              onClick={handleBulkRefundDelete}
-              disabled={bulkRefunding}
-              className="px-3 py-2 bg-red-100 hover:bg-red-200 disabled:opacity-50 text-red-700 text-sm rounded-lg"
-              title="Hoàn tiền các transaction đã chọn + xoá bản ghi + reset paid_cost của đơn"
-            >
-              {bulkRefunding ? 'Refunding…' : `↩ Refund + Delete (${selectedTxIds.size})`}
-            </button>
+            <>
+              <button
+                onClick={handleBulkRefund}
+                disabled={bulkRefunding}
+                className="px-3 py-2 bg-blue-100 hover:bg-blue-200 disabled:opacity-50 text-blue-700 text-sm rounded-lg"
+                title="Hoàn tiền các transaction đã chọn + tạo transaction refund (giữ lại bản ghi paid) + reset paid_cost của đơn"
+              >
+                {bulkRefunding ? 'Refunding…' : `↩ Refund (${selectedTxIds.size})`}
+              </button>
+              <button
+                onClick={handleBulkRefundDelete}
+                disabled={bulkRefunding}
+                className="px-3 py-2 bg-red-100 hover:bg-red-200 disabled:opacity-50 text-red-700 text-sm rounded-lg"
+                title="Hoàn tiền các transaction đã chọn + xoá bản ghi + reset paid_cost của đơn"
+              >
+                {bulkRefunding ? 'Refunding…' : `↩ Refund + Delete (${selectedTxIds.size})`}
+              </button>
+            </>
           )}
           <button
             onClick={handleExport}
@@ -294,7 +347,7 @@ export default function Wallet() {
             className="px-3 py-2 bg-purple-100 hover:bg-purple-200 disabled:opacity-50 text-purple-700 text-sm rounded-lg"
             title={`Export tab "${activeTab}" sang CSV`}
           >
-            {exporting ? 'Exporting…' : `⬇ Export ${activeTab === 'paid' ? 'Paid' : 'Deposits'}`}
+            {exporting ? 'Exporting…' : `⬇ Export ${activeTab === 'paid' ? 'Paid' : activeTab === 'refunds' ? 'Refunds' : 'Deposits'}`}
           </button>
           <button
             onClick={() => { setShowVnpay(true); setShowDeposit(false); }}
@@ -461,6 +514,16 @@ export default function Wallet() {
           </div>
         )}
         <div>
+          <label className="block text-[10px] uppercase tracking-wider text-neutral-500 font-semibold mb-1">Search</label>
+          <input
+            type="text"
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            placeholder="ref_id hoặc system_id…"
+            className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-sm min-w-[200px]"
+          />
+        </div>
+        <div>
           <label className="block text-[10px] uppercase tracking-wider text-neutral-500 font-semibold mb-1">From</label>
           <input
             type="date"
@@ -478,9 +541,9 @@ export default function Wallet() {
             className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-sm"
           />
         </div>
-        {(filters.user_id || filters.date_from || filters.date_to) && (
+        {(filters.user_id || filters.date_from || filters.date_to || filters.search) && (
           <button
-            onClick={() => { setFilters({ user_id: '', date_from: '', date_to: '' }); setPage(1); }}
+            onClick={() => { setFilters({ user_id: '', date_from: '', date_to: '', search: '' }); setSearchInput(''); setPage(1); }}
             className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded"
           >
             Clear filters
@@ -501,6 +564,9 @@ export default function Wallet() {
         <TabBtn active={activeTab === 'paid'} onClick={() => switchTab('paid')}>
           Paid {balance && <span className="ml-1 text-xs opacity-70">${balance.total_paid}</span>}
         </TabBtn>
+        <TabBtn active={activeTab === 'refunds'} onClick={() => switchTab('refunds')}>
+          Refunds {balance && <span className="ml-1 text-xs opacity-70">${balance.total_refunded}</span>}
+        </TabBtn>
       </div>
 
       {/* Transactions table */}
@@ -514,8 +580,8 @@ export default function Wallet() {
                     type="checkbox"
                     onChange={toggleSelectAllTx}
                     checked={
-                      transactions.filter(t => t.type === 'paid').length > 0 &&
-                      transactions.filter(t => t.type === 'paid').every(t => selectedTxIds.has(t.id))
+                      transactions.filter(isRefundable).length > 0 &&
+                      transactions.filter(isRefundable).every(t => selectedTxIds.has(t.id))
                     }
                     className="accent-orange-500"
                     title="Select all paid on this page"
@@ -543,7 +609,7 @@ export default function Wallet() {
               <tr><td colSpan={hasRole('admin') && activeTab === 'paid' ? 13 : 12} className="p-6 text-center text-neutral-400">No transactions</td></tr>
             ) : transactions.map(t => {
               const editing = editingTxId === t.id;
-              const eligible = hasRole('admin') && activeTab === 'paid' && t.type === 'paid';
+              const eligible = hasRole('admin') && activeTab === 'paid' && isRefundable(t);
               const isSel = selectedTxIds.has(t.id);
               return (
                 <tr key={t.id} className={`border-b border-neutral-100 ${isSel ? 'bg-orange-50/60' : ''}`}>
@@ -556,6 +622,8 @@ export default function Wallet() {
                           onChange={() => toggleSelectTx(t.id)}
                           className="accent-orange-500"
                         />
+                      ) : t.type === 'paid' && t.refunded_at ? (
+                        <span className="text-blue-500" title={`Đã refund lúc ${new Date(t.refunded_at).toLocaleString()}`}>↩</span>
                       ) : <span className="text-neutral-300">—</span>}
                     </td>
                   )}
