@@ -20,6 +20,7 @@ import Gangsheet from './pages/Gangsheet';
 import GangsheetLabel from './pages/GangsheetLabel';
 import AutoPay from './pages/AutoPay';
 import Reprint from './pages/Reprint';
+import NotDelivered from './pages/NotDelivered';
 import Reasons from './pages/Reasons';
 import Profile from './pages/Profile';
 import { DialogHost } from './components/Dialog';
@@ -53,6 +54,7 @@ export default function App() {
           <Route path="convert-label" element={<ConvertLabel />} />
           <Route path="auto-pay" element={<AutoPay />} />
           <Route path="reprint" element={<Reprint />} />
+          <Route path="not-delivered" element={<NotDelivered />} />
           <Route path="reasons" element={<Reasons />} />
           <Route path="gangsheet" element={<Gangsheet />} />
           <Route path="gangsheet-label" element={<GangsheetLabel />} />

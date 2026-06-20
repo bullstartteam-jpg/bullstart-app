@@ -1694,18 +1694,43 @@ function PartnerAssignModal({ gs, onClose, onSaved }) {
   const [selected, setSelected] = useState(new Set((gs.partners || []).map(p => p.id)));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Per-order revenue split. Loaded once; the editor shows when exactly one
+  // partner is selected (revenue is assigned to a single partner per order).
+  const [orders, setOrders] = useState(null);
+  const [revenue, setRevenue] = useState({});   // { order_id: string }
+  const [savingRev, setSavingRev] = useState(false);
+
+  const singlePartner = selected.size === 1 ? [...selected][0] : null;
 
   useEffect(() => {
     api.get('/gangsheets/partner-users')
       .then(res => setUsers(res.data || []))
       .finally(() => setLoading(false));
+    api.get(`/gangsheets/${gs.id}`)
+      .then(res => setOrders(res.data?.orders || []))
+      .catch(() => setOrders([]));
   }, []);
+
+  // Prefill the revenue inputs from each order's stored amount when it's
+  // already assigned to the single selected partner.
+  useEffect(() => {
+    if (!orders || !singlePartner) { setRevenue({}); return; }
+    const next = {};
+    for (const o of orders) {
+      if (o.partner_id === singlePartner && o.partner_revenue != null) {
+        next[o.id] = String(o.partner_revenue);
+      }
+    }
+    setRevenue(next);
+  }, [orders, singlePartner]);
 
   const toggle = (id) => setSelected(prev => {
     const next = new Set(prev);
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
+
+  const isLocked = (o) => !!o.partner_locked_at;
 
   const save = async () => {
     setSaving(true);
@@ -1718,14 +1743,33 @@ function PartnerAssignModal({ gs, onClose, onSaved }) {
     } finally { setSaving(false); }
   };
 
+  const saveRevenue = async () => {
+    if (!singlePartner || !orders) return;
+    setSavingRev(true);
+    try {
+      const items = orders
+        .filter(o => !isLocked(o))
+        .map(o => ({ order_id: o.id, revenue: revenue[o.id] === '' || revenue[o.id] == null ? null : Number(revenue[o.id]) }));
+      const res = await api.put(`/gangsheets/${gs.id}/partner-revenue`, { user_id: singlePartner, items });
+      const r = await api.get(`/gangsheets/${gs.id}`);
+      setOrders(r.data?.orders || []);
+      onSaved?.();
+      alert(res.data?.message || 'Đã lưu doanh thu');
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Lưu doanh thu thất bại');
+    } finally { setSavingRev(false); }
+  };
+
+  const revTotal = orders ? orders.reduce((s, o) => s + (Number(revenue[o.id]) || 0), 0) : 0;
+
   return (
     <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
-      <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[90vw] max-w-md max-h-[85vh] flex flex-col overflow-hidden">
+      <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[90vw] max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
         <div className="px-4 py-3 border-b border-neutral-200 flex justify-between items-center">
           <h3 className="text-sm font-semibold text-neutral-800">Phân quyền partner — <span className="font-mono">{gs.filename}</span></h3>
           <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800 text-xl leading-none">×</button>
         </div>
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {loading ? (
             <p className="text-neutral-400 text-sm">Loading…</p>
           ) : users.length === 0 ? (
@@ -1741,11 +1785,76 @@ function PartnerAssignModal({ gs, onClose, onSaved }) {
               ))}
             </div>
           )}
+
+          {/* Revenue split — only when exactly one partner is targeted. */}
+          {users.length > 0 && (
+            !singlePartner ? (
+              <p className="text-xs text-neutral-400 border-t border-neutral-100 pt-3">
+                Chọn đúng <b>1 partner</b> để nhập doanh thu phân chia cho từng đơn.
+              </p>
+            ) : (
+              <div className="border-t border-neutral-100 pt-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-neutral-600">Doanh thu / đơn cho <b>{users.find(u => u.id === singlePartner)?.name}</b></span>
+                  <span className="text-xs text-neutral-500">Tổng nhập: <b className="text-orange-600">${revTotal.toFixed(2)}</b></span>
+                </div>
+                {!orders ? (
+                  <p className="text-neutral-400 text-sm">Loading orders…</p>
+                ) : orders.length === 0 ? (
+                  <p className="text-neutral-400 text-sm">Gang này không có đơn.</p>
+                ) : (
+                  <div className="border border-neutral-200 rounded-lg overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead className="bg-[#faf8f6] text-neutral-500">
+                        <tr>
+                          <th className="text-left px-2 py-1.5">System ID</th>
+                          <th className="text-right px-2 py-1.5">Total</th>
+                          <th className="text-left px-2 py-1.5">Doanh thu partner</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orders.map(o => {
+                          const locked = isLocked(o);
+                          return (
+                            <tr key={o.id} className="border-t border-neutral-100">
+                              <td className="px-2 py-1.5 font-mono text-orange-600">{o.system_id}</td>
+                              <td className="px-2 py-1.5 text-right text-neutral-500">${o.total_cost}</td>
+                              <td className="px-2 py-1.5">
+                                {locked ? (
+                                  <span className="text-neutral-500" title={`Đã khoá (partner đã in) lúc ${new Date(o.partner_locked_at).toLocaleString()}`}>
+                                    🔒 ${o.partner_revenue ?? '0'} {o.partner?.name ? `· ${o.partner.name}` : ''}
+                                  </span>
+                                ) : (
+                                  <input
+                                    type="number" step="0.01" min="0"
+                                    value={revenue[o.id] ?? ''}
+                                    onChange={e => setRevenue(r => ({ ...r, [o.id]: e.target.value }))}
+                                    placeholder="0.00"
+                                    className="w-28 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-xs text-right font-mono"
+                                  />
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <div className="flex justify-end mt-2">
+                  <button onClick={saveRevenue} disabled={savingRev || !orders?.length}
+                    className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white text-xs rounded-lg">
+                    {savingRev ? 'Đang lưu…' : 'Lưu doanh thu'}
+                  </button>
+                </div>
+              </div>
+            )
+          )}
         </div>
         <div className="px-4 py-3 border-t border-neutral-200 flex justify-end gap-2">
           <button onClick={onClose} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Huỷ</button>
           <button onClick={save} disabled={saving} className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">
-            {saving ? 'Đang lưu…' : `Lưu (${selected.size})`}
+            {saving ? 'Đang lưu…' : `Lưu phân quyền (${selected.size})`}
           </button>
         </div>
       </div>

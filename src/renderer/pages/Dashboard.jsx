@@ -272,7 +272,7 @@ function TrackingNotRun({ data, onChecked }) {
   return (
     <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm mb-6">
       <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
-        <h3 className="text-sm font-semibold text-red-700">🚦 Chưa run tracking · ship 7 ngày · theo ngày ({data.not_run})</h3>
+        <h3 className="text-sm font-semibold text-red-700">🚦 Chưa run tracking · tất cả (trừ hôm nay) · theo ngày ({data.not_run})</h3>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowKey(v => !v)}
