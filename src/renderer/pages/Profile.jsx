@@ -13,7 +13,7 @@ export default function Profile() {
 
   useEffect(() => {
     if (user) {
-      setProfileForm({ name: user.name || '', email: user.email || '' });
+      setProfileForm({ name: user.name || '', email: user.email || '', auto_buy_label: !!user.auto_buy_label });
     }
   }, [user?.id]);
 
@@ -133,6 +133,16 @@ export default function Profile() {
             />
           </div>
         </div>
+        <label className="flex items-center gap-2 text-sm text-neutral-700">
+          <input
+            type="checkbox"
+            checked={!!profileForm.auto_buy_label}
+            onChange={e => setProfileForm(f => ({ ...f, auto_buy_label: e.target.checked }))}
+            className="accent-blue-500"
+          />
+          <span>Tự động mua label (Shippo) cho đơn seller_ship</span>
+          <span className="text-[11px] text-neutral-400">— app sẽ tự mua label khi bật</span>
+        </label>
         <button
           type="submit"
           disabled={savingProfile}

@@ -10,6 +10,8 @@ import {
   subscribeFetchTrackingJob, startFetchTrackingJob, stopFetchTrackingJob,
   runFetchTrackingNow, isFetchTrackingAutoEnabled,
   pauseFetchTrackingJob, resumeFetchTrackingJob,
+  subscribeAutoBuyLabelJob, startAutoBuyLabelJob, stopAutoBuyLabelJob,
+  runAutoBuyLabelNow, isAutoBuyLabelAutoEnabled,
 } from '../services/converter';
 
 // Delivery-tracking status → badge colors (matches web-bullstart).
@@ -364,6 +366,15 @@ export default function Orders() {
     else { startFetchTrackingJob(); setFtAuto(true); setFtPanelOpen(true); }
   };
 
+  // Auto buy-label job (Shippo) — same app-side cron pattern.
+  const [ablJob, setAblJob] = useState(null);
+  const [ablAuto, setAblAuto] = useState(isAutoBuyLabelAutoEnabled());
+  useEffect(() => subscribeAutoBuyLabelJob(setAblJob), []);
+  const toggleAutoBuyLabel = () => {
+    if (ablAuto) { stopAutoBuyLabelJob(); setAblAuto(false); }
+    else { startAutoBuyLabelJob(); setAblAuto(true); }
+  };
+
   const [showTracking, setShowTracking] = useState(false);
   const [trackingQueue, setTrackingQueue] = useState([]);   // [{id, system_id, shipping_label}]
   const [trackingDone, setTrackingDone] = useState(0);
@@ -378,6 +389,16 @@ export default function Orders() {
   const pushTrackingLog = (entry) => {
     setTrackingLog(prev => [...prev.slice(-99), { ...entry, at: new Date() }]);
   };
+
+  // Filename helpers: <user>_<date_from>_<date_to>. User = the filtered seller's
+  // name (or 'all'); dates fall back to 'all' when no range is set.
+  const sanitizeName = (s) => String(s ?? '').trim().replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
+  const filterUserLabel = () => {
+    if (!filters.user_id) return 'all';
+    const u = adminUsers.find(x => String(x.id) === String(filters.user_id));
+    return u?.name || `user${filters.user_id}`;
+  };
+  const dateRangeLabel = () => `${filters.date_from || 'all'}_${filters.date_to || 'all'}`;
 
   const handleExport = async () => {
     const params = {};
@@ -398,8 +419,7 @@ export default function Orders() {
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement('a');
       a.href = url;
-      const stamp = new Date().toISOString().slice(0, 10);
-      a.download = `orders_${selected.length > 0 ? `selected_${selected.length}_` : ''}${stamp}.csv`;
+      a.download = `${sanitizeName(filterUserLabel())}_${dateRangeLabel()}${selected.length > 0 ? `_selected${selected.length}` : ''}.csv`;
       a.click();
       window.URL.revokeObjectURL(url);
       notify(
@@ -436,7 +456,8 @@ export default function Orders() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `invoice_${variant}_${res.data.invoice_number || 'BULLSTART'}.pdf`;
+      const invUser = res.data.customer?.name || filterUserLabel();
+      a.download = `${sanitizeName(invUser)}_${dateRangeLabel()}_${variant}.pdf`;
       a.click();
       window.URL.revokeObjectURL(url);
       notify(
@@ -771,6 +792,13 @@ export default function Orders() {
                 className={`px-2 py-2 text-sm rounded-r-lg transition-colors ${ftAuto ? 'bg-emerald-500 hover:bg-emerald-600 text-white' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-600'}`}
               >
                 {ftPanelOpen ? '▴' : '▾'}
+              </button>
+              <button
+                onClick={toggleAutoBuyLabel}
+                title="Tự động mua label Shippo cho đơn seller_ship của seller đã bật auto (chạy trong app)"
+                className={`ml-1 px-3 py-2 text-sm rounded-lg transition-colors ${ablAuto ? 'bg-blue-500 hover:bg-blue-600 text-white' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-600'}`}
+              >
+                🏷 Auto buy-label {ablAuto ? 'ON' : 'OFF'}{ablAuto && ablJob?.running ? ' …' : ''}
               </button>
             </div>
           )}

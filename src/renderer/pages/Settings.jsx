@@ -32,6 +32,7 @@ export default function Settings() {
     { id: 'vnpay', label: 'VNPay Merchant' },
     { id: 'bank', label: 'Bank Transfer' },
     { id: 'stamp', label: 'Stamp Shipping' },
+    { id: 'shippo', label: 'Shippo' },
     { id: 'resend', label: 'Resend' },
     { id: 'appearance', label: 'Giao diện' },
     { id: 'qr', label: 'QR Portal' },
@@ -59,6 +60,7 @@ export default function Settings() {
       {tab === 'vnpay' && <VnpayMerchantTab />}
       {tab === 'bank' && <BankTransferTab />}
       {tab === 'stamp' && <StampConfigTab />}
+      {tab === 'shippo' && <ShippoConfigTab />}
       {tab === 'resend' && <ResendConfigTab />}
       {tab === 'appearance' && <AppearanceTab />}
       {tab === 'qr' && <QrConfigTab />}
@@ -276,6 +278,142 @@ function StampConfigTab() {
           {saving ? 'Saving…' : 'Save changes'}
         </button>
       </section>
+    </div>
+  );
+}
+
+// Hoisted so it keeps a stable component identity across renders (an inline
+// component would remount on each keystroke and drop input focus).
+function ShippoInp({ label, value, onChange, ph, type = 'text' }) {
+  return (
+    <label className="block">
+      <span className="text-[11px] text-neutral-500">{label}</span>
+      <input type={type} value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={ph}
+        className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+    </label>
+  );
+}
+
+function ShippoConfigTab() {
+  const [c, setC] = useState(null);
+  const [testToken, setTestToken] = useState('');
+  const [liveToken, setLiveToken] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { api.get('/settings/shippo-config').then(res => setC(res.data)); }, []);
+  if (!c) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const setFrom = (k, v) => setC(p => ({ ...p, from_address: { ...p.from_address, [k]: v } }));
+  const setParcel = (k, v) => setC(p => ({ ...p, parcel: { ...p.parcel, [k]: v } }));
+  const setRate = (k, v) => setC(p => ({ ...p, rate: { ...p.rate, [k]: v } }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        test_mode: !!c.test_mode,
+        from_address: c.from_address,
+        parcel: {
+          length: Number(c.parcel.length) || 0, width: Number(c.parcel.width) || 0, height: Number(c.parcel.height) || 0,
+          distance_unit: c.parcel.distance_unit, weight: Number(c.parcel.weight) || 0, mass_unit: c.parcel.mass_unit,
+        },
+        rate: c.rate,
+      };
+      if (testToken.trim()) payload.test_token = testToken.trim();
+      if (liveToken.trim()) payload.live_token = liveToken.trim();
+      const res = await api.put('/settings/shippo-config', payload);
+      setC(res.data);
+      setTestToken(''); setLiveToken('');
+      notify('Saved Shippo config', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  const Inp = ShippoInp;
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      {/* Tokens + test mode */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Shippo API</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">
+          Token không hiển thị lại sau khi lưu — để trống = giữ token cũ. Khi <b>Test mode</b> bật, mọi lần mua dùng <b>test token</b> → label miễn phí, không thật.
+        </p>
+        <label className="flex items-center gap-2 mb-3 text-sm">
+          <input type="checkbox" checked={!!c.test_mode} onChange={e => setC(p => ({ ...p, test_mode: e.target.checked }))} className="accent-orange-500" />
+          <span>Test mode (mua label test, miễn phí)</span>
+          <span className={`ml-2 px-2 py-0.5 rounded text-[10px] font-medium ${c.test_mode ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
+            {c.test_mode ? 'TEST' : 'LIVE — mua thật, tốn tiền'}
+          </span>
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <Inp label={`Test token (shippo_test_…) ${c.has_test_token ? '✓ đã đặt' : '— chưa có'}`} value={testToken} onChange={setTestToken} ph={c.has_test_token ? '•••• (để trống = giữ)' : 'shippo_test_…'} type="password" />
+          <Inp label={`Live token (shippo_live_…) ${c.has_live_token ? '✓ đã đặt' : '— chưa có'}`} value={liveToken} onChange={setLiveToken} ph={c.has_live_token ? '•••• (để trống = giữ)' : 'shippo_live_…'} type="password" />
+        </div>
+      </section>
+
+      {/* From / return address */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-3">From / return address</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <Inp label="Name" value={c.from_address.name} onChange={v => setFrom('name', v)} />
+          <Inp label="Company" value={c.from_address.company} onChange={v => setFrom('company', v)} />
+          <Inp label="Street 1" value={c.from_address.street1} onChange={v => setFrom('street1', v)} />
+          <Inp label="Street 2" value={c.from_address.street2} onChange={v => setFrom('street2', v)} />
+          <Inp label="City" value={c.from_address.city} onChange={v => setFrom('city', v)} />
+          <Inp label="State" value={c.from_address.state} onChange={v => setFrom('state', v)} />
+          <Inp label="Zip" value={c.from_address.zip} onChange={v => setFrom('zip', v)} />
+          <Inp label="Country" value={c.from_address.country} onChange={v => setFrom('country', v)} />
+          <Inp label="Phone" value={c.from_address.phone} onChange={v => setFrom('phone', v)} />
+          <Inp label="Email" value={c.from_address.email} onChange={v => setFrom('email', v)} />
+        </div>
+      </section>
+
+      {/* Default parcel */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Default parcel</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">Kích thước + cân nặng mặc định dùng khi mua label (Shippo bắt buộc).</p>
+        <div className="grid grid-cols-3 gap-3">
+          <NumField label="Length" value={c.parcel.length} onChange={v => setParcel('length', v)} step="0.1" />
+          <NumField label="Width" value={c.parcel.width} onChange={v => setParcel('width', v)} step="0.1" />
+          <NumField label="Height" value={c.parcel.height} onChange={v => setParcel('height', v)} step="0.1" />
+          <label className="block">
+            <span className="text-[11px] text-neutral-500">Distance unit</span>
+            <select value={c.parcel.distance_unit} onChange={e => setParcel('distance_unit', e.target.value)} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+              <option value="in">in</option><option value="cm">cm</option>
+            </select>
+          </label>
+          <NumField label="Weight" value={c.parcel.weight} onChange={v => setParcel('weight', v)} step="0.1" />
+          <label className="block">
+            <span className="text-[11px] text-neutral-500">Mass unit</span>
+            <select value={c.parcel.mass_unit} onChange={e => setParcel('mass_unit', e.target.value)} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+              <option value="oz">oz</option><option value="lb">lb</option><option value="g">g</option><option value="kg">kg</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      {/* Rate selection */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-3">Rate selection</h3>
+        <div className="grid grid-cols-3 gap-3">
+          <label className="block">
+            <span className="text-[11px] text-neutral-500">Strategy</span>
+            <select value={c.rate.strategy} onChange={e => setRate('strategy', e.target.value)} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+              <option value="cheapest">Cheapest</option>
+              <option value="carrier">Cheapest in carrier</option>
+              <option value="service">Fixed carrier + service</option>
+            </select>
+          </label>
+          <Inp label="Carrier (vd usps)" value={c.rate.carrier} onChange={v => setRate('carrier', v)} ph="usps" />
+          <Inp label="Service level token" value={c.rate.servicelevel} onChange={v => setRate('servicelevel', v)} ph="usps_ground_advantage" />
+        </div>
+      </section>
+
+      <button onClick={save} disabled={saving} className="px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+        {saving ? 'Saving…' : 'Save Shippo config'}
+      </button>
     </div>
   );
 }

@@ -471,6 +471,49 @@ const fetchTrackingJob = createJob({
   },
 });
 
+// ---------------- Auto Buy-Label job ----------------
+// Buys Shippo labels for seller_ship orders whose owner opted in
+// (users.auto_buy_label). Mirrors the auto-pay cron but app-side: polls
+// /orders/pending-labels?auto=1 then POSTs buy-label per order. The hub uses
+// the configured test/live token (test = free label) — see Settings → Shippo.
+
+const autoBuyLabelJob = createJob({
+  name: 'auto-buy-label',
+  storageKey: 'auto_buy_label_auto',
+  pollMs: 120_000,     // every 2 minutes
+  async runOnce({ state, pushLog, emit }) {
+    const res = await api.get('/orders/pending-labels', { params: { auto: 1, limit: 200 } });
+    const items = res.data?.data || [];
+    state.pending = items.map(i => ({ system_id: i.system_id, id: i.id }));
+    state.pendingCount = items.length;
+    emit();
+
+    let consecutiveFails = 0;
+    for (const item of items) {
+      if (state.paused || !state.enabled) break;
+      try {
+        const r = await api.post(`/orders/${item.id}/buy-label`);
+        state.processedTotal += 1;
+        pushLog('ok', item.system_id, 'label', `label${r.data?.test ? ' (test)' : ''} · tracking ${r.data?.tracking_number || '-'}`);
+        consecutiveFails = 0;
+      } catch (err) {
+        state.errorTotal += 1;
+        consecutiveFails += 1;
+        pushLog('error', item.system_id, 'label', err?.response?.data?.message || err?.message || String(err));
+        if (consecutiveFails >= 5) {
+          pushLog('error', null, null, 'Dừng tick: 5 lỗi liên tiếp (thử lại lần sau).');
+          break;
+        }
+      }
+      state.pending = state.pending.filter(p => p.id !== item.id);
+      state.pendingCount = state.pending.length;
+      emit();
+      // Spacing between Shippo buys.
+      await new Promise(r => setTimeout(r, 1500));
+    }
+  },
+});
+
 // ---------------- Public API ----------------
 
 // QR job (seller _qr conversion).
@@ -522,6 +565,15 @@ export const resumeFetchTrackingJob = fetchTrackingJob.resume;
 export const runFetchTrackingNow = fetchTrackingJob.runNow;
 export const isFetchTrackingAutoEnabled = fetchTrackingJob.isAutoEnabled;
 
+// Auto buy-label job (Shippo).
+export const subscribeAutoBuyLabelJob = autoBuyLabelJob.subscribe;
+export const startAutoBuyLabelJob = autoBuyLabelJob.start;
+export const stopAutoBuyLabelJob = autoBuyLabelJob.stop;
+export const pauseAutoBuyLabelJob = autoBuyLabelJob.pause;
+export const resumeAutoBuyLabelJob = autoBuyLabelJob.resume;
+export const runAutoBuyLabelNow = autoBuyLabelJob.runNow;
+export const isAutoBuyLabelAutoEnabled = autoBuyLabelJob.isAutoEnabled;
+
 /**
  * Restore each job's previously-persisted auto flag. Called by AuthContext
  * after login so users see whichever jobs they had on resume automatically.
@@ -533,6 +585,7 @@ export function autoStartConverters() {
   if (autoCloseJob.isAutoEnabled()) autoCloseJob.start();
   if (qrBgJob.isAutoEnabled()) qrBgJob.start();
   if (fetchTrackingJob.isAutoEnabled()) fetchTrackingJob.start();
+  if (autoBuyLabelJob.isAutoEnabled()) autoBuyLabelJob.start();
 }
 
 /** Stop all jobs (called on logout). Preserves the persisted auto flags so
@@ -544,6 +597,7 @@ export function stopAllConverters() {
   autoCloseJob.softStop();
   qrBgJob.softStop();
   fetchTrackingJob.softStop();
+  autoBuyLabelJob.softStop();
 }
 
 // ---------------- Resize-reconvert (replace existing _qr in place) ----------------

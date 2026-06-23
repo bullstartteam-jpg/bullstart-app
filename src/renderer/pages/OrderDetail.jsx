@@ -31,6 +31,26 @@ export default function OrderDetail() {
       .then(res => setProducts(res.data.data || []));
   };
 
+  // Buy a Shippo label for a seller_ship order (full address already on file).
+  const [buyingLabel, setBuyingLabel] = useState(false);
+  const buyLabel = async () => {
+    if (buyingLabel) return;
+    const ok = await askConfirm('Mua label Shippo cho đơn này?', { title: 'Buy label', okText: 'Buy' });
+    if (!ok) return;
+    setBuyingLabel(true);
+    try {
+      const res = await api.post(`/orders/${id}/buy-label`);
+      const r = res.data.rate || {};
+      notify(
+        `Đã mua label${res.data.test ? ' (TEST)' : ''}${r.provider ? ` · ${r.provider}` : ''}${r.amount ? ` $${r.amount}` : ''} · tracking ${res.data.tracking_number || '-'}`,
+        { title: 'Buy label', kind: 'success' }
+      );
+      fetchOrder();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Mua label thất bại', { title: 'Buy label failed', kind: 'error' });
+    } finally { setBuyingLabel(false); }
+  };
+
   const fetchOrder = () => {
     api.get(`/orders/${id}`).then(res => {
       const o = res.data.order;
@@ -310,6 +330,18 @@ export default function OrderDetail() {
                   <span className="text-neutral-800 font-medium text-sm">{order.shipping_label || '-'}</span>
                 )}
               </div>
+              {order.ship_type === 'seller_ship' && !order.shipping_label && (
+                <div className="flex justify-end">
+                  <button
+                    onClick={buyLabel}
+                    disabled={buyingLabel}
+                    className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white text-xs rounded-lg"
+                    title="Mua label qua Shippo (dùng địa chỉ đơn + parcel mặc định)"
+                  >
+                    {buyingLabel ? 'Đang mua…' : '🏷 Buy label (Shippo)'}
+                  </button>
+                </div>
+              )}
               {/* convert_label is admin/support-only; backend hides it from sellers */}
               {('convert_label' in order) && (
                 <div className="flex justify-between items-center gap-3">
