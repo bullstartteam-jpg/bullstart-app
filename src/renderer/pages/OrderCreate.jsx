@@ -6,6 +6,7 @@ import { driveThumb, isPreviewable } from '../utils/drive';
 import { UrlPreview, PreviewModal } from '../components/Preview';
 import { notify, askConfirm } from '../components/Dialog';
 import UploadButton from '../components/UploadButton';
+import { runImportUrlCheck } from '../services/importUrlCheck';
 
 const META_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
 
@@ -224,9 +225,18 @@ export default function OrderCreate() {
       }
       navigate(`/orders/${res.data.order.id}`);
     } catch (err) {
-      const errs = err.response?.data?.errors;
-      const msg = err.response?.data?.message || (errs ? Object.values(errs).flat().join('\n') : 'Error');
-      notify(msg, { title: 'Create order failed', kind: 'error' });
+      // Server-side image-URL validation rejects the create with 422 + a list
+      // of failed fields (replaces the old client-side pre-check). Show exactly
+      // which item/field failed and why, then let the user fix and retry.
+      const failures = err.response?.data?.failures;
+      if (err.response?.status === 422 && Array.isArray(failures)) {
+        const lines = failures.map(f => `Item ${f.item_no} · ${f.label}: ${f.reason}`);
+        notify(lines.join('\n'), { title: 'Invalid image URLs', kind: 'error' });
+      } else {
+        const errs = err.response?.data?.errors;
+        const msg = err.response?.data?.message || (errs ? Object.values(errs).flat().join('\n') : 'Error');
+        notify(msg, { title: 'Create order failed', kind: 'error' });
+      }
     } finally {
       setLoading(false);
     }
@@ -263,6 +273,10 @@ export default function OrderCreate() {
         }
       }
       setCsvResult(res.data);
+      // Validation runs server-side (the import dispatched a background job per
+      // created order). Follow that work and surface a progress + result toast,
+      // like the old client-side check did — but now reading DB-backed status.
+      runImportUrlCheck({ orderIds: res.data?.created_ids || [], userId: user?.id });
     } catch (err) {
       notify(err.response?.data?.message || 'Error', { title: 'Import failed', kind: 'error' });
     } finally {
@@ -313,6 +327,7 @@ export default function OrderCreate() {
               <p className="text-green-600">Created: {csvResult.created_count} orders</p>
               {csvResult.error_count > 0 && <p className="text-red-500 mt-1">Errors: {csvResult.error_count}</p>}
               {csvResult.errors?.map((e, i) => <p key={i} className="text-red-400 text-xs">{e}</p>)}
+              <p className="text-neutral-500 text-xs mt-2 border-t border-neutral-200 pt-2">Image URLs are being checked in the background — see notifications (bottom-right).</p>
             </div>
           )}
         </div>

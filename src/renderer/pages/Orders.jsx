@@ -13,6 +13,7 @@ import {
   subscribeAutoBuyLabelJob, startAutoBuyLabelJob, stopAutoBuyLabelJob,
   runAutoBuyLabelNow, isAutoBuyLabelAutoEnabled,
 } from '../services/converter';
+import { hasOrderFailure, countOrderFailures, syncOrders, URL_FAILURES_EVENT } from '../services/urlFailureCache';
 
 // Delivery-tracking status → badge colors (matches web-bullstart).
 const TRACKING_COLOR = {
@@ -115,6 +116,14 @@ export default function Orders() {
   const [refIdsInput, setRefIdsInput] = useState('');
   const [selected, setSelected] = useState([]);
   const [previewUrl, setPreviewUrl] = useState(null);
+  // Re-render when the background CSV image-URL check writes new failures so the
+  // warning badges appear without a manual reload.
+  const [, setUrlFailTick] = useState(0);
+  useEffect(() => {
+    const onUpdate = () => setUrlFailTick(t => t + 1);
+    window.addEventListener(URL_FAILURES_EVENT, onUpdate);
+    return () => window.removeEventListener(URL_FAILURES_EVENT, onUpdate);
+  }, []);
   const { hasPermission, hasRole, user: authUser } = useAuth();
   const isStaff = hasRole('admin') || hasRole('support');
   const isAdmin = hasRole('admin');
@@ -165,6 +174,11 @@ export default function Orders() {
     api.get('/orders', { params }).then(res => {
       setOrders(res.data.data);
       setMeta(res.data);
+      // Image-URL validation: reads stored status for the visible orders, then
+      // validates (in the client) any not-yet-checked, non-shipped order and
+      // saves the result to the DB. Runs in the background — the warning badges
+      // appear as each order finishes.
+      syncOrders(res.data.data || []);
     }).finally(() => setLoading(false));
   };
 
@@ -1135,6 +1149,9 @@ export default function Orders() {
                     {order.system_id}
                     {order.production && (
                       <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-green-500 text-white text-[10px] leading-none" title="Đã tạo gangsheet (production)">✓</span>
+                    )}
+                    {hasOrderFailure(order.id) && (
+                      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[10px] leading-none" title={`${countOrderFailures(order.id)} image URL(s) failed validation`}>!</span>
                     )}
                   </span>
                 </td>

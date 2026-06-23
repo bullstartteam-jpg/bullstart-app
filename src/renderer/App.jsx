@@ -24,6 +24,7 @@ import NotDelivered from './pages/NotDelivered';
 import Reasons from './pages/Reasons';
 import Profile from './pages/Profile';
 import { DialogHost } from './components/Dialog';
+import { ToastHost } from './components/Toast';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -62,6 +63,7 @@ export default function App() {
         </Route>
       </Routes>
       <DialogHost />
+      <ToastHost />
     </>
   );
 }

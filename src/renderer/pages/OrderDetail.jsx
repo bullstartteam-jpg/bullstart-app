@@ -8,9 +8,22 @@ import { isPreviewable } from '../utils/drive';
 import { notify, askConfirm } from '../components/Dialog';
 import UploadButton from '../components/UploadButton';
 import ResendModal from '../components/ResendModal';
+import { getOrderFailures, syncOrders, recheckOrder, fetchOrdersStatus, URL_FAILURES_EVENT } from '../services/urlFailureCache';
 
 const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
+
+// Small red marker shown next to an image URL whose background validation failed.
+// Reason appears on hover via the native title tooltip (the app's standard).
+function UrlFailMark({ reason }) {
+  if (!reason) return null;
+  return (
+    <span
+      title={`Image URL problem: ${reason}`}
+      className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[10px] leading-none cursor-help align-middle"
+    >!</span>
+  );
+}
 
 export default function OrderDetail() {
   const { id } = useParams();
@@ -22,6 +35,35 @@ export default function OrderDetail() {
   const [form, setForm] = useState({});
   const [previewUrl, setPreviewUrl] = useState(null);
   const [showResend, setShowResend] = useState(false);
+  // Image-URL validation failures for this order, read from the server-backed
+  // store. syncOrders fetches the latest status (and triggers background
+  // validation if the order was never checked); the shared event then refreshes
+  // this view so a re-check or a finishing background run shows immediately.
+  const [urlFailures, setUrlFailures] = useState(null);
+  const [rechecking, setRechecking] = useState(false);
+  useEffect(() => {
+    const refresh = () => setUrlFailures(getOrderFailures(id));
+    refresh();
+    window.addEventListener(URL_FAILURES_EVENT, refresh);
+    // Show stored status immediately; actual (re)validation of an unchecked
+    // order happens once the order (with items) loads — see fetchOrder.
+    fetchOrdersStatus([id]).catch(() => {});
+    return () => window.removeEventListener(URL_FAILURES_EVENT, refresh);
+  }, [id]);
+
+  // Re-validate every image URL on this order on demand (client-side, saved to DB).
+  const recheckUrls = async () => {
+    if (!order) return;
+    setRechecking(true);
+    try {
+      await recheckOrder(order);
+    } catch {
+      notify('Re-check failed', { title: 'Image URL check', kind: 'error' });
+    } finally {
+      setRechecking(false);
+    }
+  };
+
   // Catalog used by the per-item accessory editor (only fetched when an
   // editor opens for the first time — avoids paying the cost on every view).
   const [products, setProducts] = useState(null);
@@ -55,6 +97,10 @@ export default function OrderDetail() {
     api.get(`/orders/${id}`).then(res => {
       const o = res.data.order;
       setOrder(o);
+      // Validate this order's images in the client if it was never checked
+      // (skips shipped + already-validated); persists the result to the DB.
+      // Silent — the detail view has its own inline "Re-check images" feedback.
+      syncOrders([o], { toast: false });
       const a = o.address || {};
       setForm({
         status: o.status,
@@ -434,14 +480,26 @@ export default function OrderDetail() {
                     />
                   </td>
                   <td className="py-2">
-                    {isPreviewable(item.mockup_front)
-                      ? <UrlPreview url={item.mockup_front} onOpen={setPreviewUrl} label="Mockup front" size="sm" />
-                      : <span className="text-neutral-400 text-xs">-</span>}
+                    <ItemMockupCell
+                      item={item}
+                      field="mockup_front"
+                      label="Mockup front"
+                      canEdit={canEditAcc}
+                      onOpen={setPreviewUrl}
+                      onSaved={fetchOrder}
+                      failReason={urlFailures?.[item.id]?.mockup_front}
+                    />
                   </td>
                   <td className="py-2">
-                    {isPreviewable(item.mockup_back)
-                      ? <UrlPreview url={item.mockup_back} onOpen={setPreviewUrl} label="Mockup back" size="sm" />
-                      : <span className="text-neutral-400 text-xs">-</span>}
+                    <ItemMockupCell
+                      item={item}
+                      field="mockup_back"
+                      label="Mockup back"
+                      canEdit={canEditAcc}
+                      onOpen={setPreviewUrl}
+                      onSaved={fetchOrder}
+                      failReason={urlFailures?.[item.id]?.mockup_back}
+                    />
                   </td>
                   <td className="py-2 text-center text-neutral-700">{qty}</td>
                   <td className="py-2 text-right text-neutral-800 font-medium">${item.price}</td>
@@ -455,13 +513,23 @@ export default function OrderDetail() {
         {/* Metas */}
         {order.items?.length > 0 && (
           <div className="mt-4">
-            <h4 className="text-xs text-neutral-500 mb-2">Item Metas</h4>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs text-neutral-500">Item Metas</h4>
+              <button
+                onClick={recheckUrls}
+                disabled={rechecking}
+                className="text-xs text-orange-600 hover:text-orange-700 disabled:opacity-50"
+              >
+                {rechecking ? 'Checking images…' : 'Re-check images'}
+              </button>
+            </div>
             {order.items.map(item => (
               <ItemMetasBlock
                 key={item.id}
                 item={item}
                 onPreview={setPreviewUrl}
                 onSaved={fetchOrder}
+                failures={urlFailures?.[item.id]}
               />
             ))}
           </div>
@@ -486,6 +554,75 @@ function Row({ label, value }) {
       <span className="text-neutral-500">{label}</span>
       <span className="text-neutral-800 font-medium">{value}</span>
     </div>
+  );
+}
+
+// Inline editor for one mockup URL (front or back) in the items table. Mirrors
+// the inline-edit pattern of ItemAccessoriesCell: a small ✎ toggle reveals a
+// URL input + Upload button + preview, saved via PUT /order-items/{id}/mockups.
+// The endpoint replaces both mockups, so we send the sibling field's current
+// value alongside the edited one.
+function ItemMockupCell({ item, field, label, canEdit, onOpen, onSaved, failReason }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const startEdit = () => { setValue(item[field] || ''); setEditing(true); };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        mockup_front: item.mockup_front || '',
+        mockup_back: item.mockup_back || '',
+        [field]: value || '',
+      };
+      const res = await api.put(`/order-items/${item.id}/mockups`, payload);
+      await notify(res.data.message, { title: 'Mockups', kind: 'success' });
+      setEditing(false);
+      onSaved?.();
+    } catch (err) {
+      const errs = err.response?.data?.errors;
+      const msg = err.response?.data?.message || (errs ? Object.values(errs).flat().join('\n') : 'Error');
+      notify(msg, { title: 'Update failed', kind: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="flex flex-col gap-1 min-w-[160px]">
+        <div className="flex items-center gap-1">
+          <input
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            placeholder="URL or click Upload"
+            className="flex-1 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-xs"
+          />
+          <UploadButton folder="mockups" accept="image/*" title={`Upload ${label}`} onUrl={(url) => setValue(url)} />
+        </div>
+        {isPreviewable(value) && <UrlPreview url={value} onOpen={onOpen} label={label} size="sm" />}
+        <div className="flex gap-2">
+          <button onClick={() => setEditing(false)} disabled={saving} className="text-xs text-neutral-500 hover:text-neutral-700">Cancel</button>
+          <button onClick={save} disabled={saving} className="text-xs bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white px-2 py-0.5 rounded">
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      {isPreviewable(item[field])
+        ? <UrlPreview url={item[field]} onOpen={onOpen} label={label} size="sm" />
+        : <span className="text-neutral-400 text-xs">-</span>}
+      <UrlFailMark reason={failReason} />
+      {canEdit && (
+        <button onClick={startEdit} className="text-orange-600 hover:text-orange-700 text-xs" title={`Edit ${label}`}>✎</button>
+      )}
+    </span>
   );
 }
 
@@ -609,7 +746,7 @@ function ItemAccessoriesCell({ item, accList, canEdit, ownerTierId, products, on
 
 const SOURCE_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
 
-function ItemMetasBlock({ item, onPreview, onSaved }) {
+function ItemMetasBlock({ item, onPreview, onSaved, failures }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const initialForm = () => {
@@ -713,6 +850,7 @@ function ItemMetasBlock({ item, onPreview, onSaved }) {
                       ) : (
                         <span className="text-neutral-700">{meta.value || '-'}</span>
                       )}
+                      <UrlFailMark reason={failures?.[`meta:${meta.key}`]} />
                     </div>
                   ))}
                 </div>

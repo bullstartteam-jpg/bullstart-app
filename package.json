@@ -5,7 +5,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "webpack serve --config webpack.renderer.config.js & electron .",
+    "dev": "concurrently -k -n WEBPACK,ELECTRON -c blue,magenta \"webpack serve --config webpack.renderer.config.js\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
     "build:renderer": "webpack --config webpack.renderer.config.js --mode production",
     "build:win": "npm run build:renderer && electron-builder --win",
     "build:mac": "npm run build:renderer && electron-builder --mac",
@@ -54,6 +54,8 @@
     "@babel/preset-react": "^7.28.5",
     "@tailwindcss/postcss": "^4.2.4",
     "babel-loader": "^10.1.1",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
     "css-loader": "^7.1.4",
     "electron": "^41.3.0",
     "electron-builder": "^26.8.1",
@@ -64,7 +66,8 @@
     "tailwindcss": "^4.2.4",
     "webpack": "^5.106.2",
     "webpack-cli": "^7.0.2",
-    "webpack-dev-server": "^5.2.3"
+    "webpack-dev-server": "^5.2.3",
+    "wait-on": "^8.0.1"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1039.0",
