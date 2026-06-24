@@ -18,6 +18,11 @@ import { pushToast, updateToast } from '../components/Toast';
 
 export const URL_FAILURES_EVENT = 'bs:url-failures-updated';
 
+// The image-URL check only runs from the dedicated management page (Image URL
+// Check). Every action below is gated behind `force: true`, which only that
+// page passes — so the auto-triggers on Orders / Dashboard / OrderDetail / CSV
+// import are inert no-ops while their callsites stay unchanged.
+
 const SHIPPED_STATUS = 6; // Order::STATUS_SHIPPED — never validated (per spec).
 const ORDER_CONCURRENCY = 3; // how many orders to validate at once
 const URL_CONCURRENCY = 5;   // how many URLs within one order to fetch at once
@@ -78,7 +83,7 @@ export function countOrderFailures(orderId) {
 
 // Fetch stored status for a set of orders, update the cache + emit, and return
 // the raw { [orderId]: status } map. Read-only — does not trigger validation.
-export async function fetchOrdersStatus(orderIds) {
+async function fetchStatusRaw(orderIds) {
   const ids = [...new Set((orderIds || []).map(Number).filter(Boolean))];
   if (!ids.length) return {};
   const res = await api.get('/orders/image-validation', { params: { order_ids: ids } });
@@ -86,6 +91,13 @@ export async function fetchOrdersStatus(orderIds) {
   for (const [oid, status] of Object.entries(data)) setEntry(oid, status);
   emit();
   return data;
+}
+
+// Read stored status. Gated: only the management page (force:true) calls this;
+// auto-callers get an empty map so no badges/requests fire outside that page.
+export async function fetchOrdersStatus(orderIds, { force = false } = {}) {
+  if (!force) return {};
+  return fetchStatusRaw(orderIds);
 }
 
 // Check every image URL of one order in the client. Returns
@@ -110,7 +122,7 @@ async function checkOrderUrls(order) {
 
 // Validate one order in the client and persist the result to the DB. Returns
 // the saved status (and updates the cache). `order` must include `items`.
-export async function recheckOrder(order) {
+async function persistCheck(order) {
   const { imageCount, failures } = await checkOrderUrls(order);
   const res = await api.post(`/orders/${order.id}/image-validation`, {
     image_count: imageCount,
@@ -122,6 +134,12 @@ export async function recheckOrder(order) {
     emit();
   }
   return status;
+}
+
+// Validate one order + persist. Gated: management page passes force:true.
+export async function recheckOrder(order, { force = false } = {}) {
+  if (!force) return null;
+  return persistCheck(order);
 }
 
 // Fetch one order with its items (for callers that only have an id — e.g. the
@@ -144,7 +162,8 @@ async function fetchOrderWithItems(orderId) {
 //
 // `opts.toast: false` runs silently (used by Order detail, which has its own
 // inline "Re-check" feedback). `opts.title` overrides the toast title.
-export function syncOrders(ordersOrIds, { toast = true, title = 'Image URL check' } = {}) {
+export function syncOrders(ordersOrIds, { toast = true, title = 'Image URL check', force = false } = {}) {
+  if (!force) return;   // only the management page drives checks
   const list = (ordersOrIds || [])
     .map((o) => (o && typeof o === 'object' ? o : { id: Number(o) }))
     .filter((o) => o && o.id);
@@ -152,7 +171,7 @@ export function syncOrders(ordersOrIds, { toast = true, title = 'Image URL check
 
   // Fetch stored status first so already-checked orders light up immediately
   // and aren't re-validated, then validate the rest.
-  fetchOrdersStatus(list.map((o) => o.id))
+  fetchStatusRaw(list.map((o) => o.id))
     .catch(() => ({}))
     .then((statusMap) => {
       const eligible = list.filter((o) => {
@@ -178,7 +197,7 @@ export function syncOrders(ordersOrIds, { toast = true, title = 'Image URL check
         try {
           const order = o.items ? o : await fetchOrderWithItems(o.id);
           if (order) {
-            const status = await recheckOrder(order);
+            const status = await persistCheck(order);
             if ((status?.failed_count || 0) > 0) issues += 1;
           }
         } catch {

@@ -21,6 +21,7 @@ import GangsheetLabel from './pages/GangsheetLabel';
 import AutoPay from './pages/AutoPay';
 import Reprint from './pages/Reprint';
 import NotDelivered from './pages/NotDelivered';
+import ImageUrlCheck from './pages/ImageUrlCheck';
 import Reasons from './pages/Reasons';
 import Profile from './pages/Profile';
 import { DialogHost } from './components/Dialog';
@@ -56,6 +57,7 @@ export default function App() {
           <Route path="auto-pay" element={<AutoPay />} />
           <Route path="reprint" element={<Reprint />} />
           <Route path="not-delivered" element={<NotDelivered />} />
+          <Route path="image-url-check" element={<ImageUrlCheck />} />
           <Route path="reasons" element={<Reasons />} />
           <Route path="gangsheet" element={<Gangsheet />} />
           <Route path="gangsheet-label" element={<GangsheetLabel />} />

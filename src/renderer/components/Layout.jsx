@@ -9,6 +9,7 @@ const navItems = [
   { path: '/reports', label: 'Reports', icon: '▥', module: 'dashboard' },
   { path: '/orders', label: 'Orders', icon: '◈', module: 'orders' },
   { path: '/not-delivered', label: 'Chưa delivered', icon: '📦', module: 'orders' },
+  { path: '/image-url-check', label: 'Image URL Check', icon: '🖼', requiresStaff: true },
   { path: '/products', label: 'Products', icon: '◇', module: 'products' },
   { path: '/inventory', label: 'Inventory', icon: '▤', module: 'inventory' },
   { path: '/wallet', label: 'Wallet', icon: '◎', module: 'wallet' },
