@@ -9,6 +9,11 @@ import UploadButton from '../components/UploadButton';
 import { runImportUrlCheck } from '../services/importUrlCheck';
 
 const META_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
+// Only these design slots are selectable in the UI, with these display labels.
+// The underlying meta keys stay 'front'/'back' (backend + converter depend on
+// them); we only change what's shown in the key dropdown.
+const VISIBLE_META_KEYS = ['front', 'back'];
+const META_LABELS = { front: 'Outside', back: 'Inside' };
 
 export default function OrderCreate() {
   const navigate = useNavigate();
@@ -481,7 +486,7 @@ export default function OrderCreate() {
                           title="Upload mockup front to B2"
                         />
                       </div>
-                      <input value={item.mockup_front} onChange={e => updateItem(i, { mockup_front: e.target.value })} placeholder="URL or click Upload" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                      <input type="text" value={item.mockup_front} onChange={e => updateItem(i, { mockup_front: e.target.value })} placeholder="URL or click Upload" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
                       <UrlPreview url={item.mockup_front} onOpen={setPreviewUrl} label="Preview mockup front" />
                     </div>
                     <div>
@@ -494,7 +499,7 @@ export default function OrderCreate() {
                           title="Upload mockup back to B2"
                         />
                       </div>
-                      <input value={item.mockup_back} onChange={e => updateItem(i, { mockup_back: e.target.value })} placeholder="URL or click Upload" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                      <input type="text" value={item.mockup_back} onChange={e => updateItem(i, { mockup_back: e.target.value })} placeholder="URL or click Upload" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
                       <UrlPreview url={item.mockup_back} onOpen={setPreviewUrl} label="Preview mockup back" />
                     </div>
                     <button type="button" onClick={() => removeItem(i)} className="px-3 py-2 text-red-500 hover:text-red-600 text-sm">Remove</button>
@@ -595,8 +600,8 @@ export default function OrderCreate() {
                               onChange={e => updateMeta(i, mi, 'key', e.target.value)}
                               className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-neutral-800 text-xs"
                             >
-                              {META_KEYS.map(k => (
-                                <option key={k} value={k}>{k}</option>
+                              {VISIBLE_META_KEYS.map(k => (
+                                <option key={k} value={k}>{META_LABELS[k]}</option>
                               ))}
                             </select>
                             <input
