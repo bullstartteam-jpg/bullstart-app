@@ -12,6 +12,7 @@ export default function Products() {
   const [dup, setDup] = useState(null);        // product pending duplicate (drives the modal)
   const [dupName, setDupName] = useState('');
   const [dupBusy, setDupBusy] = useState(false);
+  const [statusBusy, setStatusBusy] = useState(null); // id of product whose status is toggling
   const { hasRole } = useAuth();
   const navigate = useNavigate();
 
@@ -36,6 +37,24 @@ export default function Products() {
     if (!confirm('Delete this product?')) return;
     await api.delete(`/products/${id}`);
     fetchProducts();
+  };
+
+  // Quick Active/Inactive toggle straight from the list (admin only). Sends just
+  // the status field (PUT /products/{id} updates only the keys present) and
+  // patches local state so the badge flips without a full refetch.
+  const toggleStatus = async (product, e) => {
+    e.stopPropagation();
+    if (statusBusy) return;
+    const next = product.status ? 0 : 1;
+    setStatusBusy(product.id);
+    try {
+      await api.put(`/products/${product.id}`, { status: next });
+      setProducts(prev => prev.map(p => (p.id === product.id ? { ...p, status: next } : p)));
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Đổi trạng thái thất bại');
+    } finally {
+      setStatusBusy(null);
+    }
   };
 
   // Deep-copy a product (variants + prices + accessories + materials) into a new
@@ -115,9 +134,20 @@ export default function Products() {
                 {product.style && <p className="text-neutral-500 text-xs mt-1">Style: {product.style}</p>}
                 <p className="text-neutral-400 text-xs mt-1">{product.variants?.length || 0} variants</p>
               </div>
-              <span className={`px-2 py-0.5 rounded text-xs font-medium ${product.status ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-500'}`}>
-                {product.status ? 'Active' : 'Inactive'}
-              </span>
+              {hasRole('admin') ? (
+                <button
+                  onClick={e => toggleStatus(product, e)}
+                  disabled={statusBusy === product.id}
+                  title="Bấm để đổi trạng thái"
+                  className={`px-2 py-0.5 rounded text-xs font-medium transition-colors disabled:opacity-50 ${product.status ? 'bg-green-100 text-green-600 hover:bg-green-200' : 'bg-red-100 text-red-500 hover:bg-red-200'}`}
+                >
+                  {statusBusy === product.id ? '…' : (product.status ? 'Active' : 'Inactive')}
+                </button>
+              ) : (
+                <span className={`px-2 py-0.5 rounded text-xs font-medium ${product.status ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-500'}`}>
+                  {product.status ? 'Active' : 'Inactive'}
+                </span>
+              )}
             </div>
             {hasRole('admin') && (
               <div className="mt-3 flex gap-3">
