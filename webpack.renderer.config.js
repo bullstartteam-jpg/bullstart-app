@@ -1,14 +1,20 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 
-module.exports = {
-  mode: process.env.NODE_ENV || 'development',
+// publicPath must be '/' in dev (webpack-dev-server) and './' in production
+// (Electron loadFile + file://). Using './' in dev breaks dev-server routing
+// so wait-on never sees HTTP 200 and Electron never launches.
+module.exports = (_env, argv) => {
+  const isProd = argv.mode === 'production';
+
+  return {
+  mode: isProd ? 'production' : 'development',
   entry: './src/renderer/index.jsx',
   target: 'web',
   output: {
     path: path.resolve(__dirname, 'build'),
     filename: 'bundle.js',
-    publicPath: './',
+    publicPath: isProd ? './' : '/',
     clean: true,
   },
   module: {
@@ -55,4 +61,5 @@ module.exports = {
     hot: true,
     historyApiFallback: true,
   },
+};
 };
