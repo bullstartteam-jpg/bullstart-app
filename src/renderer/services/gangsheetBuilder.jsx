@@ -354,3 +354,121 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
     metaIds: metaIdsUsed,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Tiled gangsheet (card skin): each _qr is placed on the LEFT with its barcode/
+// info band, and DUPLICATED on the RIGHT with the band cropped off (design
+// only). One A4 page holds `rows` such pairs (default 3 → 3 originals + 3 copies
+// = 6 images, evenly spaced). Each card is drawn at a fixed cell size so the
+// printed size is exact. Used for products whose convert layout is 'outside'.
+// ---------------------------------------------------------------------------
+const A4_W = 2480;   // 8.27" @300dpi (portrait)
+const A4_H = 3508;   // 11.69"
+
+/**
+ * @param opts.rows        pairs (original + copy) per page (default 3)
+ * @param opts.cardWpx/cardHpx  original card cell size in px @300dpi
+ *   (default 1214 × 645 = (3.38"+0.667" left band) × 2.15" — matches the card
+ *    skin _qr output: landscape design + a left QR/info strip)
+ * @param opts.bandPx      width of the left barcode/info band to crop off the
+ *                         copy (default 200px = CARD_SKIN_BAND_W); copy cell is
+ *                         (cardWpx - bandPx) wide.
+ */
+export async function buildTiledGangsheet(orders, {
+  onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0,
+  rows = 3, cardWpx = 1214, cardHpx = 645, bandPx = 200,
+} = {}) {
+  if (!orders.length) throw new Error('Empty chunk');
+  const records = flattenQrMetas(orders, { includeProduced });
+  if (!records.length) throw new Error('No _qr metas in this chunk');
+
+  // Each _qr is placed ONCE with its barcode/info band (left) PLUS a duplicate
+  // beside it on the right with the band cropped off (design only). So a page
+  // holds `rows` originals + `rows` copies (default 3 + 3 = 6 images, 3 unique).
+  const copyWpx = Math.max(1, cardWpx - bandPx);   // design width without band
+  const perPage = rows;
+  // Even horizontal spacing across the sheet: [gapX][ original ][gapX][ copy ][gapX].
+  const gapX = Math.max(0, Math.round((A4_W - (cardWpx + copyWpx)) / 3));
+  const xOrig = gapX;
+  const xCopy = gapX + cardWpx + gapX;
+  // Even vertical spacing across the rows: `rows+1` equal gaps.
+  const gapY = Math.max(0, Math.round((A4_H - rows * cardHpx) / (rows + 1)));
+
+  const pdf = await PDFDocument.create();
+  const total = records.length;
+  let done = 0;
+  const orderIdsUsed = [];
+  const metaIdsUsed = [];
+  const seenOrders = new Set();
+
+  const canvas = document.createElement('canvas');
+  canvas.width = A4_W;
+  canvas.height = A4_H;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  const pageWpt = (A4_W / DPI) * PT_PER_IN;
+  const pageHpt = (A4_H / DPI) * PT_PER_IN;
+
+  const flushPage = async () => {
+    const blob = await canvasToBlob(canvas, 'image/png');
+    const pngBytes = new Uint8Array(await blob.arrayBuffer());
+    const pageImg = await pdf.embedPng(pngBytes);
+    const page = pdf.addPage([pageWpt, pageHpt]);
+    page.drawImage(pageImg, { x: 0, y: 0, width: pageWpt, height: pageHpt });
+  };
+
+  let slot = 0;
+  const resetCanvas = () => { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, A4_W, A4_H); };
+  resetCanvas();
+
+  for (const rec of records) {
+    const bytes = await fetchImageBytes(rec.meta.value);
+    const img = await loadImageFromBytes(bytes);
+    const y = gapY + slot * (cardHpx + gapY);
+
+    // 1) Original — full card (design + left barcode/info band), scaled to the
+    //    fixed cell → exact print size regardless of the source resolution.
+    ctx.drawImage(img, xOrig, y, cardWpx, cardHpx);
+
+    // 2) Copy beside it — same design with the barcode/info band cropped off.
+    //    The band is exactly the first `bandPx` px of the composed _qr source
+    //    (composeCardSkinOutside draws it at x=[0..bandPx]).
+    const sx = Math.min(img.width - 1, bandPx);
+    ctx.drawImage(img, sx, 0, img.width - sx, img.height, xCopy, y, copyWpx, cardHpx);
+
+    metaIdsUsed.push(rec.meta.id);
+    if (!seenOrders.has(rec.order.id)) { seenOrders.add(rec.order.id); orderIdsUsed.push(rec.order.id); }
+    done++;
+    onProgress?.({ done, total, system_id: rec.order.system_id, key: rec.meta.key });
+
+    slot++;
+    if (slot === perPage) { await flushPage(); resetCanvas(); slot = 0; }
+  }
+  if (slot > 0) await flushPage();   // last partial page
+
+  const orderedOrders = orders.filter(o => seenOrders.has(o.id));
+  const firstSid = orderedOrders[0]?.system_id || '';
+  const lastSid = orderedOrders[orderedOrders.length - 1]?.system_id || firstSid;
+
+  const filename = gangsheetFilename({
+    linePrefix: (linePrefix || '').toUpperCase(),
+    firstSid, lastSid,
+    ordersCount: orderedOrders.length,
+    metasCount: metaIdsUsed.length,
+    suffix: nameSuffix,
+    seq,
+  });
+
+  const pdfBytes = await pdf.save();
+  const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+  return {
+    blob, filename, linePrefix,
+    firstSid, lastSid,
+    ordersInChunk: orderedOrders.length,
+    metasUsed: metaIdsUsed.length,
+    orderIds: orderIdsUsed,
+    metaIds: metaIdsUsed,
+  };
+}

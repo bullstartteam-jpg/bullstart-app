@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount, getGangPageFormat, setGangPageFormat, setGangMarks } from '../services/gangsheetBuilder';
+import { buildGangsheetForChunk, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount, getGangPageFormat, setGangPageFormat, setGangMarks } from '../services/gangsheetBuilder';
 import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGroup, deleteOpenGroups } from '../services/groupGang';
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
@@ -161,18 +161,98 @@ function orderSplitAccessory(order) {
   return { id, name };
 }
 
-// Full gang bucket of an order: side × split-accessory × material. Mirrors the
-// backend computeBucket so the Compose chips show the real gang division
-// ("1 mặt · Gloss", "2 mặt · Scratch Card · Matte", …).
-function orderBucketInfo(order) {
+// Classification dimensions available in Compose (besides side, which is
+// always applied). The user picks any combination; the bucket key + filename
+// are built from the selected ones.
+const GANG_DIMS = [
+  { id: 'product',  label: 'Product' },
+  { id: 'addon',    label: 'Add-on' },
+  { id: 'material', label: 'Material' },
+];
+const DEFAULT_GROUP_BY = ['addon', 'material']; // matches the legacy bucket
+
+function loadGroupBy() {
+  try {
+    const v = JSON.parse(localStorage.getItem('gangsheet_group_by'));
+    if (Array.isArray(v)) return new Set(v.filter(x => GANG_DIMS.some(d => d.id === x)));
+  } catch { /* ignore */ }
+  return new Set(DEFAULT_GROUP_BY);
+}
+function saveGroupBy(set) {
+  try { localStorage.setItem('gangsheet_group_by', JSON.stringify([...set])); } catch { /* ignore */ }
+}
+
+// An order's dominant product order_type (from the most-common item's product).
+function orderOrderType(order) {
+  const counts = {};
+  for (const it of order.items || []) {
+    const ot = it.product_variant?.product?.order_type;
+    if (ot) counts[ot] = (counts[ot] || 0) + 1;
+  }
+  let best = '', max = -1;
+  for (const [ot, c] of Object.entries(counts)) if (c > max) { max = c; best = ot; }
+  return best;
+}
+
+// Convert layout of an order via its order_type + the settings map. 'outside'
+// (card skin) gangs get tiled N-up on A4 instead of one design per page.
+function orderConvertLayout(order, layoutMap) {
+  const ot = orderOrderType(order);
+  return (ot && layoutMap?.[ot]) || 'default';
+}
+
+// An order's dominant product (most items). {id:0} when none.
+function orderProduct(order) {
+  const counts = {}, names = {};
+  for (const it of order.items || []) {
+    const pid = it.product_variant?.product_id ?? it.product_variant?.product?.id;
+    if (!pid) continue;
+    counts[pid] = (counts[pid] || 0) + 1;
+    names[pid] = it.product_variant?.product?.name || '';
+  }
+  let best = 0, max = -1;
+  for (const [pid, c] of Object.entries(counts)) if (c > max) { max = c; best = Number(pid); }
+  return { id: best, name: names[best] || '' };
+}
+
+// Gang bucket of an order, built from the SELECTED classification dimensions
+// (product / addon / material) plus side (1 mặt / 2 mặt — always applied).
+// `groupBy` is a Set of dimension ids. Only selected dimensions enter the key,
+// so orders that differ only on an unselected dimension share a sheet.
+// Returns { key, label, tag, side, prod, acc, mat }.
+function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY)) {
   const side = orderSideCount(order) === 'two' ? 'two' : 'one';
-  const acc = orderSplitAccessory(order);
-  const mat = orderMaterial(order);
-  const key = `${side}|${acc.id}|${mat.id}`;
-  const parts = [side === 'two' ? '2 mặt' : '1 mặt'];
-  if (acc.id) parts.push(acc.name || `Acc#${acc.id}`);
-  parts.push(mat.id ? (mat.name || `Mat#${mat.id}`) : 'Không chất liệu');
-  return { side, acc, mat, key, label: parts.join(' · ') };
+  const keyParts = [side];
+  const labelParts = [side === 'two' ? '2 mặt' : '1 mặt'];
+  const tagParts = [];
+  const info = { side, prod: { id: 0 }, acc: { id: 0 }, mat: { id: 0 } };
+
+  if (groupBy.has('product')) {
+    const p = orderProduct(order); info.prod = p;
+    keyParts.push(`p${p.id}`);
+    labelParts.push(p.id ? (p.name || `SP#${p.id}`) : 'Không product');
+    if (p.id) tagParts.push(slugifyAccessory(p.name));
+  }
+  if (groupBy.has('addon')) {
+    const a = orderSplitAccessory(order); info.acc = a;
+    keyParts.push(`a${a.id}`);
+    labelParts.push(a.id ? (a.name || `Acc#${a.id}`) : 'Không add-on');
+    if (a.id) tagParts.push(slugifyAccessory(a.name));
+  }
+  if (groupBy.has('material')) {
+    const m = orderMaterial(order); info.mat = m;
+    keyParts.push(`m${m.id}`);
+    labelParts.push(m.id ? (m.name || `Mat#${m.id}`) : 'Không chất liệu');
+    if (m.id) tagParts.push(slugifyAccessory(m.name));
+  }
+  if (side === 'two') tagParts.push('two_size');
+
+  return {
+    ...info, side,
+    key: keyParts.join('|'),
+    label: labelParts.join(' · '),
+    tag: tagParts.filter(Boolean).join('_'),
+  };
 }
 
 // Gang PDF page-format selector (shared, persisted per machine in localStorage).
@@ -211,8 +291,18 @@ function ComposeTab() {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
   const [results, setResults] = useState([]);
-  // Sub-tab filter: 'all' | a bucket key "<side>|<accId>|<matId>".
+  // Sub-tab filter: 'all' | a bucket key (built from the selected dimensions).
   const [subTab, setSubTab] = useState('all');
+  // Classification dimensions (multi-select) — product / addon / material.
+  // Side (1/2 mặt) is always applied on top. Persisted per machine.
+  const [groupBy, setGroupBy] = useState(loadGroupBy);
+  const toggleGroupBy = (dim) => setGroupBy(prev => {
+    const next = new Set(prev);
+    next.has(dim) ? next.delete(dim) : next.add(dim);
+    saveGroupBy(next);
+    setSubTab('all'); // bucket keys change → reset the sub-tab
+    return next;
+  });
   // fulfill_status multi-filter (empty Set = all non-shipped).
   const [statuses, setStatuses] = useState(new Set());
   // Partner phân chia: gang tạo trong lần này sẽ tự gán cho các partner đã chọn
@@ -220,10 +310,16 @@ function ComposeTab() {
   // Rỗng = không phân chia.
   const [partnerUsers, setPartnerUsers] = useState([]);
   const [selectedPartners, setSelectedPartners] = useState(new Set());
+  // order_type → convert layout map. Orders whose layout is 'outside' (card
+  // skin) are ganged tiled 6-up on A4 instead of one design per page.
+  const [layoutMap, setLayoutMap] = useState({});
 
   useEffect(() => {
     api.get('/gangsheets/partner-users')
       .then(res => setPartnerUsers(res.data || []))
+      .catch(() => {});
+    api.get('/settings/convert-layouts')
+      .then(res => setLayoutMap(res.data?.map || {}))
       .catch(() => {});
   }, []);
 
@@ -271,10 +367,10 @@ function ComposeTab() {
   // "2 mặt · Scratch Card · Matte". Built dynamically from the pending orders —
   // no hard-coded material/accessory list.
   const buckets = (() => {
-    const map = new Map();   // key → { label, side, acc, mat, orders[] }
+    const map = new Map();   // key → { label, side, tag, orders[] }
     for (const o of pending) {
-      const b = orderBucketInfo(o);
-      if (!map.has(b.key)) map.set(b.key, { label: b.label, side: b.side, acc: b.acc, mat: b.mat, orders: [] });
+      const b = orderBucketInfo(o, groupBy);
+      if (!map.has(b.key)) map.set(b.key, { label: b.label, side: b.side, tag: b.tag, orders: [] });
       map.get(b.key).orders.push(o);
     }
     return map;
@@ -325,22 +421,36 @@ function ComposeTab() {
     // so every gang is homogeneous — never mixes side, accessory or paper. Each
     // bucket is single-side already, so just chunk it. Filename gets the
     // accessory + material + two_size tags of that bucket.
-    const joinTags = (...xs) => xs.filter(Boolean).join('_');
-    const bucketGroups = new Map();   // key → { acc, mat, side, orders[] }
-    for (const o of selected) {
-      const b = orderBucketInfo(o);
-      if (!bucketGroups.has(b.key)) bucketGroups.set(b.key, { acc: b.acc, mat: b.mat, side: b.side, orders: [] });
-      bucketGroups.get(b.key).orders.push(o);
-    }
+    // Split card-skin orders (convert layout 'outside') from the rest. Card
+    // skins are ganged tiled 6-up on A4 (kept together); the rest use the
+    // normal bucket flow (one design per page).
+    const cardOrders = selected.filter(o => orderConvertLayout(o, layoutMap) === 'outside');
+    const normalOrders = selected.filter(o => orderConvertLayout(o, layoutMap) !== 'outside');
 
     const chunks = [];
+
+    // Normal: group by the chosen dimensions (+ side), chunk by batchSize.
+    const bucketGroups = new Map();   // key → { tag, orders[] }
+    for (const o of normalOrders) {
+      const b = orderBucketInfo(o, groupBy);
+      if (!bucketGroups.has(b.key)) bucketGroups.set(b.key, { tag: b.tag, orders: [] });
+      bucketGroups.get(b.key).orders.push(o);
+    }
     for (const [, g] of bucketGroups) {
-      const tag = joinTags(
-        g.acc.id ? slugifyAccessory(g.acc.name) : '',
-        g.mat.id ? slugifyAccessory(g.mat.name) : '',
-        g.side === 'two' ? 'two_size' : '',
-      );
-      for (const chunk of chunkArray(g.orders, batchSize)) chunks.push({ chunk, suffix: tag });
+      for (const chunk of chunkArray(g.orders, batchSize)) chunks.push({ chunk, suffix: g.tag, tiled: false });
+    }
+
+    // Card skin: gom chung theo order_type. Mỗi A4 = 3 _qr gốc + 3 bản copy
+    // (band cắt) cạnh bên → chunk 3 order / A4 = 1 gang (tiled).
+    const cardGroups = new Map();
+    for (const o of cardOrders) {
+      const ot = orderOrderType(o) || 'skincard';
+      if (!cardGroups.has(ot)) cardGroups.set(ot, []);
+      cardGroups.get(ot).push(o);
+    }
+    for (const [ot, ords] of cardGroups) {
+      const tag = slugifyAccessory(ot) || 'skincard';
+      for (const chunk of chunkArray(ords, 3)) chunks.push({ chunk, suffix: tag, tiled: true });
     }
     setRunning(true); setResults([]);
     const out = [];
@@ -353,18 +463,22 @@ function ComposeTab() {
       }
 
       for (let ci = 0; ci < chunks.length; ci++) {
-        const { chunk, suffix } = chunks[ci];
+        const { chunk, suffix, tiled } = chunks[ci];
         const linePrefix = dominantLineId(chunk);
         const totalInChunk = flattenQrMetas(chunk).length;
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
 
-        const built = await buildGangsheetForChunk(chunk, {
-          linePrefix,
-          nameSuffix: suffix,
-          seq: ci + 1,
-          pageFormat: getGangPageFormat(),
-          onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
-        });
+        const pageFormat = tiled ? 'a4_6up' : getGangPageFormat();
+        const built = tiled
+          ? await buildTiledGangsheet(chunk, {
+              linePrefix, nameSuffix: suffix, seq: ci + 1,
+              onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
+            })
+          : await buildGangsheetForChunk(chunk, {
+              linePrefix, nameSuffix: suffix, seq: ci + 1,
+              pageFormat: getGangPageFormat(),
+              onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
+            });
 
         // 1) Upload PDF directly to B2 from the desktop app — hub is not involved.
         const key = `${creds.folder}/${built.filename}`;
@@ -384,7 +498,7 @@ function ComposeTab() {
           filename: built.filename,
           file_url: publicUrl,
           line_id: linePrefix || '',
-          page_format: getGangPageFormat(),
+          page_format: pageFormat,
           first_system_id: built.firstSid,
           last_system_id: built.lastSid,
           orders_count: built.ordersInChunk,
@@ -453,6 +567,16 @@ function ComposeTab() {
             </button>
             <button onClick={fetchPending} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Refresh</button>
           </div>
+        </div>
+
+        {/* Phân loại gang (chọn nhiều): product / add-on / material. 1-2 mặt luôn
+            áp. Đổi lựa chọn → gom lại + tên file đổi theo. */}
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-xs text-neutral-500 mr-1">Phân loại theo:</span>
+          {GANG_DIMS.map(d => (
+            <SubChip key={d.id} active={groupBy.has(d.id)} onClick={() => toggleGroupBy(d.id)}>{d.label}</SubChip>
+          ))}
+          <span className="text-[11px] text-neutral-400 ml-1">· 1/2 mặt luôn tách</span>
         </div>
 
         {/* Fulfill status multi-filter (chọn nhiều; rỗng = mọi đơn chưa ship). */}

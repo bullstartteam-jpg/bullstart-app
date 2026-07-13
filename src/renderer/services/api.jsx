@@ -1,7 +1,6 @@
 import axios from 'axios';
 
-// const DEFAULT_API_URL = 'https://bullstart.us/api';
-const DEFAULT_API_URL = 'http://localhost:8000/api';
+export const DEFAULT_API_URL = 'https://bullstart.us/api';
 
 // Migrate older installs that had the localhost default cached in localStorage
 // — silently swap them over to the production URL on app start. This also
@@ -55,5 +54,11 @@ export const setApiUrl = (url) => {
 };
 
 export const getApiUrl = () => api.defaults.baseURL;
+
+// Clear any per-machine override and fall back to the production default.
+export const resetApiUrl = () => {
+  localStorage.removeItem('api_url');
+  api.defaults.baseURL = DEFAULT_API_URL;
+};
 
 export default api;

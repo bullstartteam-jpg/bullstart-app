@@ -139,6 +139,8 @@ const qrJob = createJob({
         system_id: it.system_id,
         accessory_summary: it.accessory_summary || '',
         line_id: it.line_id || '',
+        convert_layout: it.convert_layout || 'default',
+        addon_code: it.addon_code || '',
         target_key: p.target_key,
         source_key: p.source_key,
         is_greeting_card_back: !!p.is_greeting_card_back,
@@ -622,6 +624,8 @@ export async function reconvertResizeItems(items, { targetW = 3300, targetH = 21
       const blob = await composeImage(t.source_value, item.system_id, item.accessory_summary || '', {
         source_key: t.source_key,
         line_id: item.line_id,
+        convert_layout: item.convert_layout,
+        addon_code: item.addon_code,
         is_greeting_card_back: !!t.is_greeting_card_back,
         targetW, targetH,
       });
@@ -648,6 +652,8 @@ async function processOne(item, meta) {
     {
       source_key: meta.source_key,
       line_id: item.line_id,
+      convert_layout: item.convert_layout,
+      addon_code: item.addon_code,
       is_greeting_card_back: !!meta.is_greeting_card_back,
     }
   );
@@ -963,8 +969,84 @@ function fitOnLabelStock(src, targetW, targetH) {
   return out;
 }
 
+// 'outside' convert layout (card skin): design kept at native SIZE, placed
+// landscape (3.38×2.15). A TRANSPARENT strip on the LEFT holds a Code 128
+// barcode (system_id) + the selected add-on code, drawn ROTATED 90° so the wide
+// barcode fits the narrow tall strip. Portrait input (2.15×3.38) is rotated -90°
+// to landscape first. Output = (band + designW) × designH. Both front AND back
+// carry the info band so a stray back skin can still be identified/scanned.
+const CARD_SKIN_BAND_W = 200;   // left strip width for barcode + info (~0.67" @300dpi)
+async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, addonCode, sourceKey) {
+  const portrait = sourceW < sourceH;
+  const dW = portrait ? sourceH : sourceW;   // landscape design width
+  const dH = portrait ? sourceW : sourceH;   // landscape design height
+  const band = CARD_SKIN_BAND_W;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = band + dW;
+  canvas.height = dH;
+  const ctx = canvas.getContext('2d');
+  // Keep the LEFT info band TRANSPARENT (prints on the film substrate); only the
+  // design area gets a white backing so the design's own transparency reads white.
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(band, 0, dW, dH);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  // Design on the right (after the band). Portrait → rotate -90° to landscape.
+  if (portrait) {
+    ctx.save();
+    ctx.translate(band + dW / 2, dH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(sourceImg, -sourceW / 2, -sourceH / 2, sourceW, sourceH);
+    ctx.restore();
+  } else {
+    ctx.drawImage(sourceImg, band, 0, dW, dH);
+  }
+
+  if (band > 0) {
+    // Build a horizontal label strip (barcode + text), then draw it rotated 90°
+    // so it runs vertically down the narrow left band.
+    const codeText = addonCode ? `${systemId}-${addonCode}` : systemId;
+    const barcode = generateBarcodeCanvas(systemId, 3, '000000');
+    const TXT = 30, GAP = 6;
+    // Size the strip to whichever is wider — barcode or label text — so a longer
+    // style label (e.g. "Small Chip") isn't clipped; the barcode is centered in
+    // the widened strip.
+    ctx.font = `bold ${TXT}px sans-serif`;
+    const textW = Math.ceil(ctx.measureText(codeText).width);
+    const strip = document.createElement('canvas');
+    strip.width = Math.max(barcode.width, textW + 8);
+    strip.height = barcode.height + GAP + TXT;
+    const s = strip.getContext('2d');
+    // Transparent strip background — only the barcode bars + text are opaque, so
+    // the band prints clear on the film. bwip-js leaves the barcode gaps
+    // transparent already; we just skip the white fill.
+    s.drawImage(barcode, (strip.width - barcode.width) / 2, 0);
+    s.fillStyle = '#000000';
+    s.textAlign = 'center';
+    s.textBaseline = 'top';
+    s.font = `bold ${TXT}px sans-serif`;
+    s.fillText(codeText, strip.width / 2, barcode.height + GAP);
+
+    // Fit the rotated strip into the band (width) × design height. After -90°
+    // the strip's height maps horizontally (≤ band) and width maps vertically.
+    const scale = Math.min((band - 12) / strip.height, (dH - 20) / strip.width);
+    ctx.save();
+    ctx.translate(band / 2, dH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(strip, -strip.width * scale / 2, -strip.height * scale / 2, strip.width * scale, strip.height * scale);
+    ctx.restore();
+  }
+  const rawBlob = await canvasToBlob(canvas, 'image/png');
+  return await setPngDpi(rawBlob, 300);
+}
+
 async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {}) {
   const { source_key } = opts;
+  // Convert layout comes from the item's order_type (Settings → Convert layouts,
+  // resolved server-side). 'outside' puts the barcode + info outside the design.
+  const cardSkin = opts.convert_layout === 'outside';
   // Two-sided convert: back faces are no longer flipped 180° — they keep the
   // same orientation as the front. The QR code is also skipped for backs
   // (only the front carries it). source_key === 'back' is the single switch.
@@ -987,6 +1069,12 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   }
   const sourceW = sourceImg.naturalWidth || sourceImg.width;
   const sourceH = sourceImg.naturalHeight || sourceImg.height;
+
+  // Card Skin ('outside'): keep the design at native size (landscape) and add a
+  // LEFT strip with a rotated barcode + the selected add-on code.
+  if (cardSkin) {
+    return await composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, opts.addon_code || '', source_key);
+  }
 
   const isPortraitSource = sourceW < sourceH;
   // Output canvas size; default 3000×2100 (10×7" @300dpi). The resize flow

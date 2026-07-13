@@ -72,6 +72,9 @@ export default function OrderDetail() {
     api.get('/products', { params: { per_page: 200 } })
       .then(res => setProducts(res.data.data || []));
   };
+  // Order-type options for the per-item Type editor.
+  const [orderTypes, setOrderTypes] = useState([]);
+  useEffect(() => { api.get('/settings/order-types').then(res => setOrderTypes(res.data?.order_types || [])).catch(() => {}); }, []);
 
   // Buy a Shippo label for a seller_ship order (full address already on file).
   const [buyingLabel, setBuyingLabel] = useState(false);
@@ -126,6 +129,26 @@ export default function OrderDetail() {
 
   const setAddr = (key, value) => setForm(f => ({ ...f, address: { ...f.address, [key]: value } }));
 
+  // Live shipping/total preview when staff switches ship_type. Reverts to the
+  // saved value if switched back to the order's original type.
+  const [pricePreview, setPricePreview] = useState(null);
+  const changeShipType = async (nextType) => {
+    setForm(f => ({ ...f, ship_type: nextType }));
+    if (nextType === order.ship_type) {
+      setPricePreview(null);
+      setForm(f => ({ ...f, shipping_cost: order.shipping_cost ?? '' }));
+      return;
+    }
+    try {
+      const res = await api.get(`/orders/${id}/ship-cost-preview`, { params: { ship_type: nextType } });
+      setPricePreview(res.data);
+      // Auto-fill the shipping cost so the displayed price matches what saves.
+      setForm(f => ({ ...f, shipping_cost: res.data.shipping_cost }));
+    } catch (err) {
+      notify(err.response?.data?.message || 'Không tính được giá mới', { title: 'Ship cost', kind: 'error' });
+    }
+  };
+
   useEffect(() => { fetchOrder(); }, [id]);
 
   const handleUpdate = async () => {
@@ -137,6 +160,7 @@ export default function OrderDetail() {
     if (!payload.proof_image) delete payload.proof_image;
     await api.put(`/orders/${id}`, payload);
     setEditing(false);
+    setPricePreview(null);
     fetchOrder();
   };
 
@@ -246,7 +270,7 @@ export default function OrderDetail() {
           {order.paid_cost < order.total_cost && (
             <button onClick={handlePay} className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white text-sm rounded-lg">Pay Order</button>
           )}
-          <button onClick={() => setEditing(!editing)} className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">
+          <button onClick={() => { if (editing) { setPricePreview(null); fetchOrder(); } setEditing(!editing); }} className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">
             {editing ? 'Cancel' : 'Edit'}
           </button>
           {!order.resend_of_order_id && (
@@ -287,7 +311,7 @@ export default function OrderDetail() {
               {(hasRole('admin') || hasRole('support')) && (
                 <div>
                   <label className="text-xs text-neutral-500">Ship Type</label>
-                  <select value={form.ship_type} onChange={e => setForm(f => ({ ...f, ship_type: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm">
+                  <select value={form.ship_type} onChange={e => changeShipType(e.target.value)} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm">
                     <option value="tiktok_ship">tiktok_ship (TikTok label)</option>
                     <option value="seller_ship">seller_ship (seller buys label)</option>
                     <option value="stamp">stamp (no tracking, $/thiệp)</option>
@@ -322,6 +346,12 @@ export default function OrderDetail() {
               <div>
                 <label className="text-xs text-neutral-500">{form.ship_type === 'stamp' ? 'Handling Fee' : 'Shipping Cost'}</label>
                 <input type="number" step="0.01" value={form.shipping_cost} onChange={e => setForm(f => ({ ...f, shipping_cost: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                {pricePreview && (
+                  <p className="text-[11px] text-emerald-600 mt-1">
+                    Giá mới theo <b>{pricePreview.ship_type}</b>: shipping <b>${pricePreview.shipping_cost}</b> · total <b>${pricePreview.total_cost}</b>
+                    <span className="text-neutral-400"> (print ${pricePreview.print_cost} giữ nguyên)</span>
+                  </p>
+                )}
               </div>
               {/* Address — used for stamp (mailed direct) and seller_ship
                   (seller buys their own label) orders. Staff only. */}
@@ -462,12 +492,26 @@ export default function OrderDetail() {
               const qty = item.quantity ?? 1;
               const subtotal = (Number(item.price) + accUnit) * qty;
               const canEditAcc = order.status !== 6 && order.status !== 7; // not shipped / cancelled
+              const canEditVariant = order.status !== 7; // block only when cancelled
               return (
                 <tr key={item.id} className="border-b border-neutral-100">
                   <td className="py-2 text-neutral-800">
-                    {item.product_variant?.product?.name || '-'} - {item.product_variant?.color} / {item.product_variant?.size}
+                    <ItemVariantCell
+                      item={item}
+                      canEdit={canEditVariant}
+                      products={products}
+                      onOpen={ensureProducts}
+                      onSaved={fetchOrder}
+                    />
                   </td>
-                  <td className="py-2 text-neutral-600">{item.order_type === 0 ? 'Greeting Card' : 'Pass Sleeve'}</td>
+                  <td className="py-2 text-neutral-600">
+                    <ItemTypeCell
+                      item={item}
+                      canEdit={canEditVariant}
+                      orderTypes={orderTypes}
+                      onSaved={fetchOrder}
+                    />
+                  </td>
                   <td className="py-2 text-neutral-600 text-xs">
                     <ItemAccessoriesCell
                       item={item}
@@ -623,6 +667,165 @@ function ItemMockupCell({ item, field, label, canEdit, onOpen, onSaved, failReas
         <button onClick={startEdit} className="text-orange-600 hover:text-orange-700 text-xs" title={`Edit ${label}`}>✎</button>
       )}
     </span>
+  );
+}
+
+// Edit the item's order_type label. Staff/owner, blocked only when cancelled.
+// Empty clears it → display falls back to product.order_type / legacy.
+function ItemTypeCell({ item, canEdit, orderTypes, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const shown = item.order_type_label
+    || item.product_variant?.product?.order_type
+    || (item.order_type === 0 ? 'Greeting Card' : 'Pass Sleeve');
+
+  const start = () => { setVal(item.order_type_label || ''); setEditing(true); };
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.put(`/order-items/${item.id}/order-type`, { order_type: val.trim() || null });
+      setEditing(false);
+      onSaved?.();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Đổi type thất bại', { title: 'Type', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  if (!editing) {
+    return (
+      <div>
+        <div>{shown}{!item.order_type_label && <span className="text-[10px] text-neutral-400 ml-1">(theo product)</span>}</div>
+        {canEdit && <button onClick={start} className="mt-1 text-[11px] text-orange-600 hover:text-orange-700">Đổi type</button>}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      <input
+        list="order-type-opts"
+        value={val}
+        onChange={e => setVal(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
+        placeholder="Trống = theo product"
+        maxLength={64}
+        className="w-40 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-xs"
+      />
+      <datalist id="order-type-opts">
+        {(orderTypes || []).map(t => <option key={t} value={t} />)}
+      </datalist>
+      <div className="flex gap-1">
+        <button onClick={save} disabled={saving} className="px-2 py-1 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-[11px] rounded">{saving ? '…' : 'Lưu'}</button>
+        <button onClick={() => setEditing(false)} className="px-2 py-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-600 text-[11px] rounded">Huỷ</button>
+      </div>
+    </div>
+  );
+}
+
+// Change the product variant of an existing order item. Staff/owner, only
+// while the order isn't shipped/cancelled. On save the hub re-prices the item
+// + recomputes order totals (PUT /order-items/{id}/variant).
+function ItemVariantCell({ item, canEdit, products, onOpen, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [productId, setProductId] = useState('');
+  const [variantId, setVariantId] = useState('');
+  const [preview, setPreview] = useState(null);   // { item_price, total_cost, old_* }
+  const [previewing, setPreviewing] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const current = item.product_variant;
+  const label = `${current?.product?.name || '-'}${current?.color || current?.size ? ` — ${[current?.color, current?.size].filter(Boolean).join(' / ')}` : ''}`;
+
+  const startEdit = () => {
+    onOpen?.();
+    setProductId(String(current?.product_id ?? current?.product?.id ?? ''));
+    setVariantId(String(current?.id ?? ''));
+    setPreview(null);
+    setEditing(true);
+  };
+
+  const product = (products || []).find(p => String(p.id) === String(productId));
+  const variants = product?.variants || [];
+
+  // Review the new price whenever a different variant is picked.
+  const pickVariant = async (vid) => {
+    setVariantId(vid);
+    setPreview(null);
+    if (!vid || String(vid) === String(current?.id)) return;
+    setPreviewing(true);
+    try {
+      const res = await api.get(`/order-items/${item.id}/variant-preview`, { params: { product_variant_id: Number(vid) } });
+      setPreview(res.data);
+    } catch (err) {
+      notify(err.response?.data?.message || 'Không tính được giá', { title: 'Variant preview', kind: 'error' });
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const save = async () => {
+    if (!variantId || String(variantId) === String(current?.id)) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      const res = await api.put(`/order-items/${item.id}/variant`, { product_variant_id: Number(variantId) });
+      const o = res.data?.order;
+      await notify(`Đã đổi variant${o ? ` · total $${o.total_cost}` : ''}`, { title: 'Variant', kind: 'success' });
+      setEditing(false);
+      onSaved?.();
+    } catch (err) {
+      const errs = err.response?.data?.errors;
+      notify(err.response?.data?.message || (errs ? Object.values(errs).flat().join('\n') : 'Error'), { title: 'Đổi variant thất bại', kind: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <div>
+        <div className="text-neutral-800">{label}</div>
+        {canEdit && <button onClick={startEdit} className="mt-1 text-[11px] text-orange-600 hover:text-orange-700">Đổi variant</button>}
+      </div>
+    );
+  }
+  if (!products) return <div className="text-[11px] text-neutral-400">Loading catalog…</div>;
+
+  return (
+    <div className="space-y-1">
+      <select
+        value={productId}
+        onChange={e => { setProductId(e.target.value); setVariantId(''); }}
+        className="w-full px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-xs"
+      >
+        <option value="">— chọn sản phẩm —</option>
+        {(products || []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+      <select
+        value={variantId}
+        onChange={e => pickVariant(e.target.value)}
+        className="w-full px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-xs"
+      >
+        <option value="">— chọn variant —</option>
+        {variants.map(v => (
+          <option key={v.id} value={v.id}>{[v.color, v.size].filter(Boolean).join(' / ') || `#${v.id}`}{v.sku ? ` (${v.sku})` : ''}</option>
+        ))}
+      </select>
+
+      {/* Price review before committing */}
+      {previewing && <div className="text-[11px] text-neutral-400">Đang tính giá…</div>}
+      {preview && (
+        <div className="text-[11px] bg-emerald-50 border border-emerald-200 rounded p-1.5 leading-relaxed">
+          <div>Giá item: <span className="line-through text-neutral-400">${preview.old_item_price}</span> → <b>${preview.item_price}</b></div>
+          <div>Total đơn: <span className="line-through text-neutral-400">${preview.old_total_cost}</span> → <b className="text-emerald-700">${preview.total_cost}</b></div>
+        </div>
+      )}
+
+      <div className="flex gap-1">
+        <button onClick={save} disabled={saving || !preview} className="px-2 py-1 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-[11px] rounded" title={!preview ? 'Chọn variant khác để xem giá trước' : ''}>{saving ? '…' : 'Xác nhận đổi'}</button>
+        <button onClick={() => setEditing(false)} className="px-2 py-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-600 text-[11px] rounded">Huỷ</button>
+      </div>
+    </div>
   );
 }
 

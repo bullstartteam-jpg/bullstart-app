@@ -145,14 +145,30 @@ export async function buildInvoicePdf(payload, opts = {}) {
   drawTotalRow(doc, totalsX, afterTable + rowH * 2, labelW, valueW, rowH,
     'TOTAL AMOUNT',  formatMoney(payload.totals?.total),         ORANGE, true);
 
+  // For VNPay, print the converted VND total (USD total × exchange rate) plus
+  // the rate used, right below the USD totals.
+  const vndRate = Number(payload.payment_settings?.vnpay?.vnd_per_usd) || 0;
+  const showVnd = variant === 'vnpay' && vndRate > 0;
+  let totalsBottom = afterTable + rowH * 3;
+  if (showVnd) {
+    const vndAmount = (Number(payload.totals?.total) || 0) * vndRate;
+    drawTotalRow(doc, totalsX, totalsBottom, labelW, valueW, rowH,
+      'TOTAL (VND)', formatVnd(vndAmount), ORANGE_LIGHT);
+    totalsBottom += rowH;
+    doc.setFont('helvetica', 'italic').setFontSize(8).setTextColor(120, 120, 120);
+    doc.text(`Exchange rate: ${formatVnd(vndRate)} / USD`, totalsX + totalsW, totalsBottom + 10, { align: 'right' });
+    doc.setTextColor(0, 0, 0);
+    totalsBottom += 12;
+  }
+
   // ── Payment info block (variant-specific) ──
-  const paymentY = afterTable + rowH * 3 + 20;
+  const paymentY = totalsBottom + 22;
   const paymentEndY = variant === 'vnpay'
     ? await drawVnpayBlock(doc, margin, paymentY, payload.payment_settings?.vnpay || {})
     : drawPingpongBlock(doc, margin, paymentY, payload.payment_settings?.pingpong || {});
 
   // ── Footer block ──
-  const footY = Math.max(paymentEndY + 20, afterTable + rowH * 3 + 80);
+  const footY = Math.max(paymentEndY + 20, totalsBottom + 60);
   doc.setFont('helvetica', 'normal').setFontSize(10).setTextColor(0, 0, 0);
   doc.text('Payment Method: ' + (variant === 'vnpay' ? 'VNPay (VND QR)' : 'PingPong (USD)'), margin, footY);
   doc.text('Status: ' + (opts.status || ''), margin, footY + 14);
@@ -284,4 +300,10 @@ function drawTotalRow(doc, x, y, labelW, valueW, h, label, value, fillColor, bol
 function formatMoney(n) {
   const v = Number(n ?? 0);
   return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// VND amount — whole đồng, grouped, with a " VND" suffix (the ₫ glyph isn't in
+// the PDF's helvetica font, so we spell it out).
+function formatVnd(n) {
+  return Math.round(Number(n) || 0).toLocaleString('en-US') + ' VND';
 }

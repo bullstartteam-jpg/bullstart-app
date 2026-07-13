@@ -12,7 +12,8 @@ export default function ProductDetail() {
   const [variantForm, setVariantForm] = useState({ sku: '', color: '', size: '', paper_type: '', weight: '', length: '', width: '', height: '' });
   const [showVariantForm, setShowVariantForm] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ name: '', style: '', line_id: '', status: 1 });
+  const [editForm, setEditForm] = useState({ name: '', style: '', line_id: '', order_type: '', status: 1 });
+  const [orderTypes, setOrderTypes] = useState([]);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const csvFileRef = useRef(null);
@@ -23,11 +24,12 @@ export default function ProductDetail() {
   const fetchProduct = () => {
     api.get(`/products/${id}`).then(res => {
       setProduct(res.data.product);
-      setEditForm({ name: res.data.product.name, style: res.data.product.style || '', line_id: res.data.product.line_id || '', status: res.data.product.status });
+      setEditForm({ name: res.data.product.name, style: res.data.product.style || '', line_id: res.data.product.line_id || '', order_type: res.data.product.order_type || '', status: res.data.product.status });
     }).finally(() => setLoading(false));
   };
 
   useEffect(() => { fetchProduct(); }, [id]);
+  useEffect(() => { api.get('/settings/order-types').then(res => setOrderTypes(res.data?.order_types || [])).catch(() => {}); }, []);
 
   useEffect(() => {
     if (hasRole('admin')) {
@@ -182,6 +184,20 @@ export default function ProductDetail() {
                 <input value={editForm.line_id} onChange={e => setEditForm({ ...editForm, line_id: e.target.value })} placeholder="e.g. GC" maxLength={16} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm font-mono" />
               </div>
               <div>
+                <label className="text-xs text-neutral-500">Order Type</label>
+                <input
+                  list="order-type-options"
+                  value={editForm.order_type}
+                  onChange={e => setEditForm({ ...editForm, order_type: e.target.value })}
+                  placeholder="Chọn hoặc gõ mới…"
+                  maxLength={64}
+                  className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
+                />
+                <datalist id="order-type-options">
+                  {orderTypes.map(t => <option key={t} value={t} />)}
+                </datalist>
+              </div>
+              <div>
                 <label className="text-xs text-neutral-500">Status</label>
                 <select value={editForm.status} onChange={e => setEditForm({ ...editForm, status: parseInt(e.target.value) })} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm">
                   <option value={1}>Active</option>
@@ -201,6 +217,7 @@ export default function ProductDetail() {
               <p className="text-neutral-500 text-sm">
                 Style: {product.style || '-'}
                 {' | '}Line ID: <span className="font-mono">{product.line_id || '-'}</span>
+                {' | '}Order Type: {product.order_type || '-'}
                 {' | '}Variants: {product.variants?.length || 0}
               </p>
             </div>
