@@ -419,6 +419,31 @@ export default function Orders() {
   };
   const dateRangeLabel = () => `${filters.date_from || 'all'}_${filters.date_to || 'all'}`;
 
+  // Inline ship-type change from a list row. Staff only, and only while the
+  // order isn't shipped. The hub recomputes shipping_cost + total_cost (and
+  // clears label/tracking for stamp/seller_ship) — see OrderController::update.
+  const changeRowShipType = async (order, nextType) => {
+    if (!nextType || nextType === order.ship_type) return;
+    const warn = (nextType === 'stamp' || nextType === 'seller_ship')
+      ? '\n\nLabel/tracking sẽ bị xoá, phí ship tính lại theo số lượng.' : '';
+    const ok = await askConfirm(
+      `Đổi ship type đơn ${order.system_id}: ${order.ship_type} → ${nextType}?${warn}`,
+      { title: 'Đổi ship type', okText: 'Đổi' }
+    );
+    if (!ok) return;
+    try {
+      const res = await api.put(`/orders/${order.id}`, { ship_type: nextType });
+      const o = res.data?.order;
+      notify(
+        `Đã đổi ${order.system_id} → ${nextType}${o ? ` · shipping $${o.shipping_cost} · total $${o.total_cost}` : ''}`,
+        { title: 'Ship type', kind: 'success' }
+      );
+      fetchOrders();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Đổi ship type thất bại', { title: 'Ship type', kind: 'error' });
+    }
+  };
+
   const handleExport = async () => {
     const params = {};
     if (filters.status !== '') params.status = filters.status;
@@ -1225,7 +1250,22 @@ export default function Orders() {
                     <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[order.status]}`}>{STATUS_MAP[order.status]}</span>
                   )}
                 </td>
-                <td className="p-3 text-neutral-600">{order.ship_type}</td>
+                <td className="p-3 text-neutral-600" onClick={e => e.stopPropagation()}>
+                  {isStaff && order.status !== 6 ? (
+                    <select
+                      value={order.ship_type}
+                      onChange={e => changeRowShipType(order, e.target.value)}
+                      className="px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-xs"
+                      title="Đổi ship type — giá tính lại tự động"
+                    >
+                      <option value="tiktok_ship">tiktok_ship</option>
+                      <option value="seller_ship">seller_ship</option>
+                      <option value="stamp">stamp</option>
+                    </select>
+                  ) : (
+                    <span title={order.status === 6 ? 'Đã shipped — không sửa được type' : ''}>{order.ship_type}</span>
+                  )}
+                </td>
                 <td className="p-3 text-right text-neutral-800 font-medium">${order.total_cost}</td>
                 <td className="p-3 text-right">
                   <span className={order.paid_cost >= order.total_cost ? 'text-green-600' : 'text-red-500'}>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import api from '../services/api';
+import api, { setApiUrl, resetApiUrl, DEFAULT_API_URL } from '../services/api';
 import UploadButton from '../components/UploadButton';
 import { notify } from '../components/Dialog';
 import { setGangMarks } from '../services/gangsheetBuilder';
@@ -32,9 +32,11 @@ export default function Settings() {
     { id: 'vnpay', label: 'VNPay Merchant' },
     { id: 'bank', label: 'Bank Transfer' },
     { id: 'stamp', label: 'Stamp Shipping' },
+    { id: 'order-types', label: 'Order Types' },
     { id: 'shippo', label: 'Shippo' },
     { id: 'resend', label: 'Resend' },
     { id: 'appearance', label: 'Giao diện' },
+    { id: 'apiurl', label: 'API Server' },
     { id: 'qr', label: 'QR Portal' },
     { id: 'cancel', label: 'Cancel Policy' },
     { id: 'gangsheet', label: 'Gangsheet Auto' },
@@ -61,9 +63,11 @@ export default function Settings() {
       {tab === 'vnpay' && <VnpayMerchantTab />}
       {tab === 'bank' && <BankTransferTab />}
       {tab === 'stamp' && <StampConfigTab />}
+      {tab === 'order-types' && <OrderTypesTab />}
       {tab === 'shippo' && <ShippoConfigTab />}
       {tab === 'resend' && <ResendConfigTab />}
       {tab === 'appearance' && <AppearanceTab />}
+      {tab === 'apiurl' && <ApiUrlTab />}
       {tab === 'qr' && <QrConfigTab />}
       {tab === 'cancel' && <CancelPolicyTab />}
       {tab === 'gangsheet' && <GangsheetAutomationTab />}
@@ -296,6 +300,122 @@ function ShippoInp({ label, value, onChange, ph, type = 'text' }) {
   );
 }
 
+function OrderTypesTab() {
+  const [list, setList] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [newType, setNewType] = useState('');
+  // Convert-layout mapping (order_type → convert flow key).
+  const [layouts, setLayouts] = useState([]);   // [{key,label}]
+  const [layoutMap, setLayoutMap] = useState({});
+  const [savingLayout, setSavingLayout] = useState(false);
+
+  useEffect(() => { api.get('/settings/order-types').then(res => setList(res.data?.order_types || [])); }, []);
+  useEffect(() => {
+    api.get('/settings/convert-layouts').then(res => {
+      setLayouts(res.data?.available || []);
+      setLayoutMap(res.data?.map || {});
+    }).catch(() => {});
+  }, []);
+
+  const setLayoutFor = async (orderType, key) => {
+    const next = { ...layoutMap, [orderType]: key };
+    setLayoutMap(next);
+    setSavingLayout(true);
+    try {
+      const res = await api.put('/settings/convert-layouts', { map: next });
+      setLayoutMap(res.data?.map || next);
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Convert layout', kind: 'error' });
+    } finally { setSavingLayout(false); }
+  };
+
+  if (!list) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const save = async (next) => {
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/order-types', { order_types: next });
+      setList(res.data?.order_types || next);
+      notify('Đã lưu order types', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  const add = () => {
+    const t = newType.trim();
+    if (!t || list.includes(t)) { setNewType(''); return; }
+    const next = [...list, t];
+    setList(next); setNewType(''); save(next);
+  };
+  const remove = (t) => { const next = list.filter(x => x !== t); setList(next); save(next); };
+  const rename = (i, val) => setList(l => l.map((x, idx) => idx === i ? val : x));
+
+  return (
+    <div className="space-y-4 max-w-xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Order Types</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">
+          Danh sách loại đơn (order type). Gán cho từng sản phẩm ở trang Product; cột "Type" của item sẽ hiện theo product.
+        </p>
+        <div className="space-y-2">
+          {list.length === 0 && <p className="text-neutral-400 text-sm">Chưa có order type nào.</p>}
+          {list.map((t, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input
+                value={t}
+                onChange={e => rename(i, e.target.value)}
+                onBlur={() => save(list)}
+                maxLength={64}
+                className="flex-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+              />
+              <button onClick={() => remove(t)} className="px-2 py-1 text-red-500 hover:text-red-600 text-sm">Xoá</button>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 mt-3">
+          <input
+            value={newType}
+            onChange={e => setNewType(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') add(); }}
+            placeholder="Thêm order type mới…"
+            maxLength={64}
+            className="flex-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+          />
+          <button onClick={add} disabled={saving || !newType.trim()} className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">Thêm</button>
+        </div>
+      </section>
+
+      {/* Convert layout per order_type */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Convert layout theo Order Type</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">
+          Mỗi order type convert _qr theo flow nào. Item lấy order_type từ product → composer chọn layout tương ứng (không match theo tên).
+        </p>
+        {list.length === 0 ? (
+          <p className="text-neutral-400 text-sm">Thêm order type ở trên trước.</p>
+        ) : (
+          <div className="space-y-2">
+            {list.map(t => (
+              <div key={t} className="flex items-center gap-3">
+                <span className="text-sm text-neutral-700 min-w-[160px]">{t}</span>
+                <select
+                  value={layoutMap[t] || 'default'}
+                  onChange={e => setLayoutFor(t, e.target.value)}
+                  disabled={savingLayout}
+                  className="flex-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+                >
+                  {layouts.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function ShippoConfigTab() {
   const [c, setC] = useState(null);
   const [testToken, setTestToken] = useState('');
@@ -434,6 +554,69 @@ function AppearanceTab() {
           <input type="checkbox" checked={prefs.showAppName} onChange={() => toggle('showAppName')} /> Hiện tên app
         </label>
         <p className="text-[11px] text-neutral-500">Lưu trên máy này; áp dụng ngay.</p>
+      </section>
+    </div>
+  );
+}
+
+function ApiUrlTab() {
+  // Stored per-machine in localStorage (api_url); empty override = production
+  // default. Changing it reloads the app so every request uses the new server.
+  const [url, setUrl] = useState(() => localStorage.getItem('api_url') || DEFAULT_API_URL);
+  const [saving, setSaving] = useState(false);
+  const isOverridden = !!localStorage.getItem('api_url');
+
+  const save = () => {
+    const v = url.trim().replace(/\/+$/, '');
+    if (!/^https?:\/\/.+/i.test(v)) {
+      notify('URL phải bắt đầu bằng http:// hoặc https://', { title: 'API Server', kind: 'error' });
+      return;
+    }
+    setSaving(true);
+    setApiUrl(v);
+    notify('Đã lưu API URL. Đang tải lại app…', { title: 'API Server', kind: 'success' });
+    setTimeout(() => window.location.reload(), 600);
+  };
+
+  const reset = () => {
+    setSaving(true);
+    resetApiUrl();
+    setUrl(DEFAULT_API_URL);
+    notify('Đã khôi phục mặc định. Đang tải lại app…', { title: 'API Server', kind: 'success' });
+    setTimeout(() => window.location.reload(), 600);
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm space-y-3">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">API Server</h3>
+        <p className="text-[11px] text-neutral-500">
+          Địa chỉ API backend app này kết nối tới. Lưu <b>trên máy này</b> (localStorage), không đồng bộ sang máy khác.
+          Mặc định: <code className="font-mono">{DEFAULT_API_URL}</code>
+        </p>
+        <div>
+          <label className="text-xs text-neutral-500">API URL</label>
+          <input
+            type="text"
+            value={url}
+            onChange={e => setUrl(e.target.value)}
+            placeholder={DEFAULT_API_URL}
+            spellCheck={false}
+            className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm font-mono"
+          />
+          <p className="text-[11px] text-neutral-500 mt-1">
+            {isOverridden ? 'Đang dùng URL tuỳ chỉnh trên máy này. ' : 'Đang dùng mặc định. '}
+            Đổi URL sẽ tải lại app và có thể cần đăng nhập lại.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={save} disabled={saving} className="px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+            {saving ? 'Đang lưu…' : 'Lưu & tải lại'}
+          </button>
+          <button onClick={reset} disabled={saving} className="px-4 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">
+            Khôi phục mặc định
+          </button>
+        </div>
       </section>
     </div>
   );
