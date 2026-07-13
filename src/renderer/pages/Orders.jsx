@@ -47,7 +47,7 @@ function orderItemGroups(order) {
   return (order.items || []).map(it => {
     const pv = it.product_variant;
     const variantText = pv
-      ? `${pv.product?.name || `Variant #${pv.id}`}${pv.color || pv.size ? ` — ${[pv.color, pv.size].filter(Boolean).join('/')}` : ''}`
+      ? `${pv.product?.line_id ? `[${pv.product.line_id}] ` : ''}${pv.product?.name || `Variant #${pv.id}`}${pv.sku ? ` · ${pv.sku}` : ''}${pv.color || pv.size ? ` — ${[pv.color, pv.size].filter(Boolean).join('/')}` : ''}`
       : `Item #${it.id}`;
 
     const materialName = it.material?.name || null;
@@ -88,6 +88,58 @@ function OrderThumb({ url, label, onOpen }) {
 
 const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
+
+const PRODUCT_FILTER_KEYS = [
+  'product_id', 'line_id', 'product_variant_id', 'sku', 'color', 'size', 'paper_type', 'material_id', 'accessory_id',
+];
+
+const ORDERS_FILTER_DEFAULTS = {
+  status: '', tracking_status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', tracking_id: '',
+  user_id: '', date_from: '', date_to: '', ship_type: '',
+  product_id: '', line_id: '', product_variant_id: '', sku: '', color: '', size: '', paper_type: '',
+  material_id: '', accessory_id: '',
+  page: 1, per_page: 20,
+};
+
+function buildOrderFilterParams(filters, { includePagination = false, orderIds } = {}) {
+  const params = {};
+  if (includePagination) {
+    params.page = filters.page;
+    params.per_page = filters.per_page || 20;
+  }
+  if (filters.status !== '') params.status = filters.status;
+  if (filters.tracking_status) params.tracking_status = filters.tracking_status;
+  if (filters.paid) params.paid = filters.paid;
+  if (filters.ship_type) params.ship_type = filters.ship_type;
+  if (filters.ref_id) params.ref_id = filters.ref_id;
+  if (filters.ref_ids) params.ref_ids = filters.ref_ids;
+  if (filters.system_id) params.system_id = filters.system_id;
+  if (filters.tracking_id) params.tracking_id = filters.tracking_id;
+  if (filters.user_id) params.user_id = filters.user_id;
+  if (filters.date_from) params.date_from = filters.date_from;
+  if (filters.date_to) params.date_to = filters.date_to;
+  for (const k of PRODUCT_FILTER_KEYS) {
+    if (filters[k]) params[k] = filters[k];
+  }
+  if (orderIds?.length > 0) params.order_ids = orderIds.join(',');
+  return params;
+}
+
+function hasActiveProductFilters(filters) {
+  return PRODUCT_FILTER_KEYS.some(k => filters[k]);
+}
+
+function clearProductFilters(filters) {
+  const next = { ...filters, page: 1 };
+  for (const k of PRODUCT_FILTER_KEYS) next[k] = '';
+  return next;
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter(v => v != null && String(v).trim() !== ''))]
+    .sort((a, b) => String(a).localeCompare(String(b)));
+}
+
 const STATUS_COLORS = {
   0: 'bg-blue-100 text-blue-600',
   1: 'bg-yellow-100 text-yellow-600',
@@ -107,12 +159,15 @@ export default function Orders() {
   // order and back keeps the user on the same page they were browsing.
   // Cleared when they hit "Clear all" or close the app.
   const [filters, setFilters] = useState(() => {
-    const def = { status: '', tracking_status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', tracking_id: '', user_id: '', date_from: '', date_to: '', page: 1, per_page: 20 };
     try {
       const saved = JSON.parse(sessionStorage.getItem('orders_filters') || 'null');
-      return saved && typeof saved === 'object' ? { ...def, ...saved } : def;
-    } catch { return def; }
+      return saved && typeof saved === 'object' ? { ...ORDERS_FILTER_DEFAULTS, ...saved } : { ...ORDERS_FILTER_DEFAULTS };
+    } catch { return { ...ORDERS_FILTER_DEFAULTS }; }
   });
+  const [catalogProducts, setCatalogProducts] = useState([]);
+  const [catalogVariants, setCatalogVariants] = useState([]);
+  const [catalogMaterials, setCatalogMaterials] = useState([]);
+  const [catalogAccessories, setCatalogAccessories] = useState([]);
   useEffect(() => { sessionStorage.setItem('orders_filters', JSON.stringify(filters)); }, [filters]);
   const [showRefIdsModal, setShowRefIdsModal] = useState(false);
   const [refIdsInput, setRefIdsInput] = useState('');
@@ -160,22 +215,44 @@ export default function Orders() {
       api.get('/users', { params: { per_page: 100 } }).then(res => setAdminUsers(res.data.data || []));
     }
     if (isSeller) refreshUnpaidBanner();
+    api.get('/products', { params: { status: 1, per_page: 100 } })
+      .then(res => setCatalogProducts(res.data.data || []))
+      .catch(() => {});
   }, [isAdmin, isSeller, authUser?.id]);
+
+  useEffect(() => {
+    const pid = filters.product_id;
+    if (!pid) {
+      setCatalogVariants([]);
+      setCatalogMaterials([]);
+      setCatalogAccessories([]);
+      return;
+    }
+    Promise.all([
+      api.get('/variants', { params: { product_id: pid, status: 1 } }),
+      api.get(`/products/${pid}/materials`),
+      api.get('/accessories', { params: { product_id: pid } }),
+    ]).then(([vRes, mRes, aRes]) => {
+      const variants = vRes.data?.data ?? vRes.data ?? [];
+      setCatalogVariants(Array.isArray(variants) ? variants : []);
+      setCatalogMaterials(Array.isArray(mRes.data) ? mRes.data : (mRes.data?.data || []));
+      setCatalogAccessories(Array.isArray(aRes.data) ? aRes.data : (aRes.data?.data || []));
+    }).catch(() => {
+      setCatalogVariants([]);
+      setCatalogMaterials([]);
+      setCatalogAccessories([]);
+    });
+  }, [filters.product_id]);
+
+  const catalogLineIds = uniqueSorted(catalogProducts.map(p => p.line_id));
+  const catalogColors = uniqueSorted(catalogVariants.map(v => v.color));
+  const catalogSizes = uniqueSorted(catalogVariants.map(v => v.size));
+  const catalogPaperTypes = uniqueSorted(catalogVariants.map(v => v.paper_type));
+  const catalogSkus = uniqueSorted(catalogVariants.map(v => v.sku));
 
   const fetchOrders = () => {
     setLoading(true);
-    const params = { page: filters.page, per_page: filters.per_page || 20 };
-    if (filters.status !== '') params.status = filters.status;
-    if (filters.tracking_status) params.tracking_status = filters.tracking_status;
-    if (filters.paid) params.paid = filters.paid;
-    if (filters.ship_type) params.ship_type = filters.ship_type;
-    if (filters.ref_id) params.ref_id = filters.ref_id;
-    if (filters.ref_ids) params.ref_ids = filters.ref_ids;
-    if (filters.system_id) params.system_id = filters.system_id;
-    if (filters.tracking_id) params.tracking_id = filters.tracking_id;
-    if (filters.user_id) params.user_id = filters.user_id;
-    if (filters.date_from) params.date_from = filters.date_from;
-    if (filters.date_to) params.date_to = filters.date_to;
+    const params = buildOrderFilterParams(filters, { includePagination: true });
 
     api.get('/orders', { params }).then(res => {
       setOrders(res.data.data);
@@ -188,7 +265,15 @@ export default function Orders() {
     }).finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchOrders(); refreshUnpaidBanner(); }, [filters.page, filters.status, filters.tracking_status, filters.paid, filters.ship_type, filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page]);
+  useEffect(() => {
+    fetchOrders();
+    refreshUnpaidBanner();
+  }, [
+    filters.page, filters.status, filters.tracking_status, filters.paid, filters.ship_type,
+    filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page,
+    filters.product_id, filters.line_id, filters.product_variant_id, filters.sku,
+    filters.color, filters.size, filters.paper_type, filters.material_id, filters.accessory_id,
+  ]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -445,24 +530,6 @@ export default function Orders() {
     }
   };
 
-  // Shared filter → query-param shape used by CSV export, invoice export and
-  // the QR-design download so all three operate on the same dataset.
-  const currentFilterParams = () => {
-    const params = {};
-    if (filters.status !== '') params.status = filters.status;
-    if (filters.tracking_status) params.tracking_status = filters.tracking_status;
-    if (filters.paid) params.paid = filters.paid;
-    if (filters.ship_type) params.ship_type = filters.ship_type;
-    if (filters.ref_id) params.ref_id = filters.ref_id;
-    if (filters.ref_ids) params.ref_ids = filters.ref_ids;
-    if (filters.system_id) params.system_id = filters.system_id;
-    if (filters.tracking_id) params.tracking_id = filters.tracking_id;
-    if (filters.user_id) params.user_id = filters.user_id;
-    if (filters.date_from) params.date_from = filters.date_from;
-    if (filters.date_to) params.date_to = filters.date_to;
-    return params;
-  };
-
   // Filename-safe extension for a design URL, falling back to the fetched
   // content-type when the URL carries no extension.
   const guessExt = (url, contentType) => {
@@ -492,7 +559,7 @@ export default function Orders() {
       } else {
         targetOrders = [];
         let page = 1;
-        const params = currentFilterParams();
+        const params = buildOrderFilterParams(filters);
         // Paginate through the whole filtered set — the index endpoint returns
         // items.metas (incl. _qr) for admin/support.
         // eslint-disable-next-line no-constant-condition
@@ -547,7 +614,7 @@ export default function Orders() {
             for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
             const sid = sanitize(order.system_id || `order${order.id}`);
             const key = sanitize(meta.key);
-            files.push({ name: `${sid}/${key}.${guessExt(meta.value, contentType)}`, bytes });
+            files.push({ name: uniqueName(`${sid}/${key}.${guessExt(meta.value, contentType)}`), bytes });
             done++;
           } catch {
             errors++;
@@ -585,8 +652,9 @@ export default function Orders() {
   };
 
   const handleExport = async () => {
-    const params = currentFilterParams();
-    if (selected.length > 0) params.order_ids = selected.join(',');
+    const params = buildOrderFilterParams(filters, {
+      orderIds: selected.length > 0 ? selected : undefined,
+    });
     try {
       const res = await api.get('/orders/export', { params, responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([res.data]));
@@ -609,8 +677,9 @@ export default function Orders() {
   const handleExportInvoice = async (variant) => {
     // Same filter shape as CSV export — reuse current view's selection or
     // filters so admin sees one consistent dataset across both exports.
-    const params = currentFilterParams();
-    if (selected.length > 0) params.order_ids = selected.join(',');
+    const params = buildOrderFilterParams(filters, {
+      orderIds: selected.length > 0 ? selected : undefined,
+    });
 
     try {
       const res = await api.get('/orders/invoice-data', { params });
@@ -1237,6 +1306,140 @@ export default function Orders() {
               </button>
             )}
           </div>
+        )}
+      </div>
+
+      {/* Product filters — server-side via applyProductFilters() on GET /orders */}
+      <div className="flex gap-2 mb-4 items-center flex-wrap bg-white border border-neutral-200 rounded-xl px-3 py-2.5 shadow-sm">
+        <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wide shrink-0">Sản phẩm</span>
+
+        <select
+          value={filters.product_id}
+          onChange={e => {
+            const product_id = e.target.value;
+            const product = catalogProducts.find(p => String(p.id) === product_id);
+            setFilters(f => ({
+              ...f,
+              product_id,
+              line_id: product?.line_id || (product_id ? f.line_id : ''),
+              product_variant_id: '', sku: '', color: '', size: '', paper_type: '',
+              material_id: '', accessory_id: '',
+              page: 1,
+            }));
+          }}
+          className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[200px]"
+          title="Loại sản phẩm"
+        >
+          <option value="">Tất cả sản phẩm</option>
+          {catalogProducts.map(p => (
+            <option key={p.id} value={p.id}>{p.name}{p.line_id ? ` (${p.line_id})` : ''}</option>
+          ))}
+        </select>
+
+        <select
+          value={filters.line_id}
+          onChange={e => setFilters(f => ({ ...f, line_id: e.target.value, page: 1 }))}
+          className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 font-mono"
+          title="Dòng in (line_id)"
+        >
+          <option value="">Line ID</option>
+          {catalogLineIds.map(lid => (
+            <option key={lid} value={lid}>{lid}</option>
+          ))}
+        </select>
+
+        <select
+          value={filters.product_variant_id}
+          onChange={e => setFilters(f => ({ ...f, product_variant_id: e.target.value, page: 1 }))}
+          disabled={!filters.product_id}
+          className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[180px] disabled:opacity-50"
+          title="SKU / Variant"
+        >
+          <option value="">Variant</option>
+          {catalogVariants.map(v => (
+            <option key={v.id} value={v.id}>{v.sku || `#${v.id}`}{v.color || v.size ? ` — ${[v.color, v.size].filter(Boolean).join('/')}` : ''}</option>
+          ))}
+        </select>
+
+        <select
+          value={filters.sku}
+          onChange={e => setFilters(f => ({ ...f, sku: e.target.value, page: 1 }))}
+          disabled={!filters.product_id}
+          className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 font-mono disabled:opacity-50"
+          title="SKU"
+        >
+          <option value="">SKU</option>
+          {catalogSkus.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+
+        <select
+          value={filters.color}
+          onChange={e => setFilters(f => ({ ...f, color: e.target.value, page: 1 }))}
+          disabled={!filters.product_id}
+          className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 disabled:opacity-50"
+          title="Màu"
+        >
+          <option value="">Màu</option>
+          {catalogColors.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+
+        <select
+          value={filters.size}
+          onChange={e => setFilters(f => ({ ...f, size: e.target.value, page: 1 }))}
+          disabled={!filters.product_id}
+          className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 disabled:opacity-50"
+          title="Size"
+        >
+          <option value="">Size</option>
+          {catalogSizes.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+
+        <select
+          value={filters.paper_type}
+          onChange={e => setFilters(f => ({ ...f, paper_type: e.target.value, page: 1 }))}
+          disabled={!filters.product_id}
+          className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-32 disabled:opacity-50"
+          title="Loại giấy"
+        >
+          <option value="">Giấy</option>
+          {catalogPaperTypes.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+
+        <select
+          value={filters.material_id}
+          onChange={e => setFilters(f => ({ ...f, material_id: e.target.value, page: 1 }))}
+          disabled={!filters.product_id}
+          className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[140px] disabled:opacity-50"
+          title="Chất liệu"
+        >
+          <option value="">Material</option>
+          {catalogMaterials.map(m => (
+            <option key={m.id} value={m.id}>{m.name}</option>
+          ))}
+        </select>
+
+        <select
+          value={filters.accessory_id}
+          onChange={e => setFilters(f => ({ ...f, accessory_id: e.target.value, page: 1 }))}
+          disabled={!filters.product_id}
+          className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[140px] disabled:opacity-50"
+          title="Phụ kiện"
+        >
+          <option value="">Accessory</option>
+          {catalogAccessories.map(a => (
+            <option key={a.id} value={a.id}>{a.name}</option>
+          ))}
+        </select>
+
+        {hasActiveProductFilters(filters) && (
+          <button
+            type="button"
+            onClick={() => setFilters(f => clearProductFilters(f))}
+            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-500"
+            title="Xóa tất cả filter sản phẩm"
+          >
+            ✕ Clear product
+          </button>
         )}
       </div>
 
