@@ -1,11 +1,15 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 
-// publicPath must be '/' in dev (webpack-dev-server) and './' in production
-// (Electron loadFile + file://). Using './' in dev breaks dev-server routing
-// so wait-on never sees HTTP 200 and Electron never launches.
-module.exports = (_env, argv) => {
+// publicPath must be '/' ONLY when served by webpack-dev-server (Electron
+// loadURL http://localhost:3000) — an absolute path breaks dev-server routing
+// otherwise. Every build written to build/ is loaded by Electron via loadFile
+// + file://, where an absolute '/bundle.js' resolves to the filesystem root
+// (ERR_FILE_NOT_FOUND). Key this on `serve`, NOT the mode: the single-terminal
+// dev flow builds with --mode development yet still loads from file://.
+module.exports = (env = {}, argv) => {
   const isProd = argv.mode === 'production';
+  const isServe = !!env.WEBPACK_SERVE;
 
   return {
   mode: isProd ? 'production' : 'development',
@@ -14,7 +18,7 @@ module.exports = (_env, argv) => {
   output: {
     path: path.resolve(__dirname, 'build'),
     filename: 'bundle.js',
-    publicPath: isProd ? './' : '/',
+    publicPath: isServe ? '/' : './',
     clean: true,
   },
   module: {
