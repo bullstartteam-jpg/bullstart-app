@@ -84,7 +84,7 @@ function OrderThumb({ url, label, onOpen }) {
   );
 }
 
-const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
+const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled', 'pending_cancel'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
 const STATUS_COLORS = {
   0: 'bg-blue-100 text-blue-600',
@@ -95,6 +95,7 @@ const STATUS_COLORS = {
   5: 'bg-gray-100 text-gray-600',
   6: 'bg-emerald-100 text-emerald-600',
   7: 'bg-rose-100 text-rose-600',
+  8: 'bg-yellow-100 text-yellow-600',
 };
 
 export default function Orders() {
@@ -196,6 +197,10 @@ export default function Orders() {
     setSelected([]);
     fetchOrders();
   };
+
+  // Order whose pending cancel request the admin is reviewing (opened by
+  // clicking the pending_cancel status badge). null = modal closed.
+  const [cancelActionOrder, setCancelActionOrder] = useState(null);
 
   const handleBulkPay = async () => {
     if (selected.length === 0) return;
@@ -1114,9 +1119,9 @@ export default function Orders() {
         </div>
       )}
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden shadow-sm">
-        <table className="w-full text-sm">
+      {/* Table — horizontal scroll when columns exceed the viewport width. */}
+      <div className="bg-white rounded-xl border border-neutral-200 overflow-x-auto shadow-sm">
+        <table className="w-full text-sm" style={{ minWidth: '1200px' }}>
           <thead>
             <tr className="border-b border-neutral-200 text-neutral-500 text-xs bg-[#faf8f6]">
               <th className="p-3 text-left w-8">
@@ -1208,7 +1213,17 @@ export default function Orders() {
                   </td>
                 )}
                 <td className="p-3">
-                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[order.status]}`}>{STATUS_MAP[order.status]}</span>
+                  {order.status === 8 && isAdmin ? (
+                    <button
+                      onClick={e => { e.stopPropagation(); setCancelActionOrder(order); }}
+                      title="Xem yêu cầu huỷ — Accept / Reject"
+                      className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[order.status]} ring-1 ring-yellow-400 hover:ring-2 cursor-pointer`}
+                    >
+                      {STATUS_MAP[order.status]} ▾
+                    </button>
+                  ) : (
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[order.status]}`}>{STATUS_MAP[order.status]}</span>
+                  )}
                 </td>
                 <td className="p-3 text-neutral-600">{order.ship_type}</td>
                 <td className="p-3 text-right text-neutral-800 font-medium">${order.total_cost}</td>
@@ -1292,6 +1307,14 @@ export default function Orders() {
       })()}
 
       <PreviewModal url={previewUrl} onClose={() => setPreviewUrl(null)} />
+
+      {cancelActionOrder && (
+        <CancelActionModal
+          order={cancelActionOrder}
+          onClose={() => setCancelActionOrder(null)}
+          onDone={() => { setCancelActionOrder(null); fetchOrders(); }}
+        />
+      )}
 
       {/* Pay-All preview modal */}
       {showPayAll && (
@@ -1590,6 +1613,86 @@ function Stat({ label, value, tone }) {
     <div className="bg-white border border-neutral-200 rounded-lg p-2">
       <div className="text-[10px] text-neutral-500 uppercase tracking-wider">{label}</div>
       <div className={`text-xl font-bold ${tone}`}>{value}</div>
+    </div>
+  );
+}
+
+// Admin popup for reviewing a seller's pending cancel request (opened by
+// clicking the pending_cancel status badge). Shows the reason + the refund the
+// seller would get (policy % for the order's pre-cancel status × paid amount),
+// and lets the admin Accept (cancel + refund) or Reject (revert status).
+function CancelActionModal({ order, onClose, onDone }) {
+  const cr = order.latest_cancel_request || {};
+  const [percent, setPercent] = useState(null);
+  const [busy, setBusy] = useState('');
+
+  useEffect(() => {
+    api.get('/settings/cancel-policy').then(res => {
+      const row = (res.data || []).find(r => r.order_status === cr.previous_status);
+      setPercent(row && row.enabled ? Number(row.percent) : 0);
+    }).catch(() => setPercent(0));
+  }, [cr.previous_status]);
+
+  const paid = Number(order.paid_cost) || 0;
+  const refund = percent == null ? null : Math.round(percent / 100 * paid * 100) / 100;
+
+  const approve = async () => {
+    setBusy('approve');
+    try {
+      const res = await api.post(`/orders/${order.id}/cancel/approve`);
+      await notify(`Cancel approved. Refunded $${Number(res.data.refund_amount).toFixed(2)} to seller.`, { title: 'Approve cancel', kind: 'success' });
+      onDone();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Approve failed', { title: 'Approve cancel', kind: 'error' });
+      setBusy('');
+    }
+  };
+
+  const reject = async () => {
+    setBusy('reject');
+    try {
+      await api.post(`/orders/${order.id}/cancel/reject`, {});
+      await notify('Cancel request rejected. Order reverted.', { title: 'Reject cancel', kind: 'success' });
+      onDone();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Reject failed', { title: 'Reject cancel', kind: 'error' });
+      setBusy('');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl w-[440px] max-w-[92%] p-5" onClick={e => e.stopPropagation()}>
+        <h3 className="text-base font-semibold text-neutral-800 mb-1">Yêu cầu huỷ đơn</h3>
+        <p className="text-xs text-neutral-500 mb-3">Đơn: <span className="font-mono">{order.system_id}</span> · Seller: {order.user?.name}</p>
+
+        <div className="bg-[#faf8f6] rounded-lg p-3 border border-neutral-200 text-sm space-y-1.5">
+          <div className="flex justify-between"><span className="text-neutral-500">Trạng thái trước khi huỷ</span><span className="font-medium text-neutral-800">{STATUS_MAP[cr.previous_status] ?? cr.previous_status}</span></div>
+          <div className="flex justify-between"><span className="text-neutral-500">Đã thanh toán</span><span className="text-neutral-800">${paid.toFixed(2)}</span></div>
+          <div className="flex justify-between"><span className="text-neutral-500">% hoàn theo chính sách</span><span className="text-neutral-800">{percent == null ? '…' : `${percent}%`}</span></div>
+          <div className="flex justify-between border-t border-neutral-200 pt-1.5 mt-1.5">
+            <span className="text-emerald-700 font-medium">Hoàn về ví seller</span>
+            <span className="text-emerald-700 font-bold">{refund == null ? '…' : `$${refund.toFixed(2)}`}</span>
+          </div>
+        </div>
+
+        {cr.reason_cancel && (
+          <div className="mt-3">
+            <div className="text-xs text-neutral-500 mb-1">Lý do seller đưa ra</div>
+            <div className="text-sm text-neutral-700 bg-white border border-neutral-200 rounded-lg p-2">“{cr.reason_cancel}”</div>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onClose} disabled={!!busy} className="px-4 py-2 text-sm text-neutral-600 hover:text-neutral-800">Đóng</button>
+          <button onClick={reject} disabled={!!busy} className="px-4 py-2 bg-rose-500 hover:bg-rose-600 disabled:opacity-50 text-white text-sm rounded-lg">
+            {busy === 'reject' ? 'Đang huỷ…' : 'Reject'}
+          </button>
+          <button onClick={approve} disabled={!!busy} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white text-sm rounded-lg">
+            {busy === 'approve' ? 'Đang duyệt…' : 'Accept'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

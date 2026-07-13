@@ -36,6 +36,7 @@ export default function Settings() {
     { id: 'resend', label: 'Resend' },
     { id: 'appearance', label: 'Giao diện' },
     { id: 'qr', label: 'QR Portal' },
+    { id: 'cancel', label: 'Cancel Policy' },
     { id: 'gangsheet', label: 'Gangsheet Auto' },
   ];
 
@@ -64,6 +65,7 @@ export default function Settings() {
       {tab === 'resend' && <ResendConfigTab />}
       {tab === 'appearance' && <AppearanceTab />}
       {tab === 'qr' && <QrConfigTab />}
+      {tab === 'cancel' && <CancelPolicyTab />}
       {tab === 'gangsheet' && <GangsheetAutomationTab />}
     </div>
   );
@@ -592,6 +594,79 @@ function NumField({ label, value, onChange, step }) {
   );
 }
 
+// Order-cancellation refund policy. One row per order status: the % of the
+// order's paid amount refunded to the seller's wallet when a cancel from that
+// status is approved, and whether cancel is allowed from that status at all.
+const CANCEL_STATUS_LABEL = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled', 'pending_cancel'];
+
+function CancelPolicyTab() {
+  const [rows, setRows] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { api.get('/settings/cancel-policy').then(res => setRows(res.data)); }, []);
+  if (!rows) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const setRow = (status, patch) =>
+    setRows(prev => prev.map(r => r.order_status === status ? { ...r, ...patch } : r));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const policies = rows.map(r => ({
+        order_status: r.order_status,
+        percent: r.percent === '' ? 0 : Number(r.percent),
+        enabled: !!r.enabled,
+      }));
+      const res = await api.put('/settings/cancel-policy', { policies });
+      setRows(res.data);
+      notify('Saved cancel policy', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Cancel Policy</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">
+          Khi admin duyệt yêu cầu huỷ đơn của seller, seller được hoàn <b>% × số tiền đã thanh toán</b> theo
+          trạng thái đơn lúc yêu cầu. Bỏ chọn “Allowed” để không cho phép huỷ từ trạng thái đó.
+        </p>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-neutral-200 text-neutral-500 text-xs bg-[#faf8f6]">
+              <th className="p-2 text-left">Order status</th>
+              <th className="p-2 text-right">Refund %</th>
+              <th className="p-2 text-center">Allowed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.order_status} className="border-b border-neutral-100">
+                <td className="p-2 text-neutral-700">{CANCEL_STATUS_LABEL[r.order_status] ?? r.order_status}</td>
+                <td className="p-2 text-right">
+                  <input type="number" step="1" min="0" max="100" value={r.percent ?? ''}
+                    onChange={e => setRow(r.order_status, { percent: e.target.value })}
+                    className="w-24 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm text-right" />
+                </td>
+                <td className="p-2 text-center">
+                  <input type="checkbox" checked={!!r.enabled}
+                    onChange={e => setRow(r.order_status, { enabled: e.target.checked })}
+                    className="accent-orange-500" />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <button onClick={save} disabled={saving} className="mt-4 px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </section>
+    </div>
+  );
+}
+
 function VnpayMerchantTab() {
   const [data, setData] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -718,6 +793,11 @@ function TelegramTab() {
   const [testing, setTesting] = useState(false);
   const [reporting, setReporting] = useState(false);
   const [settingHook, setSettingHook] = useState(false);
+  // Two named bots (admin/seller). Tokens are write-only: the API returns only
+  // has_token flags, and blank inputs on save keep the stored secret.
+  const [bots, setBots] = useState([]);
+  const [botEdits, setBotEdits] = useState({ admin: {}, seller: {} });
+  const [savingBot, setSavingBot] = useState('');
 
   // App-side cron — interval persisted per-device in localStorage.
   const [cronInterval, setCronInterval] = useState(() => localStorage.getItem(CRON_KEY) || 'off');
@@ -726,6 +806,7 @@ function TelegramTab() {
 
   useEffect(() => {
     api.get('/settings/telegram').then((res) => setData(res.data));
+    api.get('/settings/telegram/bots').then((res) => setBots(res.data)).catch(() => {});
   }, []);
 
   // (Re)schedule the in-app cron whenever the interval changes or the
@@ -849,25 +930,100 @@ function TelegramTab() {
     setField('topup_thread_id', thread.id);
   };
 
+  const pickCancelChat = (chat) => {
+    setField('cancel_chat_id', String(chat.id));
+    setField('cancel_thread_id', null);
+  };
+  const pickCancelThread = (chat, thread) => {
+    setField('cancel_chat_id', String(chat.id));
+    setField('cancel_thread_id', thread.id);
+  };
+
   const updateCronInterval = (value) => {
     setCronInterval(value);
     localStorage.setItem(CRON_KEY, value);
   };
 
+  const botInfo = (key) => bots.find(b => b.key === key) || {};
+  const setBotEdit = (key, field, value) => setBotEdits(e => ({ ...e, [key]: { ...e[key], [field]: value } }));
+
+  const saveBot = async (key) => {
+    setSavingBot(key);
+    try {
+      const res = await api.put(`/settings/telegram/bots/${key}`, botEdits[key] || {});
+      setBots(res.data);
+      setBotEdits(e => ({ ...e, [key]: {} }));   // clear write-only inputs
+      notify(`Saved ${key} bot`, { title: 'Telegram', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Telegram', kind: 'error' });
+    } finally {
+      setSavingBot('');
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-3xl">
       {/* Bot config */}
+      {/* Two bots: admin (broadcast) + seller (commands/DMs) */}
       <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
-        <h3 className="text-sm font-semibold text-neutral-700 mb-3">Telegram Settings</h3>
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Telegram Bots</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">
+          The <b>Admin</b> bot broadcasts to groups (new order / topup / cancel). The <b>Seller</b> bot
+          handles user DMs + commands (<span className="font-mono">/login</span>, <span className="font-mono">/gettracking</span>)
+          and owns the webhook. Tokens are write-only — leave blank to keep the stored value.
+        </p>
+
+        {/* Admin bot */}
+        <div className="border border-neutral-200 rounded-lg p-3 mb-3">
+          <div className="text-xs font-semibold text-neutral-700 mb-2">
+            Admin bot (broadcast) — {botInfo('admin').has_token ? '✅ token set' : '❌ no token'}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <TextField label="Admin Bot Token (blank = keep)" value={botEdits.admin.token ?? ''} onChange={v => setBotEdit('admin', 'token', v)} />
+            <TextField label="Admin Bot Username (without @)" value={botEdits.admin.username ?? (botInfo('admin').username ?? '')} onChange={v => setBotEdit('admin', 'username', v)} />
+          </div>
+          <button onClick={() => saveBot('admin')} disabled={savingBot === 'admin'} className="mt-3 px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">
+            {savingBot === 'admin' ? 'Saving…' : 'Save admin bot'}
+          </button>
+        </div>
+
+        {/* Seller bot */}
+        <div className="border border-neutral-200 rounded-lg p-3">
+          <div className="text-xs font-semibold text-neutral-700 mb-2">
+            Seller bot (commands + DMs) — {botInfo('seller').has_token ? '✅ token set' : '❌ no token'} · webhook secret {botInfo('seller').has_webhook_secret ? 'set' : 'not set'}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <TextField label="Seller Bot Token (blank = keep)" value={botEdits.seller.token ?? ''} onChange={v => setBotEdit('seller', 'token', v)} />
+            <TextField label="Seller Bot Username (without @, for /login)" value={botEdits.seller.username ?? (botInfo('seller').username ?? '')} onChange={v => setBotEdit('seller', 'username', v)} />
+            <TextField label="Seller Webhook Secret (blank = keep)" value={botEdits.seller.webhook_secret ?? ''} onChange={v => setBotEdit('seller', 'webhook_secret', v)} full />
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button onClick={() => saveBot('seller')} disabled={savingBot === 'seller'} className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">
+              {savingBot === 'seller' ? 'Saving…' : 'Save seller bot'}
+            </button>
+            <button onClick={handleSetWebhook} disabled={settingHook || !botInfo('seller').has_token} className="px-4 py-1.5 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 text-emerald-700 text-sm rounded-lg font-medium">
+              {settingHook ? 'Registering…' : 'Register seller webhook'}
+            </button>
+          </div>
+          <p className="text-[11px] text-neutral-500 mt-2">
+            Save the seller token + secret, set APP_URL (or ngrok URL) on the hub, then Register webhook.
+            Users DM the seller bot <span className="font-mono">/login email password</span> to receive order notifications.
+          </p>
+        </div>
+      </section>
+
+      {/* Group destinations — where the ADMIN bot posts */}
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-3">Group Destinations (admin bot broadcasts here)</h3>
         <div className="grid grid-cols-2 gap-3">
-          <TextField label="Bot Token"               value={data.bot_token}         onChange={v => setField('bot_token', v)} full />
-          <TextField label="Bot Username (without @, for user link)" value={data.bot_username ?? ''} onChange={v => setField('bot_username', v)} />
-          <TextField label="Webhook Secret (for /login linking)"     value={data.webhook_secret ?? ''} onChange={v => setField('webhook_secret', v)} />
           <TextField label="Default Report Days"     value={String(data.report_days ?? 0)} onChange={v => setField('report_days', parseInt(v || '0', 10))} />
+          <div />
           <TextField label="Default Chat ID"         value={data.default_chat_id}   onChange={v => setField('default_chat_id', v)} />
-          <TextField label="Default Thread/Topic ID (optional)" value={data.default_thread_id ?? ''} onChange={v => setField('default_thread_id', v === '' ? null : parseInt(v, 10))} full />
+          <TextField label="Default Thread/Topic ID (optional)" value={data.default_thread_id ?? ''} onChange={v => setField('default_thread_id', v === '' ? null : parseInt(v, 10))} />
           <TextField label="Topup Chat ID (notification: tạo + duyệt topup)" value={data.topup_chat_id ?? ''} onChange={v => setField('topup_chat_id', v)} />
-          <TextField label="Topup Thread/Topic ID (optional)" value={data.topup_thread_id ?? ''} onChange={v => setField('topup_thread_id', v === '' ? null : parseInt(v, 10))} full />
+          <TextField label="Topup Thread/Topic ID (optional)" value={data.topup_thread_id ?? ''} onChange={v => setField('topup_thread_id', v === '' ? null : parseInt(v, 10))} />
+          <TextField label="Cancel Chat ID (notification: yêu cầu huỷ đơn)" value={data.cancel_chat_id ?? ''} onChange={v => setField('cancel_chat_id', v)} />
+          <TextField label="Cancel Thread/Topic ID (optional)" value={data.cancel_thread_id ?? ''} onChange={v => setField('cancel_thread_id', v === '' ? null : parseInt(v, 10))} />
         </div>
         <label className="flex items-center gap-2 mt-3 text-sm text-neutral-700 cursor-pointer">
           <input
@@ -885,14 +1041,7 @@ function TelegramTab() {
           <button onClick={handleTest} disabled={testing || !data.default_chat_id} className="px-5 py-2 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 text-blue-700 text-sm rounded-lg font-medium">
             {testing ? 'Sending…' : 'Send test message'}
           </button>
-          <button onClick={handleSetWebhook} disabled={settingHook || !data.bot_token} className="px-5 py-2 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 text-emerald-700 text-sm rounded-lg font-medium">
-            {settingHook ? 'Registering…' : 'Register webhook'}
-          </button>
         </div>
-        <p className="text-[11px] text-neutral-500 mt-2">
-          Set Bot Token, Bot Username, Webhook Secret and your APP_URL (or ngrok URL) → Save → Register webhook.
-          Users then DM the bot <span className="font-mono">/login email password</span> to receive order notifications.
-        </p>
       </section>
 
       {/* Group picker */}
@@ -924,6 +1073,9 @@ function TelegramTab() {
                     <button onClick={() => pickTopupChat(g)} title="Use as topup notification chat" className={`text-xs px-2 py-1 rounded ${String(data.topup_chat_id) === String(g.id) ? 'bg-emerald-100 text-emerald-700' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'}`}>
                       💸 {String(data.topup_chat_id) === String(g.id) ? '✓' : 'Topup'}
                     </button>
+                    <button onClick={() => pickCancelChat(g)} title="Use as cancel-request notification chat" className={`text-xs px-2 py-1 rounded ${String(data.cancel_chat_id) === String(g.id) ? 'bg-rose-100 text-rose-700' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'}`}>
+                      🚫 {String(data.cancel_chat_id) === String(g.id) ? '✓' : 'Cancel'}
+                    </button>
                   </div>
                 </div>
                 {(g.threads || []).length > 0 && (
@@ -943,6 +1095,13 @@ function TelegramTab() {
                           className={`text-[11px] px-2 py-0.5 rounded border ${String(data.topup_chat_id) === String(g.id) && data.topup_thread_id === t.id ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}
                         >
                           💸
+                        </button>
+                        <button
+                          onClick={() => pickCancelThread(g, t)}
+                          title="Use as cancel-request thread"
+                          className={`text-[11px] px-2 py-0.5 rounded border ${String(data.cancel_chat_id) === String(g.id) && data.cancel_thread_id === t.id ? 'bg-rose-50 border-rose-300 text-rose-700' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}
+                        >
+                          🚫
                         </button>
                       </span>
                     ))}
