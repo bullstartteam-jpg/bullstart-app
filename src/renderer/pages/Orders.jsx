@@ -14,6 +14,8 @@ import {
   runAutoBuyLabelNow, isAutoBuyLabelAutoEnabled,
 } from '../services/converter';
 import { hasOrderFailure, countOrderFailures, syncOrders, URL_FAILURES_EVENT } from '../services/urlFailureCache';
+import { flattenQrMetas } from '../services/gangsheetBuilder';
+import { buildZip } from '../services/zipWriter';
 
 // Delivery-tracking status → badge colors (matches web-bullstart).
 const TRACKING_COLOR = {
@@ -116,6 +118,10 @@ export default function Orders() {
   const [refIdsInput, setRefIdsInput] = useState('');
   const [selected, setSelected] = useState([]);
   const [previewUrl, setPreviewUrl] = useState(null);
+
+  // Download _qr designs (staff) — progress modal state.
+  const [qrDl, setQrDl] = useState(null); // { total, done, errors, status, running, scope }
+  const qrDlCancelRef = useRef(false);
   // Re-render when the background CSV image-URL check writes new failures so the
   // warning badges appear without a manual reload.
   const [, setUrlFailTick] = useState(0);
@@ -439,7 +445,9 @@ export default function Orders() {
     }
   };
 
-  const handleExport = async () => {
+  // Shared filter → query-param shape used by CSV export, invoice export and
+  // the QR-design download so all three operate on the same dataset.
+  const currentFilterParams = () => {
     const params = {};
     if (filters.status !== '') params.status = filters.status;
     if (filters.tracking_status) params.tracking_status = filters.tracking_status;
@@ -452,6 +460,132 @@ export default function Orders() {
     if (filters.user_id) params.user_id = filters.user_id;
     if (filters.date_from) params.date_from = filters.date_from;
     if (filters.date_to) params.date_to = filters.date_to;
+    return params;
+  };
+
+  // Filename-safe extension for a design URL, falling back to the fetched
+  // content-type when the URL carries no extension.
+  const guessExt = (url, contentType) => {
+    const m = String(url).split(/[?#]/)[0].match(/\.([a-zA-Z0-9]{2,5})$/);
+    if (m) return m[1].toLowerCase();
+    if (contentType?.includes('jpeg') || contentType?.includes('jpg')) return 'jpg';
+    if (contentType?.includes('webp')) return 'webp';
+    return 'png';
+  };
+
+  // Download every _qr design (the converted, print-ready images) for the
+  // current selection, or — if nothing is selected — for ALL orders matching
+  // the active filters, bundled into a single ZIP. Staff only, since the index
+  // only returns _qr metas to admin/support.
+  const handleDownloadQr = async () => {
+    if (qrDl?.running) return;
+
+    const bySelection = selected.length > 0;
+    setQrDl({ total: 0, done: 0, errors: 0, status: 'Đang tải danh sách order…', running: true, scope: bySelection ? `${selected.length} đơn đã chọn` : 'theo filter' });
+    qrDlCancelRef.current = false;
+
+    try {
+      // 1. Gather the target orders (with their _qr metas already eager-loaded).
+      let targetOrders;
+      if (bySelection) {
+        targetOrders = orders.filter(o => selected.includes(o.id));
+      } else {
+        targetOrders = [];
+        let page = 1;
+        const params = currentFilterParams();
+        // Paginate through the whole filtered set — the index endpoint returns
+        // items.metas (incl. _qr) for admin/support.
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          if (qrDlCancelRef.current) break;
+          const res = await api.get('/orders', { params: { ...params, page, per_page: 200 } });
+          targetOrders.push(...(res.data.data || []));
+          const last = res.data.last_page || 1;
+          setQrDl(s => s && { ...s, status: `Đang tải danh sách order… (${targetOrders.length})` });
+          if (page >= last) break;
+          page++;
+        }
+      }
+      if (qrDlCancelRef.current) { setQrDl(null); return; }
+
+      // 2. Flatten to the print-ready _qr designs (include produced ones too).
+      const records = flattenQrMetas(targetOrders, { includeProduced: true });
+      if (records.length === 0) {
+        setQrDl(null);
+        return notify('Không tìm thấy design _qr nào cho các order này.', { title: 'Download QR' });
+      }
+
+      setQrDl(s => s && { ...s, total: records.length, status: 'Đang tải ảnh…' });
+
+      // 3. Fetch each design (via main process to bypass CORS) into a zip entry.
+      const usedNames = new Set();
+      const uniqueName = (base) => {
+        if (!usedNames.has(base)) { usedNames.add(base); return base; }
+        const dot = base.lastIndexOf('.');
+        const stem = dot > 0 ? base.slice(0, dot) : base;
+        const ext = dot > 0 ? base.slice(dot) : '';
+        let i = 2, name;
+        do { name = `${stem}_${i++}${ext}`; } while (usedNames.has(name));
+        usedNames.add(name);
+        return name;
+      };
+      const sanitize = (s) => String(s ?? '').replace(/[\\/:*?"<>|]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
+
+      const files = [];
+      const CONCURRENCY = 6;
+      let idx = 0, done = 0, errors = 0;
+
+      const worker = async () => {
+        while (!qrDlCancelRef.current) {
+          const i = idx++;
+          if (i >= records.length) break;
+          const { order, meta } = records[i];
+          try {
+            const { base64, contentType } = await window.electronAPI.fetchImage(meta.value);
+            const bin = atob(base64);
+            const bytes = new Uint8Array(bin.length);
+            for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+            const sid = sanitize(order.system_id || `order${order.id}`);
+            const key = sanitize(meta.key);
+            files.push({ name: `${sid}/${key}.${guessExt(meta.value, contentType)}`, bytes });
+            done++;
+          } catch {
+            errors++;
+          }
+          setQrDl(s => s && { ...s, done, errors });
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, records.length) }, worker));
+
+      if (qrDlCancelRef.current) { setQrDl(null); return; }
+      if (files.length === 0) {
+        setQrDl(null);
+        return notify('Không tải được ảnh design nào.', { title: 'Download QR', kind: 'error' });
+      }
+
+      // 4. Zip + trigger a single browser download.
+      setQrDl(s => s && { ...s, status: 'Đang nén ZIP…' });
+      const blob = buildZip(files);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `qr_${sanitizeName(filterUserLabel())}_${dateRangeLabel()}${bySelection ? `_selected${selected.length}` : ''}.zip`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+
+      setQrDl(null);
+      notify(
+        `Đã tải ${files.length} design_qr${errors ? ` · ${errors} lỗi` : ''} (${targetOrders.length} order).`,
+        { title: 'Download QR', kind: errors ? 'warning' : 'success' }
+      );
+    } catch (err) {
+      setQrDl(null);
+      notify(err.response?.data?.message || err.message || 'Download failed', { title: 'Download QR failed', kind: 'error' });
+    }
+  };
+
+  const handleExport = async () => {
+    const params = currentFilterParams();
     if (selected.length > 0) params.order_ids = selected.join(',');
     try {
       const res = await api.get('/orders/export', { params, responseType: 'blob' });
@@ -475,18 +609,7 @@ export default function Orders() {
   const handleExportInvoice = async (variant) => {
     // Same filter shape as CSV export — reuse current view's selection or
     // filters so admin sees one consistent dataset across both exports.
-    const params = {};
-    if (filters.status !== '') params.status = filters.status;
-    if (filters.tracking_status) params.tracking_status = filters.tracking_status;
-    if (filters.paid) params.paid = filters.paid;
-    if (filters.ship_type) params.ship_type = filters.ship_type;
-    if (filters.ref_id) params.ref_id = filters.ref_id;
-    if (filters.ref_ids) params.ref_ids = filters.ref_ids;
-    if (filters.system_id) params.system_id = filters.system_id;
-    if (filters.tracking_id) params.tracking_id = filters.tracking_id;
-    if (filters.user_id) params.user_id = filters.user_id;
-    if (filters.date_from) params.date_from = filters.date_from;
-    if (filters.date_to) params.date_to = filters.date_to;
+    const params = currentFilterParams();
     if (selected.length > 0) params.order_ids = selected.join(',');
 
     try {
@@ -789,6 +912,19 @@ export default function Orders() {
           >
             Export {selected.length > 0 ? `(${selected.length})` : 'CSV'}
           </button>
+          {isStaff && (
+            <button
+              onClick={handleDownloadQr}
+              disabled={qrDl?.running}
+              className="px-4 py-2 bg-indigo-100 hover:bg-indigo-200 disabled:opacity-50 text-indigo-700 text-sm rounded-lg transition-colors"
+              title={selected.length > 0
+                ? `Tải design _qr của ${selected.length} đơn đã chọn (ZIP)`
+                : 'Tải design _qr của tất cả đơn khớp filter hiện tại (ZIP)'
+              }
+            >
+              {qrDl?.running ? 'Downloading…' : `Download QR ${selected.length > 0 ? `(${selected.length})` : ''}`}
+            </button>
+          )}
           <button
             onClick={() => handleExportInvoice('pingpong')}
             className="px-4 py-2 bg-orange-100 hover:bg-orange-200 text-orange-700 text-sm rounded-lg transition-colors"
@@ -1332,6 +1468,40 @@ export default function Orders() {
       })()}
 
       <PreviewModal url={previewUrl} onClose={() => setPreviewUrl(null)} />
+
+      {/* Download QR — progress modal */}
+      {qrDl && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-[440px] max-w-[90%] p-5">
+            <h3 className="text-sm font-semibold text-neutral-800 mb-1">Download QR designs</h3>
+            <p className="text-xs text-neutral-500 mb-3">Nguồn: {qrDl.scope}</p>
+            <p className="text-sm text-neutral-700 mb-2">{qrDl.status}</p>
+            {qrDl.total > 0 && (
+              <>
+                <div className="h-2 w-full bg-neutral-100 rounded-full overflow-hidden mb-2">
+                  <div
+                    className="h-full bg-indigo-500 transition-all"
+                    style={{ width: `${Math.round(((qrDl.done + qrDl.errors) / qrDl.total) * 100)}%` }}
+                  />
+                </div>
+                <div className="flex gap-4 text-xs text-neutral-500 mb-3">
+                  <span>Tổng: <b className="text-neutral-700">{qrDl.total}</b></span>
+                  <span>Đã tải: <b className="text-emerald-600">{qrDl.done}</b></span>
+                  <span>Lỗi: <b className="text-red-500">{qrDl.errors}</b></span>
+                </div>
+              </>
+            )}
+            <div className="flex justify-end">
+              <button
+                onClick={() => { qrDlCancelRef.current = true; }}
+                className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg"
+              >
+                Huỷ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Pay-All preview modal */}
       {showPayAll && (
