@@ -90,14 +90,14 @@ const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', '
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
 
 const PRODUCT_FILTER_KEYS = [
-  'product_id', 'line_id', 'product_variant_id', 'sku', 'color', 'size', 'paper_type', 'material_id', 'accessory_id',
+  'product_id', 'line_id', 'product_variant_id', 'sku', 'color', 'size', 'paper_type', 'material_id', 'accessory_id', 'accessory_code',
 ];
 
 const ORDERS_FILTER_DEFAULTS = {
   status: '', tracking_status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', tracking_id: '',
   user_id: '', date_from: '', date_to: '', ship_type: '',
   product_id: '', line_id: '', product_variant_id: '', sku: '', color: '', size: '', paper_type: '',
-  material_id: '', accessory_id: '',
+  material_id: '', accessory_id: '', accessory_code: '',
   page: 1, per_page: 20,
 };
 
@@ -249,6 +249,12 @@ export default function Orders() {
   const catalogSizes = uniqueSorted(catalogVariants.map(v => v.size));
   const catalogPaperTypes = uniqueSorted(catalogVariants.map(v => v.paper_type));
   const catalogSkus = uniqueSorted(catalogVariants.map(v => v.sku));
+  const selectedAccessory = filters.accessory_id
+    ? catalogAccessories.find(a => String(a.id) === String(filters.accessory_id))
+    : null;
+  const catalogAccessoryCodes = uniqueSorted(
+    (selectedAccessory?.prices ?? []).map(p => p.accessory_code).filter(Boolean)
+  );
 
   const fetchOrders = () => {
     setLoading(true);
@@ -272,7 +278,7 @@ export default function Orders() {
     filters.page, filters.status, filters.tracking_status, filters.paid, filters.ship_type,
     filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page,
     filters.product_id, filters.line_id, filters.product_variant_id, filters.sku,
-    filters.color, filters.size, filters.paper_type, filters.material_id, filters.accessory_id,
+    filters.color, filters.size, filters.paper_type, filters.material_id, filters.accessory_id, filters.accessory_code,
   ]);
 
   const handleSearch = (e) => {
@@ -1323,7 +1329,7 @@ export default function Orders() {
               product_id,
               line_id: product?.line_id || (product_id ? f.line_id : ''),
               product_variant_id: '', sku: '', color: '', size: '', paper_type: '',
-              material_id: '', accessory_id: '',
+              material_id: '', accessory_id: '', accessory_code: '',
               page: 1,
             }));
           }}
@@ -1420,7 +1426,7 @@ export default function Orders() {
 
         <select
           value={filters.accessory_id}
-          onChange={e => setFilters(f => ({ ...f, accessory_id: e.target.value, page: 1 }))}
+          onChange={e => setFilters(f => ({ ...f, accessory_id: e.target.value, accessory_code: '', page: 1 }))}
           disabled={!filters.product_id}
           className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[140px] disabled:opacity-50"
           title="Phụ kiện"
@@ -1430,6 +1436,20 @@ export default function Orders() {
             <option key={a.id} value={a.id}>{a.name}</option>
           ))}
         </select>
+
+        {catalogAccessoryCodes.length > 0 && (
+          <select
+            value={filters.accessory_code}
+            onChange={e => setFilters(f => ({ ...f, accessory_code: e.target.value, page: 1 }))}
+            className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[120px]"
+            title="Mã phụ kiện"
+          >
+            <option value="">Code</option>
+            {catalogAccessoryCodes.map(code => (
+              <option key={code} value={code}>{code}</option>
+            ))}
+          </select>
+        )}
 
         {hasActiveProductFilters(filters) && (
           <button
