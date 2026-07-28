@@ -198,6 +198,12 @@ export default function Orders() {
   const [payAllLoading, setPayAllLoading] = useState(false);
   const [adminUsers, setAdminUsers] = useState([]);
 
+  // Recalc-by-filter modal state (recompute prices, show diff, refund overpaid)
+  const [showRecalc, setShowRecalc] = useState(false);
+  const [recalcLoading, setRecalcLoading] = useState(false);
+  const [recalcApplying, setRecalcApplying] = useState(false);
+  const [recalcData, setRecalcData] = useState(null);
+
   // Bulk-Assign modal
   const [showAssign, setShowAssign] = useState(false);
   const [assignUserId, setAssignUserId] = useState('');
@@ -960,6 +966,51 @@ export default function Orders() {
     }
   };
 
+  // Shipping-only recalc on the SELECTED orders: preview the shipping diff,
+  // then (on confirm) apply + refund the overpaid ones. Keeps print_cost — only
+  // corrects shipping (e.g. a mis-priced variant). Per-select to avoid mass errors.
+  const openRecalc = async () => {
+    if (selected.length === 0) {
+      notify('Chọn ít nhất 1 đơn để tính lại ship.', { title: 'Tính lại ship', kind: 'info' });
+      return;
+    }
+    setShowRecalc(true);
+    setRecalcData(null);
+    setRecalcLoading(true);
+    try {
+      const res = await api.post('/orders/recalc-shipping/preview', { order_ids: selected });
+      setRecalcData(res.data);
+    } catch (err) {
+      setShowRecalc(false);
+      notify(err.response?.data?.message || 'Không tải được preview tính lại ship', { title: 'Lỗi', kind: 'error' });
+    } finally {
+      setRecalcLoading(false);
+    }
+  };
+
+  const confirmRecalc = async () => {
+    const rows = recalcData?.orders || [];
+    if (rows.length === 0) return;
+    const ok = await askConfirm(
+      `Tính lại shipping cho ${rows.length} đơn và hoàn $${Number(recalcData.total_refund).toFixed(2)} cho các đơn đã paid trả dư?\nGiữ nguyên print_cost; chỉ ghi đè shipping_cost + total_cost.`,
+      { title: 'Xác nhận tính lại ship & refund', okText: 'Áp dụng' }
+    );
+    if (!ok) return;
+    setRecalcApplying(true);
+    try {
+      const res = await api.post('/orders/recalc-shipping/apply', { order_ids: rows.map(r => r.id) });
+      setShowRecalc(false);
+      setSelected([]);
+      await notify(res.data.message, { title: 'Tính lại ship', kind: 'success' });
+      fetchOrders();
+      refreshUnpaidBanner();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Lỗi khi áp dụng', { title: 'Lỗi', kind: 'error' });
+    } finally {
+      setRecalcApplying(false);
+    }
+  };
+
   const toggleSelect = (id) => {
     setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
@@ -1060,6 +1111,16 @@ export default function Orders() {
               title="Recompute the duplicate ref_id snapshot used to highlight rows in red"
             >
               {dupRefreshing ? 'Refreshing…' : 'Refresh Duplicates'}
+            </button>
+          )}
+          {isStaff && (
+            <button
+              onClick={openRecalc}
+              disabled={selected.length === 0}
+              className="px-4 py-2 bg-cyan-100 hover:bg-cyan-200 disabled:opacity-50 text-cyan-700 text-sm rounded-lg transition-colors"
+              title="Tính lại shipping_cost cho các đơn đã chọn theo bảng giá hiện tại, xem lệch và hoàn tiền đơn trả dư"
+            >
+              Tính lại ship{selected.length > 0 ? ` (${selected.length})` : ''}
             </button>
           )}
           <button onClick={openPayAll} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-sm rounded-lg transition-colors">
@@ -1787,6 +1848,83 @@ export default function Orders() {
                 className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg"
               >
                 {payAllLoading ? 'Paying…' : `Pay $${payAllSummary ? Number(payAllSummary.total_unpaid).toFixed(2) : '0.00'}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Shipping-recalc modal — shipping diff preview + refund overpaid */}
+      {showRecalc && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => !recalcApplying && setShowRecalc(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-[860px] max-w-[95%] max-h-[85vh] flex flex-col p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-neutral-800 mb-1">Tính lại shipping</h3>
+            <p className="text-xs text-neutral-500 mb-3">
+              Tính lại <span className="font-medium">shipping_cost</span> theo bảng giá hiện tại cho các đơn đã chọn (giữ nguyên print_cost). Đơn đã paid mà tổng mới thấp hơn sẽ được hoàn chênh lệch về ví (transaction type <span className="font-mono">refund</span>).
+            </p>
+
+            {recalcLoading && <p className="text-sm text-neutral-500 py-6 text-center">Đang tính lại…</p>}
+
+            {recalcData && !recalcLoading && (
+              <>
+                <div className="grid grid-cols-3 gap-2 text-sm mb-3">
+                  <div className="bg-[#faf8f6] rounded-lg p-2 border border-neutral-200">
+                    <div className="text-neutral-500 text-xs">Đã chọn</div>
+                    <div className="text-neutral-800 font-semibold">{recalcData.requested}</div>
+                  </div>
+                  <div className="bg-[#faf8f6] rounded-lg p-2 border border-neutral-200">
+                    <div className="text-neutral-500 text-xs">Lệch ship</div>
+                    <div className="text-neutral-800 font-semibold">{recalcData.changed}</div>
+                  </div>
+                  <div className="bg-emerald-50 rounded-lg p-2 border border-emerald-200">
+                    <div className="text-emerald-600 text-xs">Sẽ hoàn (dư)</div>
+                    <div className="text-emerald-700 font-semibold">${Number(recalcData.total_refund).toFixed(2)}</div>
+                  </div>
+                </div>
+
+                {recalcData.orders.length === 0 ? (
+                  <p className="text-sm text-neutral-500 py-6 text-center">{recalcData.requested} đơn đã chọn — không đơn nào lệch shipping. Không cần làm gì.</p>
+                ) : (
+                  <div className="overflow-auto border border-neutral-200 rounded-lg flex-1">
+                    <table className="w-full text-xs">
+                      <thead className="bg-neutral-50 sticky top-0">
+                        <tr className="text-neutral-500 text-left">
+                          <th className="px-2 py-1.5 font-medium">System ID</th>
+                          <th className="px-2 py-1.5 font-medium">Seller</th>
+                          <th className="px-2 py-1.5 font-medium text-right">Ship cũ</th>
+                          <th className="px-2 py-1.5 font-medium text-right">Ship mới</th>
+                          <th className="px-2 py-1.5 font-medium text-right">Total cũ→mới</th>
+                          <th className="px-2 py-1.5 font-medium text-right">Đã trả</th>
+                          <th className="px-2 py-1.5 font-medium text-right">Hoàn</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {recalcData.orders.map(r => (
+                          <tr key={r.id} className="border-t border-neutral-100">
+                            <td className="px-2 py-1.5 text-neutral-800 font-mono">{r.system_id}</td>
+                            <td className="px-2 py-1.5 text-neutral-600">{r.user_name || `#${r.user_id}`}</td>
+                            <td className="px-2 py-1.5 text-right text-neutral-500">${Number(r.old_shipping).toFixed(2)}</td>
+                            <td className={`px-2 py-1.5 text-right font-medium ${r.diff_shipping < 0 ? 'text-emerald-600' : r.diff_shipping > 0 ? 'text-red-600' : 'text-neutral-700'}`}>${Number(r.new_shipping).toFixed(2)}</td>
+                            <td className="px-2 py-1.5 text-right text-neutral-600">${Number(r.old_total).toFixed(2)} → <span className="font-medium text-neutral-800">${Number(r.new_total).toFixed(2)}</span></td>
+                            <td className="px-2 py-1.5 text-right text-neutral-600">{r.is_paid ? `$${Number(r.paid_cost).toFixed(2)}` : '—'}</td>
+                            <td className="px-2 py-1.5 text-right">{r.refund > 0 ? <span className="text-emerald-600 font-medium">${Number(r.refund).toFixed(2)}</span> : <span className="text-neutral-300">—</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setShowRecalc(false)} disabled={recalcApplying} className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 disabled:opacity-40 text-neutral-700 text-sm rounded-lg">Đóng</button>
+              <button
+                onClick={confirmRecalc}
+                disabled={recalcApplying || recalcLoading || !recalcData || recalcData.orders.length === 0}
+                className="px-4 py-1.5 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm rounded-lg"
+              >
+                {recalcApplying ? 'Đang áp dụng…' : `Áp dụng & hoàn $${recalcData ? Number(recalcData.total_refund).toFixed(2) : '0.00'}`}
               </button>
             </div>
           </div>
