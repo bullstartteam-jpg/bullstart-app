@@ -273,7 +273,12 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
   const records = flattenQrMetas(orders, { includeProduced });
   if (!records.length) throw new Error('No _qr metas in this chunk');
 
-  const L = pageLayout(pageFormat);   // page size + centered design box
+  // 'native' = each page is the design's OWN pixel size (no fixed sheet, no
+  // margin, no registration marks, no gap) — used for greeting card 5x5, whose
+  // converted _qr is 3300×1650 (11×5.5"). Every other format uses a fixed
+  // centered-design sheet.
+  const native = pageFormat === 'native';
+  const L = native ? null : pageLayout(pageFormat);   // page size + centered design box
   const marks = getGangMarks();       // editable registration-mark sizes
 
   const pdf = await PDFDocument.create();
@@ -285,34 +290,58 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
   const metaIdsUsed = [];
   const seenOrders = new Set();
 
-  // Reuse one canvas across all pages — fast, predictable memory.
-  const sheetCanvas = document.createElement('canvas');
-  sheetCanvas.width = L.CANVAS_W;
-  sheetCanvas.height = L.CANVAS_H;
-  const sheetCtx = sheetCanvas.getContext('2d');
+  // Reuse one canvas across all pages (fixed formats). Native re-sizes per page.
+  let sheetCanvas = null, sheetCtx = null;
+  if (!native) {
+    sheetCanvas = document.createElement('canvas');
+    sheetCanvas.width = L.CANVAS_W;
+    sheetCanvas.height = L.CANVAS_H;
+    sheetCtx = sheetCanvas.getContext('2d');
+  }
 
   for (const rec of records) {
     const bytes = await fetchImageBytes(rec.meta.value);
     const img = await loadImageFromBytes(bytes);
 
-    // 1. Reset canvas to white.
-    sheetCtx.fillStyle = '#ffffff';
-    sheetCtx.fillRect(0, 0, L.CANVAS_W, L.CANVAS_H);
+    if (native) {
+      // Page = the design's own size; draw 1:1 on a white backing, no marks/gap.
+      const w = img.naturalWidth || img.width;
+      const h = img.naturalHeight || img.height;
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const cx = c.getContext('2d');
+      cx.fillStyle = '#ffffff';
+      cx.fillRect(0, 0, w, h);
+      cx.drawImage(img, 0, 0, w, h);
 
-    // 2. Draw the _qr design centered on the canvas.
-    sheetCtx.drawImage(img, L.DESIGN_X, L.DESIGN_Y, DESIGN_W, DESIGN_H);
+      const blob = await canvasToBlob(c, 'image/png');
+      const pngBytes = new Uint8Array(await blob.arrayBuffer());
+      const pageImg = await pdf.embedPng(pngBytes);
+      const pw = (w / DPI) * PT_PER_IN;
+      const ph = (h / DPI) * PT_PER_IN;
+      const page = pdf.addPage([pw, ph]);
+      page.drawImage(pageImg, { x: 0, y: 0, width: pw, height: ph });
+    } else {
+      // 1. Reset canvas to white.
+      sheetCtx.fillStyle = '#ffffff';
+      sheetCtx.fillRect(0, 0, L.CANVAS_W, L.CANVAS_H);
 
-    // 2b. Registration marks in the surrounding margin — only when the page is
-    //     larger than the design (Letter/A4). 'original' (page = design) has no
-    //     margin, so marks are skipped.
-    if (L.marks) drawAlignmentMarks(sheetCtx, L, marks);
+      // 2. Draw the _qr design centered on the canvas.
+      sheetCtx.drawImage(img, L.DESIGN_X, L.DESIGN_Y, DESIGN_W, DESIGN_H);
 
-    // 3. Snapshot the canvas as a single PNG, embed into PDF as a full page.
-    const blob = await canvasToBlob(sheetCanvas, 'image/png');
-    const pngBytes = new Uint8Array(await blob.arrayBuffer());
-    const pageImg = await pdf.embedPng(pngBytes);
-    const page = pdf.addPage([L.PAGE_W_PT, L.PAGE_H_PT]);
-    page.drawImage(pageImg, { x: 0, y: 0, width: L.PAGE_W_PT, height: L.PAGE_H_PT });
+      // 2b. Registration marks in the surrounding margin — only when the page is
+      //     larger than the design (Letter/A4). 'original' (page = design) has no
+      //     margin, so marks are skipped.
+      if (L.marks) drawAlignmentMarks(sheetCtx, L, marks);
+
+      // 3. Snapshot the canvas as a single PNG, embed into PDF as a full page.
+      const blob = await canvasToBlob(sheetCanvas, 'image/png');
+      const pngBytes = new Uint8Array(await blob.arrayBuffer());
+      const pageImg = await pdf.embedPng(pngBytes);
+      const page = pdf.addPage([L.PAGE_W_PT, L.PAGE_H_PT]);
+      page.drawImage(pageImg, { x: 0, y: 0, width: L.PAGE_W_PT, height: L.PAGE_H_PT });
+    }
 
     metaIdsUsed.push(rec.meta.id);
     if (!seenOrders.has(rec.order.id)) {

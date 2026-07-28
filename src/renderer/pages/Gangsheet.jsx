@@ -201,6 +201,22 @@ function orderConvertLayout(order, layoutMap) {
   return (ot && layoutMap?.[ot]) || 'default';
 }
 
+// Variant sizes ganged at their NATIVE design size (each PDF page = the design's
+// own pixels, no margin/mark/gap), separate from the 10×7 flow. Mirrors
+// ConversionController::KEEP_NATIVE_SIZES on the backend.
+const NATIVE_SIZES = new Set(['5x5']);
+function normSize(s) {
+  return String(s || '').toLowerCase().replace(/\s+/g, '').replace(/×/g, 'x');
+}
+// True when any item's variant size is a keep-native size (e.g. 5x5).
+function orderIsNative(order) {
+  for (const it of order.items || []) {
+    const sz = normSize(it.product_variant?.size);
+    if (sz && NATIVE_SIZES.has(sz)) return true;
+  }
+  return false;
+}
+
 // An order's dominant product (most items). {id:0} when none.
 function orderProduct(order) {
   const counts = {}, names = {};
@@ -213,6 +229,67 @@ function orderProduct(order) {
   let best = 0, max = -1;
   for (const [pid, c] of Object.entries(counts)) if (c > max) { max = c; best = Number(pid); }
   return { id: best, name: names[best] || '' };
+}
+
+// --- Product filters (same set as the Orders page) ---------------------------
+// Applied client-side on the already-loaded pending list. Semantics mirror
+// OrderController::applyProductFilters: each criterion is checked with OR across
+// the order's items and AND between criteria — the matching items need not be
+// the same one.
+const PF_KEYS = [
+  'product_id', 'line_id', 'product_variant_id', 'sku', 'color', 'size',
+  'paper_type', 'material_id', 'accessory_id', 'accessory_code',
+];
+const PF_DEFAULTS = Object.fromEntries(PF_KEYS.map(k => [k, '']));
+const hasActivePf = (pf) => PF_KEYS.some(k => pf[k]);
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter(v => v != null && String(v).trim() !== ''))]
+    .sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+// Accessory ids / codes of ONE item, from both the multi-acc pivot and the
+// legacy single accessory_price.
+function itemAccessoryIds(item) {
+  const ids = new Set();
+  for (const ap of item.accessory_prices || []) {
+    const id = ap.accessory_id ?? ap.accessory?.id;
+    if (id) ids.add(String(id));
+  }
+  const legacy = item.accessory_price?.accessory_id ?? item.accessory_price?.accessory?.id;
+  if (legacy) ids.add(String(legacy));
+  return ids;
+}
+function itemAccessoryCodes(item) {
+  const codes = new Set();
+  for (const ap of item.accessory_prices || []) {
+    if (ap.accessory_code) codes.add(String(ap.accessory_code).trim().toUpperCase());
+  }
+  const legacy = item.accessory_price?.accessory_code;
+  if (legacy) codes.add(String(legacy).trim().toUpperCase());
+  return codes;
+}
+
+function orderMatchesProductFilters(order, pf) {
+  if (!hasActivePf(pf)) return true;
+  const items = order.items || [];
+  const some = (fn) => items.some(fn);
+  const eq = (a, b) => a != null && String(a) === String(b);
+
+  if (pf.product_id && !some(it => eq(it.product_variant?.product_id ?? it.product_variant?.product?.id, pf.product_id))) return false;
+  if (pf.line_id && !some(it => eq(it.product_variant?.product?.line_id, pf.line_id))) return false;
+  if (pf.product_variant_id && !some(it => eq(it.product_variant_id ?? it.product_variant?.id, pf.product_variant_id))) return false;
+  if (pf.sku && !some(it => eq(it.product_variant?.sku, pf.sku))) return false;
+  for (const f of ['color', 'size', 'paper_type']) {
+    if (pf[f] && !some(it => eq(it.product_variant?.[f], pf[f]))) return false;
+  }
+  if (pf.material_id && !some(it => eq(it.material_id ?? it.material?.id, pf.material_id))) return false;
+  if (pf.accessory_id && !some(it => itemAccessoryIds(it).has(String(pf.accessory_id)))) return false;
+  if (pf.accessory_code) {
+    const code = String(pf.accessory_code).trim().toUpperCase();
+    if (!some(it => itemAccessoryCodes(it).has(code))) return false;
+  }
+  return true;
 }
 
 // Gang bucket of an order, built from the SELECTED classification dimensions
@@ -305,6 +382,15 @@ function ComposeTab() {
   });
   // fulfill_status multi-filter (empty Set = all non-shipped).
   const [statuses, setStatuses] = useState(new Set());
+  // Bộ filter sản phẩm đầy đủ như trang Orders. Lọc client-side trên danh sách
+  // pending đã tải, nên bucket chips + count đều theo filter đang chọn.
+  const [pf, setPf] = useState(PF_DEFAULTS);
+  const [catalogProducts, setCatalogProducts] = useState([]);
+  const [catalogVariants, setCatalogVariants] = useState([]);
+  const [catalogMaterials, setCatalogMaterials] = useState([]);
+  const [catalogAccessories, setCatalogAccessories] = useState([]);
+  // Đổi filter → bucket có thể biến mất nên đưa sub-tab về All.
+  const patchPf = (patch) => { setPf(p => ({ ...p, ...patch })); setSubTab('all'); };
   // Partner phân chia: gang tạo trong lần này sẽ tự gán cho các partner đã chọn
   // (PUT /gangsheets/{id}/partners) nên partner thấy đơn trong partner-bullstart.
   // Rỗng = không phân chia.
@@ -321,7 +407,47 @@ function ComposeTab() {
     api.get('/settings/convert-layouts')
       .then(res => setLayoutMap(res.data?.map || {}))
       .catch(() => {});
+    api.get('/products', { params: { status: 1, per_page: 100 } })
+      .then(res => setCatalogProducts(res.data?.data || []))
+      .catch(() => {});
   }, []);
+
+  // Variant / material / accessory options theo product đang chọn (giống Orders).
+  useEffect(() => {
+    const pid = pf.product_id;
+    if (!pid) {
+      setCatalogVariants([]);
+      setCatalogMaterials([]);
+      setCatalogAccessories([]);
+      return;
+    }
+    Promise.all([
+      api.get('/variants', { params: { product_id: pid, status: 1 } }),
+      api.get(`/products/${pid}/materials`),
+      api.get('/accessories', { params: { product_id: pid } }),
+    ]).then(([vRes, mRes, aRes]) => {
+      const variants = vRes.data?.data ?? vRes.data ?? [];
+      setCatalogVariants(Array.isArray(variants) ? variants : []);
+      setCatalogMaterials(Array.isArray(mRes.data) ? mRes.data : (mRes.data?.data || []));
+      setCatalogAccessories(Array.isArray(aRes.data) ? aRes.data : (aRes.data?.data || []));
+    }).catch(() => {
+      setCatalogVariants([]);
+      setCatalogMaterials([]);
+      setCatalogAccessories([]);
+    });
+  }, [pf.product_id]);
+
+  const catalogLineIds = uniqueSorted(catalogProducts.map(p => p.line_id));
+  const catalogColors = uniqueSorted(catalogVariants.map(v => v.color));
+  const catalogSizes = uniqueSorted(catalogVariants.map(v => v.size));
+  const catalogPaperTypes = uniqueSorted(catalogVariants.map(v => v.paper_type));
+  const catalogSkus = uniqueSorted(catalogVariants.map(v => v.sku));
+  const selectedAccessory = pf.accessory_id
+    ? catalogAccessories.find(a => String(a.id) === String(pf.accessory_id))
+    : null;
+  const catalogAccessoryCodes = uniqueSorted(
+    (selectedAccessory?.prices ?? []).map(p => p.accessory_code).filter(Boolean)
+  );
 
   const togglePartner = (id) => setSelectedPartners(prev => {
     const next = new Set(prev);
@@ -366,9 +492,13 @@ function ComposeTab() {
   // (side × split-accessory × material), e.g. "1 mặt · Gloss 300gsm" or
   // "2 mặt · Scratch Card · Matte". Built dynamically from the pending orders —
   // no hard-coded material/accessory list.
+  // Product filters applied FIRST so bucket chips, counts and the table all
+  // agree with what's selected.
+  const visiblePending = hasActivePf(pf) ? pending.filter(o => orderMatchesProductFilters(o, pf)) : pending;
+
   const buckets = (() => {
     const map = new Map();   // key → { label, side, tag, orders[] }
-    for (const o of pending) {
+    for (const o of visiblePending) {
       const b = orderBucketInfo(o, groupBy);
       if (!map.has(b.key)) map.set(b.key, { label: b.label, side: b.side, tag: b.tag, orders: [] });
       map.get(b.key).orders.push(o);
@@ -380,7 +510,7 @@ function ComposeTab() {
     .map(([key, v]) => ({ key, ...v }))
     .sort((a, b) => (a.side === b.side ? b.orders.length - a.orders.length : (a.side === 'one' ? -1 : 1)));
 
-  const filteredPending = subTab === 'all' ? pending : (buckets.get(subTab)?.orders || []);
+  const filteredPending = subTab === 'all' ? visiblePending : (buckets.get(subTab)?.orders || []);
 
   const toggleAll = () => {
     // Toggle-all operates on the CURRENTLY VISIBLE filter only — clicking
@@ -424,10 +554,35 @@ function ComposeTab() {
     // Split card-skin orders (convert layout 'outside') from the rest. Card
     // skins are ganged tiled 6-up on A4 (kept together); the rest use the
     // normal bucket flow (one design per page).
-    const cardOrders = selected.filter(o => orderConvertLayout(o, layoutMap) === 'outside');
-    const normalOrders = selected.filter(o => orderConvertLayout(o, layoutMap) !== 'outside');
+    // Route each selected order: card skin ('outside') → tiled A4; keep-native
+    // variant size (e.g. 5x5) → native-size merged gang; everything else → the
+    // normal 10×7/letter bucket flow.
+    const cardOrders = [];
+    const nativeOrders = [];
+    const normalOrders = [];
+    for (const o of selected) {
+      if (orderConvertLayout(o, layoutMap) === 'outside') cardOrders.push(o);
+      else if (orderIsNative(o)) nativeOrders.push(o);
+      else normalOrders.push(o);
+    }
 
     const chunks = [];
+
+    // Native (e.g. 5x5): merged gang keeping each design's own size, no gap/mark.
+    // Grouped by normalized variant size so different native sizes stay separate.
+    const nativeGroups = new Map();   // size → orders[]
+    for (const o of nativeOrders) {
+      let sz = '';
+      for (const it of o.items || []) {
+        const s = normSize(it.product_variant?.size);
+        if (s && NATIVE_SIZES.has(s)) { sz = s; break; }
+      }
+      if (!nativeGroups.has(sz)) nativeGroups.set(sz, []);
+      nativeGroups.get(sz).push(o);
+    }
+    for (const [sz, ords] of nativeGroups) {
+      for (const chunk of chunkArray(ords, batchSize)) chunks.push({ chunk, suffix: sz || 'native', tiled: false, native: true });
+    }
 
     // Normal: group by the chosen dimensions (+ side), chunk by batchSize.
     const bucketGroups = new Map();   // key → { tag, orders[] }
@@ -463,12 +618,12 @@ function ComposeTab() {
       }
 
       for (let ci = 0; ci < chunks.length; ci++) {
-        const { chunk, suffix, tiled } = chunks[ci];
+        const { chunk, suffix, tiled, native } = chunks[ci];
         const linePrefix = dominantLineId(chunk);
         const totalInChunk = flattenQrMetas(chunk).length;
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
 
-        const pageFormat = tiled ? 'a4_6up' : getGangPageFormat();
+        const pageFormat = tiled ? 'a4_6up' : (native ? 'native' : getGangPageFormat());
         const built = tiled
           ? await buildTiledGangsheet(chunk, {
               linePrefix, nameSuffix: suffix, seq: ci + 1,
@@ -476,7 +631,7 @@ function ComposeTab() {
             })
           : await buildGangsheetForChunk(chunk, {
               linePrefix, nameSuffix: suffix, seq: ci + 1,
-              pageFormat: getGangPageFormat(),
+              pageFormat,
               onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
             });
 
@@ -540,7 +695,9 @@ function ComposeTab() {
       <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
         <div className="flex justify-between items-end gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-neutral-700">Pending orders ({pending.length})</h3>
+            <h3 className="text-sm font-semibold text-neutral-700">
+              Pending orders ({visiblePending.length}{hasActivePf(pf) ? ` / ${pending.length}` : ''})
+            </h3>
             <p className="text-xs text-neutral-500">Orders with at least one un-produced <span className="font-mono">_qr</span> meta.</p>
           </div>
           <div className="flex gap-2 items-end">
@@ -579,6 +736,145 @@ function ComposeTab() {
           <span className="text-[11px] text-neutral-400 ml-1">· 1/2 mặt luôn tách</span>
         </div>
 
+        {/* Product filters — bộ đầy đủ như trang Orders. Lọc client-side: bucket
+            chips, bảng và Generate đều chỉ còn đơn khớp filter. */}
+        <div className="flex flex-wrap items-center gap-2 bg-[#faf8f6]/60 border border-neutral-200 rounded-xl px-3 py-2">
+          <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wide shrink-0">Sản phẩm</span>
+
+          <select
+            value={pf.product_id}
+            onChange={e => {
+              const product_id = e.target.value;
+              const product = catalogProducts.find(p => String(p.id) === product_id);
+              patchPf({
+                product_id,
+                line_id: product?.line_id || (product_id ? pf.line_id : ''),
+                product_variant_id: '', sku: '', color: '', size: '', paper_type: '',
+                material_id: '', accessory_id: '', accessory_code: '',
+              });
+            }}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[200px]"
+            title="Loại sản phẩm"
+          >
+            <option value="">Tất cả sản phẩm</option>
+            {catalogProducts.map(p => (
+              <option key={p.id} value={p.id}>{p.name}{p.line_id ? ` (${p.line_id})` : ''}</option>
+            ))}
+          </select>
+
+          <select
+            value={pf.line_id}
+            onChange={e => patchPf({ line_id: e.target.value })}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 font-mono"
+            title="Dòng in (line_id)"
+          >
+            <option value="">Line ID</option>
+            {catalogLineIds.map(lid => <option key={lid} value={lid}>{lid}</option>)}
+          </select>
+
+          <select
+            value={pf.product_variant_id}
+            onChange={e => patchPf({ product_variant_id: e.target.value })}
+            disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[180px] disabled:opacity-50"
+            title="SKU / Variant"
+          >
+            <option value="">Variant</option>
+            {catalogVariants.map(v => (
+              <option key={v.id} value={v.id}>{v.sku || `#${v.id}`}{v.color || v.size ? ` — ${[v.color, v.size].filter(Boolean).join('/')}` : ''}</option>
+            ))}
+          </select>
+
+          <select
+            value={pf.sku}
+            onChange={e => patchPf({ sku: e.target.value })}
+            disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 font-mono disabled:opacity-50"
+            title="SKU"
+          >
+            <option value="">SKU</option>
+            {catalogSkus.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+
+          <select
+            value={pf.color}
+            onChange={e => patchPf({ color: e.target.value })}
+            disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 disabled:opacity-50"
+            title="Màu"
+          >
+            <option value="">Màu</option>
+            {catalogColors.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+
+          <select
+            value={pf.size}
+            onChange={e => patchPf({ size: e.target.value })}
+            disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 disabled:opacity-50"
+            title="Size"
+          >
+            <option value="">Size</option>
+            {catalogSizes.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+
+          <select
+            value={pf.paper_type}
+            onChange={e => patchPf({ paper_type: e.target.value })}
+            disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-32 disabled:opacity-50"
+            title="Loại giấy"
+          >
+            <option value="">Giấy</option>
+            {catalogPaperTypes.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+
+          <select
+            value={pf.material_id}
+            onChange={e => patchPf({ material_id: e.target.value })}
+            disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[140px] disabled:opacity-50"
+            title="Chất liệu"
+          >
+            <option value="">Material</option>
+            {catalogMaterials.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+
+          <select
+            value={pf.accessory_id}
+            onChange={e => patchPf({ accessory_id: e.target.value, accessory_code: '' })}
+            disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[140px] disabled:opacity-50"
+            title="Phụ kiện"
+          >
+            <option value="">Accessory</option>
+            {catalogAccessories.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+
+          {catalogAccessoryCodes.length > 0 && (
+            <select
+              value={pf.accessory_code}
+              onChange={e => patchPf({ accessory_code: e.target.value })}
+              className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[120px]"
+              title="Mã phụ kiện"
+            >
+              <option value="">Code</option>
+              {catalogAccessoryCodes.map(code => <option key={code} value={code}>{code}</option>)}
+            </select>
+          )}
+
+          {hasActivePf(pf) && (
+            <button
+              type="button"
+              onClick={() => patchPf(PF_DEFAULTS)}
+              className="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-500"
+              title="Xóa tất cả filter sản phẩm"
+            >
+              ✕ Clear product
+            </button>
+          )}
+        </div>
+
         {/* Fulfill status multi-filter (chọn nhiều; rỗng = mọi đơn chưa ship). */}
         <div className="flex flex-wrap items-center gap-1">
           <span className="text-xs text-neutral-500 mr-1">Fulfill status:</span>
@@ -607,7 +903,7 @@ function ComposeTab() {
         {/* Sub-tabs: All + một chip cho mỗi bucket gang thật
             (mặt × Scratch × chất liệu), auto theo pending orders. */}
         <div className="flex flex-wrap items-center gap-1 border-b border-neutral-100 pb-2">
-          <SubChip active={subTab === 'all'} onClick={() => setSubTab('all')}>All <CountBadge n={pending.length} /></SubChip>
+          <SubChip active={subTab === 'all'} onClick={() => setSubTab('all')}>All <CountBadge n={visiblePending.length} /></SubChip>
           {bucketList.map(b => (
             <SubChip key={b.key} active={subTab === b.key} onClick={() => setSubTab(b.key)}>
               {b.label} <CountBadge n={b.orders.length} />

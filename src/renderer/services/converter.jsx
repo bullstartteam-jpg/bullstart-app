@@ -892,13 +892,16 @@ async function composeConvertLabel(sourceUrl, systemId, accessorySummary = '') {
   return await setJpgDpi(rawBlob, 300);
 }
 
-async function generateQrCanvas(value, size = 280) {
+// QR of `value` to its own canvas. `light` is the module background — default
+// white; pass a transparent hex (e.g. '#00000000') to keep only the dark
+// modules opaque so the QR prints clear on film (card skin band).
+async function generateQrCanvas(value, size = 280, light = '#FFFFFF') {
   const c = document.createElement('canvas');
   await QRCode.toCanvas(c, value, {
     width: size,
     margin: 1,                       // quiet zone in modules
     errorCorrectionLevel: 'M',       // ~15% recovery — enough for label print
-    color: { dark: '#000000', light: '#FFFFFF' },
+    color: { dark: '#000000', light },
   });
   return c;
 }
@@ -976,6 +979,21 @@ function fitOnLabelStock(src, targetW, targetH) {
 // to landscape first. Output = (band + designW) × designH. Both front AND back
 // carry the info band so a stray back skin can still be identified/scanned.
 const CARD_SKIN_BAND_W = 200;   // left strip width for barcode + info (~0.67" @300dpi)
+
+// Pastel QR background that encodes the skin-card add-on so operators can sort
+// by eye. Light tones keep the black QR modules scannable. Detection is by the
+// add-on style text (e.g. "Small Chip", "Holographic Rainbow") with a fallback
+// to the short codes (SMC / BC / HLG*). Priority: Holo wins over any chip.
+function qrBgForAddon(addonCode) {
+  const s = String(addonCode || '').toLowerCase();
+  const has = (re) => re.test(s);
+  // Match on the human style text, which in the data is "Small Ship"/"Big Chip"
+  // (note the "Small Ship" typo) — so match "small"/"big", plus the SMC/BC codes.
+  if (has(/holo/) || has(/\bhlg[a-z]*\b/))  return '#FCA5A5'; // Holo       → đỏ pastel
+  if (has(/small/) || has(/\bsmc\b/))       return '#FACC15'; // Small chip → vàng đậm
+  if (has(/big/)   || has(/\bbc\b/))        return '#BBF7D0'; // Big chip   → xanh lá pastel
+  return '#F97316';                                           // No chip    → cam đậm
+}
 async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, addonCode, sourceKey) {
   const portrait = sourceW < sourceH;
   const dW = portrait ? sourceH : sourceW;   // landscape design width
@@ -986,10 +1004,10 @@ async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, add
   canvas.width = band + dW;
   canvas.height = dH;
   const ctx = canvas.getContext('2d');
-  // Keep the LEFT info band TRANSPARENT (prints on the film substrate); only the
-  // design area gets a white backing so the design's own transparency reads white.
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(band, 0, dW, dH);
+  // Fully TRANSPARENT background (both the left info band and the design area) —
+  // card skins print on clear film, so no white backing is laid down; only the
+  // design's own opaque pixels + the barcode/text bars stay opaque. The design's
+  // own transparency is preserved (reads transparent, not white).
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
 
@@ -1005,35 +1023,47 @@ async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, add
   }
 
   if (band > 0) {
-    // Build a horizontal label strip (barcode + text), then draw it rotated 90°
+    // Build a horizontal label strip (QR + text), then draw it rotated 90°
     // so it runs vertically down the narrow left band.
     const codeText = addonCode ? `${systemId}-${addonCode}` : systemId;
-    const barcode = generateBarcodeCanvas(systemId, 3, '000000');
+    // Add-on colour keyed to the item (Holo=đỏ, Small chip=vàng, Big chip=xanh
+    // lá, No chip=cam) — it backs the WHOLE info block (QR + text) so the
+    // operator can sort skin cards by eye; light tones keep the QR scannable.
+    const addonBg = qrBgForAddon(addonCode);
+    // QR encodes the system_id (same value the barcode used) so scan/lookup by
+    // system_id keeps working; its own background matches the block colour.
+    const qr = await generateQrCanvas(systemId, 240, addonBg);
     const TXT = 30, GAP = 6;
-    // Size the strip to whichever is wider — barcode or label text — so a longer
-    // style label (e.g. "Small Chip") isn't clipped; the barcode is centered in
+    // Size the strip to whichever is wider — QR or label text — so a longer
+    // style label (e.g. "Small Chip") isn't clipped; the QR is centered in
     // the widened strip.
     ctx.font = `bold ${TXT}px sans-serif`;
     const textW = Math.ceil(ctx.measureText(codeText).width);
     const strip = document.createElement('canvas');
-    strip.width = Math.max(barcode.width, textW + 8);
-    strip.height = barcode.height + GAP + TXT;
+    strip.width = Math.max(qr.width, textW + 8);
+    strip.height = qr.height + GAP + TXT;
     const s = strip.getContext('2d');
-    // Transparent strip background — only the barcode bars + text are opaque, so
-    // the band prints clear on the film. bwip-js leaves the barcode gaps
-    // transparent already; we just skip the white fill.
-    s.drawImage(barcode, (strip.width - barcode.width) / 2, 0);
+    // Add-on colour backs the whole info block (QR + text). Rest of the band
+    // stays transparent (clear film).
+    s.fillStyle = addonBg;
+    s.fillRect(0, 0, strip.width, strip.height);
+    s.drawImage(qr, (strip.width - qr.width) / 2, 0);
     s.fillStyle = '#000000';
     s.textAlign = 'center';
     s.textBaseline = 'top';
     s.font = `bold ${TXT}px sans-serif`;
-    s.fillText(codeText, strip.width / 2, barcode.height + GAP);
+    s.fillText(codeText, strip.width / 2, qr.height + GAP);
 
-    // Fit the rotated strip into the band (width) × design height. After -90°
-    // the strip's height maps horizontally (≤ band) and width maps vertically.
-    const scale = Math.min((band - 12) / strip.height, (dH - 20) / strip.width);
+    // Fit the rotated strip into the band, leaving a clear gap from the design
+    // (DESIGN_GAP) so the QR/info sits away from the artwork. After -90° the
+    // strip's height maps horizontally and width maps vertically.
+    const EDGE = 12;         // margin from the outer (left) band edge
+    const DESIGN_GAP = 10;   // clear space between the info strip and the design
+    const availW = Math.max(1, band - EDGE - DESIGN_GAP);
+    const scale = Math.min(availW / strip.height, (dH - 20) / strip.width);
     ctx.save();
-    ctx.translate(band / 2, dH / 2);
+    // Center within [EDGE .. band-DESIGN_GAP] → pushed away from the design edge.
+    ctx.translate((EDGE + (band - DESIGN_GAP)) / 2, dH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.drawImage(strip, -strip.width * scale / 2, -strip.height * scale / 2, strip.width * scale, strip.height * scale);
     ctx.restore();
@@ -1076,11 +1106,15 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
     return await composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, opts.addon_code || '', source_key);
   }
 
+  // 'native' layout = greeting card 5x5: FIXED 11×5.5" canvas (3300×1650 @300dpi),
+  // NOT the default 10×7. The flat 5x5 design is 10×5 (2:1) which scales cleanly
+  // to 11×5.5 (also 2:1). Barcode/system_id panel still stamped bottom-left below.
+  const gc5x5 = opts.convert_layout === 'native';
   const isPortraitSource = sourceW < sourceH;
   // Output canvas size; default 3000×2100 (10×7" @300dpi). The resize flow
-  // passes 3300×2100 (11×7").
-  const TARGET_W = opts.targetW || 3000;
-  const TARGET_H = opts.targetH || 2100;
+  // passes 3300×2100 (11×7"). Greeting card 5x5 → 3300×1650 (11×5.5").
+  const TARGET_W = gc5x5 ? 3300 : (opts.targetW || 3000);
+  const TARGET_H = gc5x5 ? 1650 : (opts.targetH || 2100);
 
   const canvas = document.createElement('canvas');
   canvas.width = TARGET_W;
@@ -1088,14 +1122,15 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   const ctx = canvas.getContext('2d');
 
   if (isPortraitSource) {
-    // Portrait → landscape via -90° (CCW). Backs share this same rotation —
-    // no extra flip.
+    // Portrait → landscape via -90° (CCW), filling the landscape canvas. Backs
+    // share this same rotation — no extra flip.
     ctx.save();
     ctx.translate(TARGET_W / 2, TARGET_H / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.drawImage(sourceImg, -TARGET_H / 2, -TARGET_W / 2, TARGET_H, TARGET_W);
     ctx.restore();
   } else {
+    // Landscape source: draw to fill the canvas (10×5 → 11×5.5 is a clean 2:1 scale).
     ctx.drawImage(sourceImg, 0, 0, TARGET_W, TARGET_H);
   }
 
