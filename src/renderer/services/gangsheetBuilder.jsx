@@ -385,43 +385,83 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
 }
 
 // ---------------------------------------------------------------------------
-// Tiled gangsheet (card skin): each _qr is placed on the LEFT with its barcode/
-// info band, and DUPLICATED on the RIGHT with the band cropped off (design
-// only). One A4 page holds `rows` such pairs (default 3 → 3 originals + 3 copies
-// = 6 images, evenly spaced). Each card is drawn at a fixed cell size so the
-// printed size is exact. Used for products whose convert layout is 'outside'.
+// Tiled gangsheet (card skin) — reproduces the printer's sample sheet exactly.
+//
+// One Letter page holds 3 designs, each printed TWICE: the original carries the
+// QR/info band, the copy right below it is the bare design (no QR, no text).
+//
+//   ┌──────────────────────────────┐   left column  = 2 designs × 2 = 4 cards,
+//   │ [qr]▭ design A      qr       │                  landscape
+//   │     ▭ copy   A     ┌───┐     │   right column = 1 design  × 2 = 2 cards,
+//   │ [qr]▭ design B     │ C │     │                  the SAME composed image
+//   │     ▭ copy   B     └───┘     │                  rotated 90° CW, so the
+//   │                    ┌───┐     │                  original's band lands on
+//   │                    │ C │     │                  top instead of the left
+//   └──────────────────────────────┘
+//
+// ALIGNMENT: the grid is keyed to the CARD rectangle only — a fixed CR80 die
+// (3.375 × 2.125" @300dpi, measured off the sample). The QR/info band is NOT
+// part of the cell; it hangs into a reserved gutter beside the card, scaled by
+// the design's own scale factor. So a source whose band/design proportion
+// differs can never shift or resize the card. Used for convert layout 'outside'.
 // ---------------------------------------------------------------------------
-const A4_W = 2480;   // 8.27" @300dpi (portrait)
-const A4_H = 3508;   // 11.69"
+const PAGE_W = 2550;   // Letter 8.5" @300dpi (portrait)
+const PAGE_H = 3300;   // 11"
+const CARD_W = 1013;   // 3.375" — CR80 die width  (measured off the sample sheet)
+const CARD_H = 638;    // 2.125" — CR80 die height
+const BAND_RESERVE = 200;   // gutter beside the card that the info band hangs in
+const LEFT_DESIGNS = 2;     // landscape designs stacked in the left column
+const RIGHT_DESIGNS = 1;    // portrait (rotated) designs in the right column
+const COPIES = 2;           // prints per design: 1 original + 1 copy
+// Fixed gaps (px @300dpi), all measured card-edge to card-edge. Each column is
+// then centred on the page with whatever is left over — the gaps are the spec,
+// the margins are the slack.
+const GAP_Y_LEFT = 50;      // between the 4 landscape cards
+const GAP_X_COLS = 100;     // landscape card's right edge → portrait card's left edge
+const GAP_Y_RIGHT = 50;     // blank between the 2 portrait cards (band not counted)
 
 /**
- * @param opts.rows        pairs (original + copy) per page (default 3)
- * @param opts.cardWpx/cardHpx  original card cell size in px @300dpi
- *   (default 1214 × 645 = (3.38"+0.667" left band) × 2.15" — matches the card
- *    skin _qr output: landscape design + a left QR/info strip)
- * @param opts.bandPx      width of the left barcode/info band to crop off the
- *                         copy (default 200px = CARD_SKIN_BAND_W); copy cell is
- *                         (cardWpx - bandPx) wide.
+ * @param opts.cardWpx/cardHpx  CARD cell size in px @300dpi — the die itself,
+ *                         band excluded (default 1013 × 638 = 3.375 × 2.125").
+ * @param opts.bandPx      width of the barcode/info band in the SOURCE _qr
+ *                         image (default 200px = CARD_SKIN_BAND_W), sliced off
+ *                         so the design alone drives the card size.
+ * @param opts.bandReservePx  gutter reserved for the band next to the card
+ *                         (default 200px @300dpi ≈ 0.667").
+ * @param opts.gapYLeft/gapXCols/gapYRight  fixed gaps in px @300dpi between the
+ *                         landscape cards / the two columns / the portrait cards.
  */
 export async function buildTiledGangsheet(orders, {
   onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0,
-  rows = 3, cardWpx = 1214, cardHpx = 645, bandPx = 200,
+  cardWpx = CARD_W, cardHpx = CARD_H, bandPx = 200,
+  bandReservePx = BAND_RESERVE,
+  gapYLeft = GAP_Y_LEFT, gapXCols = GAP_X_COLS, gapYRight = GAP_Y_RIGHT,
 } = {}) {
   if (!orders.length) throw new Error('Empty chunk');
   const records = flattenQrMetas(orders, { includeProduced });
   if (!records.length) throw new Error('No _qr metas in this chunk');
 
-  // Each _qr is placed ONCE with its barcode/info band (left) PLUS a duplicate
-  // beside it on the right with the band cropped off (design only). So a page
-  // holds `rows` originals + `rows` copies (default 3 + 3 = 6 images, 3 unique).
-  const copyWpx = Math.max(1, cardWpx - bandPx);   // design width without band
-  const perPage = rows;
-  // Even horizontal spacing across the sheet: [gapX][ original ][gapX][ copy ][gapX].
-  const gapX = Math.max(0, Math.round((A4_W - (cardWpx + copyWpx)) / 3));
-  const xOrig = gapX;
-  const xCopy = gapX + cardWpx + gapX;
-  // Even vertical spacing across the rows: `rows+1` equal gaps.
-  const gapY = Math.max(0, Math.round((A4_H - rows * cardHpx) / (rows + 1)));
+  const perPage = LEFT_DESIGNS + RIGHT_DESIGNS;   // 3 designs per page
+  // Columns, measured on the CARDS. The left column reserves an extra
+  // `bandReservePx` gutter that only the band lives in; the right column is the
+  // same card rotated, so it is cardHpx wide and reserves its gutter on top.
+  //   [margin][band][ CARD ][gapXCols][ card ][margin]
+  const colLeftW = bandReservePx + cardWpx;
+  const colRightW = cardHpx;
+  const marginX = Math.max(0, Math.round((PAGE_W - (colLeftW + gapXCols + colRightW)) / 2));
+  const xLeftCard = marginX + bandReservePx;           // card x, NOT band x
+  const xRightCard = marginX + colLeftW + gapXCols;
+  // Fixed gaps, each column centred vertically on whatever slack is left.
+  const leftRows = LEFT_DESIGNS * COPIES;             // 4
+  const rightRows = RIGHT_DESIGNS * COPIES;           // 2
+  const leftBlockH = leftRows * cardHpx + (leftRows - 1) * gapYLeft;
+  const leftTop = Math.max(0, Math.round((PAGE_H - leftBlockH) / 2));
+  const rightCellH = bandReservePx + cardWpx;         // band on top + rotated card
+  const rightBlockH = rightRows * rightCellH + (rightRows - 1) * gapYRight;
+  const rightTop = Math.max(0, Math.round((PAGE_H - rightBlockH) / 2));
+  // Slot → card top-left. Left slots run 0..3 top-down, right slots 0..1.
+  const leftSlotY = (i) => leftTop + i * (cardHpx + gapYLeft);
+  const rightSlotY = (i) => rightTop + i * (rightCellH + gapYRight) + bandReservePx;
 
   const pdf = await PDFDocument.create();
   const total = records.length;
@@ -431,14 +471,14 @@ export async function buildTiledGangsheet(orders, {
   const seenOrders = new Set();
 
   const canvas = document.createElement('canvas');
-  canvas.width = A4_W;
-  canvas.height = A4_H;
+  canvas.width = PAGE_W;
+  canvas.height = PAGE_H;
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
 
-  const pageWpt = (A4_W / DPI) * PT_PER_IN;
-  const pageHpt = (A4_H / DPI) * PT_PER_IN;
+  const pageWpt = (PAGE_W / DPI) * PT_PER_IN;
+  const pageHpt = (PAGE_H / DPI) * PT_PER_IN;
 
   const flushPage = async () => {
     const blob = await canvasToBlob(canvas, 'image/png');
@@ -449,23 +489,71 @@ export async function buildTiledGangsheet(orders, {
   };
 
   let slot = 0;
-  const resetCanvas = () => { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, A4_W, A4_H); };
+  const resetCanvas = () => { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, PAGE_W, PAGE_H); };
   resetCanvas();
+
+  /**
+   * Draw one print of a composed _qr. (cardX, cardY) is the top-left of the CARD
+   * itself; the band hangs outside it. `rotated` turns the whole thing 90° CW,
+   * which puts the (left) band on top and makes the card portrait — the right
+   * column of the sample sheet.
+   */
+  const placeCard = (img, srcBand, srcDesignW, bandW, bandH, cardX, cardY, rotated, withBand) => {
+    ctx.save();
+    if (rotated) {
+      // After this transform the local axes are the landscape card's own: local
+      // (0,0)-(cardWpx,cardHpx) lands on screen as a cardHpx × cardWpx portrait
+      // box whose top edge is the design's left edge.
+      ctx.translate(cardX + cardHpx, cardY);
+      ctx.rotate(Math.PI / 2);
+    } else {
+      ctx.translate(cardX, cardY);
+    }
+    // Design → the fixed card cell (exact die size regardless of source res).
+    ctx.drawImage(img, srcBand, 0, srcDesignW, img.height, 0, 0, cardWpx, cardHpx);
+    // Band hung outside the cell, centred on the card's long edge — only on the
+    // original. Copies print the bare design (no QR, no info text). The band
+    // never participates in the alignment, so dropping it shifts nothing.
+    if (withBand) {
+      ctx.drawImage(
+        img, 0, 0, srcBand, img.height,
+        -bandW, Math.round((cardHpx - bandH) / 2), bandW, bandH,
+      );
+    }
+    ctx.restore();
+  };
 
   for (const rec of records) {
     const bytes = await fetchImageBytes(rec.meta.value);
     const img = await loadImageFromBytes(bytes);
-    const y = gapY + slot * (cardHpx + gapY);
 
-    // 1) Original — full card (design + left barcode/info band), scaled to the
-    //    fixed cell → exact print size regardless of the source resolution.
-    ctx.drawImage(img, xOrig, y, cardWpx, cardHpx);
+    // The composed _qr source is [ band | design ]: the band is exactly the
+    // first `bandPx` px (composeCardSkinOutside draws it at x=[0..bandPx]).
+    const srcBand = Math.min(img.width - 1, bandPx);
+    const srcDesignW = Math.max(1, img.width - srcBand);
+    // Scale that maps the source DESIGN onto the fixed card cell; the band is
+    // drawn at that same scale, capped to the gutter so an unusual band/design
+    // proportion spills into the margin instead of off the page.
+    const sc = cardWpx / srcDesignW;
+    const bandSc = Math.min(sc, bandReservePx / srcBand);
+    const bandW = Math.max(1, Math.round(srcBand * bandSc));
+    const bandH = Math.max(1, Math.round(img.height * bandSc));
 
-    // 2) Copy beside it — same design with the barcode/info band cropped off.
-    //    The band is exactly the first `bandPx` px of the composed _qr source
-    //    (composeCardSkinOutside draws it at x=[0..bandPx]).
-    const sx = Math.min(img.width - 1, bandPx);
-    ctx.drawImage(img, sx, 0, img.width - sx, img.height, xCopy, y, copyWpx, cardHpx);
+    // Slot 0..1 → left column (landscape), slot 2 → right column (rotated).
+    // Every design is printed COPIES times, stacked directly below itself: the
+    // first print carries the QR/info band, the rest are design-only copies.
+    if (slot < LEFT_DESIGNS) {
+      for (let c = 0; c < COPIES; c++) {
+        placeCard(img, srcBand, srcDesignW, bandW, bandH,
+          xLeftCard, leftSlotY(slot * COPIES + c), false, c === 0);
+      }
+    } else {
+      const rightIdx = slot - LEFT_DESIGNS;
+      for (let c = 0; c < COPIES; c++) {
+        placeCard(img, srcBand, srcDesignW, bandW, bandH,
+          xRightCard, rightSlotY(rightIdx * COPIES + c), true, c === 0);
+      }
+    }
 
     metaIdsUsed.push(rec.meta.id);
     if (!seenOrders.has(rec.order.id)) { seenOrders.add(rec.order.id); orderIdsUsed.push(rec.order.id); }

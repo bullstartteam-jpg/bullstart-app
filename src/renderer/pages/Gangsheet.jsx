@@ -182,6 +182,33 @@ function saveGroupBy(set) {
   try { localStorage.setItem('gangsheet_group_by', JSON.stringify([...set])); } catch { /* ignore */ }
 }
 
+// --- Chip add-on (card skin gang split) -------------------------------------
+// Chip kind named by an add-on label. Same patterns AND same priority as
+// qrBgForAddon() in converter.jsx (Holo beats any chip), so the gang split and
+// the QR background colour can never disagree. '' = the label names no chip.
+function chipKindOf(text) {
+  const s = String(text || '').toLowerCase();
+  if (/holo/.test(s) || /\bhlg[a-z]*\b/.test(s)) return 'holo';
+  if (/small/.test(s) || /\bsmc\b/.test(s)) return 'smallchip';
+  if (/big/.test(s) || /\bbc\b/.test(s)) return 'bigchip';
+  return '';
+}
+
+// The chip an order is ganged under: the FIRST one found walking items in
+// order, each item's add-ons checked style → code → accessory name (the same
+// fallback order as accessoryLabel() on the hub). An order carrying two chips
+// still lands in ONE gang — the one of its first item — so its odd cards ride
+// along and get sorted by the QR colour on press.
+function orderChipTag(order) {
+  for (const it of order.items || []) {
+    for (const a of itemAccessoryList(it)) {
+      const kind = chipKindOf(a.style) || chipKindOf(a.code) || chipKindOf(a.name);
+      if (kind) return kind;
+    }
+  }
+  return 'nochip';
+}
+
 // An order's dominant product order_type (from the most-common item's product).
 function orderOrderType(order) {
   const counts = {};
@@ -195,7 +222,7 @@ function orderOrderType(order) {
 }
 
 // Convert layout of an order via its order_type + the settings map. 'outside'
-// (card skin) gangs get tiled N-up on A4 instead of one design per page.
+// (card skin) gangs get tiled N-up on Letter instead of one design per page.
 function orderConvertLayout(order, layoutMap) {
   const ot = orderOrderType(order);
   return (ot && layoutMap?.[ot]) || 'default';
@@ -260,6 +287,27 @@ function itemAccessoryIds(item) {
   if (legacy) ids.add(String(legacy));
   return ids;
 }
+// Accessory choices of ONE item, for display in the Compose table: the pivot
+// rows first, then the legacy single accessory_price, de-duplicated. Each entry
+// keeps name / style / code so the operator can see e.g. "Big Chip · Gangsheet
+// chip" + code "BC" — the fields the card-skin gang groups on.
+function itemAccessoryList(item) {
+  const out = [];
+  const push = (ap) => {
+    if (!ap) return;
+    const name = ap.accessory?.name || '';
+    const style = ap.style || '';
+    const code = ap.accessory_code || '';
+    if (!name && !style && !code) return;
+    const key = `${name}|${style}|${code}`;
+    if (out.some(o => o.key === key)) return;
+    out.push({ key, name, style, code });
+  };
+  for (const ap of item.accessory_prices || []) push(ap);
+  push(item.accessory_price);
+  return out;
+}
+
 function itemAccessoryCodes(item) {
   const codes = new Set();
   for (const ap of item.accessory_prices || []) {
@@ -397,7 +445,7 @@ function ComposeTab() {
   const [partnerUsers, setPartnerUsers] = useState([]);
   const [selectedPartners, setSelectedPartners] = useState(new Set());
   // order_type → convert layout map. Orders whose layout is 'outside' (card
-  // skin) are ganged tiled 6-up on A4 instead of one design per page.
+  // skin) are ganged tiled 6-up on Letter instead of one design per page.
   const [layoutMap, setLayoutMap] = useState({});
 
   useEffect(() => {
@@ -525,12 +573,8 @@ function ComposeTab() {
     });
   };
 
-  const countQrMetas = (order) => {
-    let n = 0;
-    for (const it of order.items || []) for (const m of it.metas || [])
-      if (isQrKey(m.key) && !m.production) n++;
-    return n;
-  };
+  const countItemQrMetas = (item) =>
+    (item.metas || []).filter(m => isQrKey(m.key) && !m.production).length;
 
   const dominantLineId = (orders) => {
     const counts = {};
@@ -552,9 +596,9 @@ function ComposeTab() {
     // bucket is single-side already, so just chunk it. Filename gets the
     // accessory + material + two_size tags of that bucket.
     // Split card-skin orders (convert layout 'outside') from the rest. Card
-    // skins are ganged tiled 6-up on A4 (kept together); the rest use the
+    // skins are ganged tiled 6-up on Letter (kept together); the rest use the
     // normal bucket flow (one design per page).
-    // Route each selected order: card skin ('outside') → tiled A4; keep-native
+    // Route each selected order: card skin ('outside') → tiled Letter; keep-native
     // variant size (e.g. 5x5) → native-size merged gang; everything else → the
     // normal 10×7/letter bucket flow.
     const cardOrders = [];
@@ -595,17 +639,22 @@ function ComposeTab() {
       for (const chunk of chunkArray(g.orders, batchSize)) chunks.push({ chunk, suffix: g.tag, tiled: false });
     }
 
-    // Card skin: gom chung theo order_type. Mỗi A4 = 3 _qr gốc + 3 bản copy
-    // (band cắt) cạnh bên → chunk 3 order / A4 = 1 gang (tiled).
+    // Card skin: gom theo order_type × chip. Mỗi trang Letter = 3 mẫu, mỗi mẫu
+    // in 2 bản (bản gốc có khối QR, bản copy dưới nó là design trần): trái 2 mẫu
+    // nằm ngang = 4 thẻ, phải 1 mẫu xoay dọc = 2 thẻ → chunk 3 order / trang.
+    // Gom theo order_type × loại chip: big chip một gang, small chip một gang.
+    // Đơn lẫn cả hai đi theo chip của item đầu tiên (xem orderChipTag).
     const cardGroups = new Map();
     for (const o of cardOrders) {
       const ot = orderOrderType(o) || 'skincard';
-      if (!cardGroups.has(ot)) cardGroups.set(ot, []);
-      cardGroups.get(ot).push(o);
+      const chip = orderChipTag(o);
+      const key = `${ot}||${chip}`;
+      if (!cardGroups.has(key)) cardGroups.set(key, { ot, chip, orders: [] });
+      cardGroups.get(key).orders.push(o);
     }
-    for (const [ot, ords] of cardGroups) {
-      const tag = slugifyAccessory(ot) || 'skincard';
-      for (const chunk of chunkArray(ords, 3)) chunks.push({ chunk, suffix: tag, tiled: true });
+    for (const [, g] of cardGroups) {
+      const tag = `${slugifyAccessory(g.ot) || 'skincard'}_${g.chip}`;
+      for (const chunk of chunkArray(g.orders, 3)) chunks.push({ chunk, suffix: tag, tiled: true });
     }
     setRunning(true); setResults([]);
     const out = [];
@@ -623,7 +672,7 @@ function ComposeTab() {
         const totalInChunk = flattenQrMetas(chunk).length;
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
 
-        const pageFormat = tiled ? 'a4_6up' : (native ? 'native' : getGangPageFormat());
+        const pageFormat = tiled ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
         const built = tiled
           ? await buildTiledGangsheet(chunk, {
               linePrefix, nameSuffix: suffix, seq: ci + 1,
@@ -930,25 +979,67 @@ function ComposeTab() {
                 <th className="py-2 text-left">System ID</th>
                 <th className="py-2 text-left">Ref</th>
                 <th className="py-2 text-left">Line</th>
-                <th className="py-2 text-right">_qr metas</th>
+                <th className="py-2 text-left">SKU</th>
+                <th className="py-2 text-left">Accessory</th>
+                <th className="py-2 text-left">Code</th>
+                <th className="py-2 text-right">_qr</th>
                 <th className="py-2 text-right">Created</th>
               </tr>
             </thead>
-            <tbody>
-              {filteredPending.map(o => {
-                const li = o.items?.[0]?.product_variant?.product?.line_id;
-                return (
-                  <tr key={o.id} className="border-b border-neutral-100 hover:bg-orange-50/40">
-                    <td className="py-1.5"><input type="checkbox" checked={selectedIds.has(o.id)} onChange={() => toggle(o.id)} className="accent-orange-500" /></td>
-                    <td className="py-1.5 font-mono text-orange-500 text-xs">{o.system_id}</td>
-                    <td className="py-1.5 text-xs text-neutral-600">{o.ref_id || '-'}</td>
-                    <td className="py-1.5 text-xs text-neutral-600 font-mono">{li || '-'}</td>
-                    <td className="py-1.5 text-right text-neutral-700">{countQrMetas(o)}</td>
-                    <td className="py-1.5 text-right text-xs text-neutral-500">{new Date(o.created_at).toLocaleDateString()}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
+            {/* Một <tbody> cho mỗi đơn, một <tr> cho mỗi order_item. Checkbox +
+                System ID + Ref + Created dùng rowSpan nên vẫn chọn theo ĐƠN
+                (Generate làm việc trên đơn), còn Line/SKU/Accessory/Code/_qr
+                hiện riêng từng item. */}
+            {filteredPending.map(o => {
+              const items = o.items?.length ? o.items : [null];
+              const created = new Date(o.created_at).toLocaleDateString();
+              return (
+                <tbody key={o.id} className="border-b border-neutral-100 hover:bg-orange-50/40">
+                  {items.map((it, idx) => {
+                    const accs = it ? itemAccessoryList(it) : [];
+                    const v = it?.product_variant;
+                    return (
+                      <tr key={it ? `${o.id}-${it.id}` : o.id} className={idx > 0 ? 'text-neutral-600' : ''}>
+                        {idx === 0 && (
+                          <>
+                            <td className="py-1.5 align-top" rowSpan={items.length}>
+                              <input type="checkbox" checked={selectedIds.has(o.id)} onChange={() => toggle(o.id)} className="accent-orange-500" />
+                            </td>
+                            <td className="py-1.5 align-top font-mono text-orange-500 text-xs" rowSpan={items.length}>{o.system_id}</td>
+                            <td className="py-1.5 align-top text-xs text-neutral-600" rowSpan={items.length}>{o.ref_id || '-'}</td>
+                          </>
+                        )}
+                        <td className="py-1.5 text-xs text-neutral-600 font-mono">{v?.product?.line_id || '-'}</td>
+                        <td className="py-1.5 text-xs text-neutral-600 font-mono">
+                          {v?.sku || '-'}
+                          {(v?.color || v?.size) && (
+                            <span className="text-neutral-400"> {[v.color, v.size].filter(Boolean).join('/')}</span>
+                          )}
+                        </td>
+                        <td className="py-1.5 text-xs text-neutral-600">
+                          {accs.length === 0 ? <span className="text-neutral-300">-</span> : accs.map(a => (
+                            <div key={a.key}>
+                              {a.style || a.name || '-'}
+                              {a.style && a.name && <span className="text-neutral-400"> · {a.name}</span>}
+                            </div>
+                          ))}
+                        </td>
+                        <td className="py-1.5 text-xs font-mono text-neutral-700">
+                          {accs.length === 0 ? <span className="text-neutral-300">-</span>
+                            : accs.map(a => <div key={a.key}>{a.code || <span className="text-neutral-300">-</span>}</div>)}
+                        </td>
+                        <td className={`py-1.5 text-right ${it && countItemQrMetas(it) ? 'text-neutral-700' : 'text-neutral-300'}`}>
+                          {it ? countItemQrMetas(it) : 0}
+                        </td>
+                        {idx === 0 && (
+                          <td className="py-1.5 align-top text-right text-xs text-neutral-500" rowSpan={items.length}>{created}</td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              );
+            })}
           </table>
         )}
       </div>
