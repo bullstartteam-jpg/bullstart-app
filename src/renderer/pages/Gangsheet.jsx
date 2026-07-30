@@ -521,8 +521,8 @@ function chunkPageFormat({ tiled, native }) {
 }
 
 /** Build one routed chunk into a PDF with the builder its branch calls for. */
-function buildChunkPdf({ chunk, suffix, tiled, native }, { linePrefix, seq, includeProduced = false, onProgress } = {}) {
-  const opts = { linePrefix, nameSuffix: suffix, seq, includeProduced, onProgress };
+function buildChunkPdf({ chunk, suffix, tiled, native }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
+  const opts = { linePrefix, nameSuffix: suffix, seq, includeProduced, collectPages, onProgress };
   return tiled
     ? buildTiledGangsheet(chunk, opts)
     : buildGangsheetForChunk(chunk, { ...opts, pageFormat: chunkPageFormat({ tiled, native }) });
