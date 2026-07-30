@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { buildGangsheetForChunk, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks, rasterizeGangPdf } from '../services/gangsheetBuilder';
+import { buildGangsheetForChunk, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks, rasterizeGangPdf, fetchFileBytes } from '../services/gangsheetBuilder';
 import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGroup, deleteOpenGroups } from '../services/groupGang';
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
@@ -505,6 +505,40 @@ function openGangPngs(g) {
     if (window.electronAPI?.openExternal) window.electronAPI.openExternal(url);
     else window.open(url, '_blank');
   }
+}
+
+/**
+ * Download every PNG of the given gangs as ONE .zip. Files are stored (level 0)
+ * because PNGs are already compressed — re-deflating them costs time and saves
+ * nothing. Names are kept as-is: they already carry gang, page and date, so a
+ * flat archive stays unambiguous.
+ */
+async function downloadGangPngsZip(gangs, { onProgress } = {}) {
+  const { zipSync } = await import('fflate');
+  const withPng = gangs.filter(g => g.png_urls?.length);
+  const urls = withPng.flatMap(g => g.png_urls);
+  if (urls.length === 0) throw new Error('Các gang đã chọn chưa có file PNG nào');
+
+  const files = {};
+  let done = 0;
+  for (const url of urls) {
+    const name = decodeURIComponent(String(url).split('/').pop() || `page_${done + 1}.png`);
+    files[name] = await fetchFileBytes(url);
+    onProgress?.({ done: ++done, total: urls.length });
+  }
+
+  const zipped = zipSync(files, { level: 0 });
+  const zipName = withPng.length === 1
+    ? `${String(withPng[0].filename || 'gangsheet').replace(/\.pdf$/i, '')}_png.zip`
+    : `gangsheet_png_${withPng.length}gang_${urls.length}file.zip`;
+
+  const blobUrl = URL.createObjectURL(new Blob([zipped], { type: 'application/zip' }));
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = zipName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  return { zipName, fileCount: urls.length, gangCount: withPng.length, skipped: gangs.length - withPng.length };
 }
 
 /** Per-machine "also export PNG" preference, shared by Compose and Re-gang. */
@@ -2081,6 +2115,29 @@ function ManageTab({ isAdmin, source = 'normal' }) {
       return next;
     });
   };
+  // Bulk: gom PNG của các gang đã chọn thành 1 file .zip tải về máy.
+  const [zipping, setZipping] = useState(false);
+  const [zipProgress, setZipProgress] = useState(null);
+  const handleDownloadPngZip = async () => {
+    const gangs = list.data.filter(g => selectedIds.has(g.id));
+    if (gangs.length === 0) return;
+    setZipping(true);
+    setZipProgress({ done: 0, total: 0 });
+    try {
+      const r = await downloadGangPngsZip(gangs, { onProgress: setZipProgress });
+      notify(
+        `${r.zipName} · ${r.fileCount} PNG từ ${r.gangCount} gang`
+          + (r.skipped ? ` · bỏ qua ${r.skipped} gang chưa có PNG` : ''),
+        { title: 'Tải PNG', kind: 'success' },
+      );
+    } catch (err) {
+      notify(err?.message || 'Tải PNG thất bại', { title: 'Tải PNG', kind: 'error' });
+    } finally {
+      setZipping(false);
+      setZipProgress(null);
+    }
+  };
+
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
     if (!confirm(`Delete ${selectedIds.size} gangsheet(s)?\n(Orders/metas remain marked as production.)`)) return;
@@ -2160,6 +2217,17 @@ function ManageTab({ isAdmin, source = 'normal' }) {
         </div>
         <button type="submit" className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Apply</button>
         <button type="button" onClick={clearFilters} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Clear</button>
+        <button
+          type="button"
+          onClick={handleDownloadPngZip}
+          disabled={selectedIds.size === 0 || zipping}
+          className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 text-white text-sm rounded-lg"
+          title="Gom toàn bộ file PNG của các gang đã chọn thành 1 file .zip tải về máy"
+        >
+          {zipping
+            ? `Zipping ${zipProgress?.done ?? 0}/${zipProgress?.total ?? '?'}…`
+            : `Tải PNG .zip (${selectedIds.size})`}
+        </button>
         {isAdmin && (
           <button
             type="button"

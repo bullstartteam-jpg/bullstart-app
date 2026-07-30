@@ -64,16 +64,17 @@
     "postcss-loader": "^8.2.1",
     "style-loader": "^4.0.0",
     "tailwindcss": "^4.2.4",
+    "wait-on": "^8.0.1",
     "webpack": "^5.106.2",
     "webpack-cli": "^7.0.2",
-    "webpack-dev-server": "^5.2.3",
-    "wait-on": "^8.0.1"
+    "webpack-dev-server": "^5.2.3"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1039.0",
     "axios": "^1.15.2",
     "bwip-js": "^4.10.1",
     "electron-updater": "^6.8.3",
+    "fflate": "^0.8.3",
     "jsbarcode": "^3.12.3",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",

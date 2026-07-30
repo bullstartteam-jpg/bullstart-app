@@ -216,6 +216,15 @@ export async function rasterizeGangPdf(url, { onProgress } = {}) {
   return blobs;
 }
 
+/**
+ * Raw bytes of a file on B2. Goes through the Electron main process when
+ * available (no CORS, no renderer memory copy of the response), falling back
+ * to fetch() in the browser. Exported for the Manage tab's zip download.
+ */
+export function fetchFileBytes(url) {
+  return fetchImageBytes(url);
+}
+
 async function fetchImageBytes(url) {
   if (window.electronAPI?.fetchImage) {
     const { base64 } = await window.electronAPI.fetchImage(url);
