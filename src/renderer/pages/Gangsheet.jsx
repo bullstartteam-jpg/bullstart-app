@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { buildGangsheetForChunk, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks } from '../services/gangsheetBuilder';
+import { buildGangsheetForChunk, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks, rasterizeGangPdf } from '../services/gangsheetBuilder';
 import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGroup, deleteOpenGroups } from '../services/groupGang';
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
@@ -467,6 +467,54 @@ function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includePro
   return chunks;
 }
 
+// ---------------------------------------------------------------------------
+// PNG export. Each gang page is saved as its own .png next to the PDF on B2,
+// named after the gang plus a zero-padded page number so the files sort in
+// print order and pair up with the PDF at a glance:
+//   01_PS_C3071-PS_C3078_3_6_JUL31_skin-card_bigchip.pdf
+//   01_PS_C3071-PS_C3078_3_6_JUL31_skin-card_bigchip_p01.png
+// ---------------------------------------------------------------------------
+function pngNameForPage(pdfFilename, pageIndex) {
+  const base = String(pdfFilename || 'gangsheet').replace(/\.pdf$/i, '');
+  return `${base}_p${String(pageIndex + 1).padStart(2, '0')}.png`;
+}
+
+/** Upload every page blob to B2; returns the public URLs in page order. */
+async function uploadGangPngs(pageBlobs, { creds, pdfFilename, onProgress }) {
+  const urls = [];
+  for (let i = 0; i < pageBlobs.length; i++) {
+    const name = pngNameForPage(pdfFilename, i);
+    const key = `${creds.folder}/${name}`;
+    const bytes = new Uint8Array(await pageBlobs[i].arrayBuffer());
+    await window.electronAPI.s3Upload({
+      credentials: creds,
+      bucket: creds.bucket,
+      key,
+      body: bytes,
+      contentType: 'image/png',
+    });
+    urls.push(`${creds.public_url_base}/${key}`);
+    onProgress?.({ pngDone: i + 1, pngTotal: pageBlobs.length });
+  }
+  return urls;
+}
+
+/** Open every PNG of a gang (external browser in the desktop app). */
+function openGangPngs(g) {
+  for (const url of g?.png_urls || []) {
+    if (window.electronAPI?.openExternal) window.electronAPI.openExternal(url);
+    else window.open(url, '_blank');
+  }
+}
+
+/** Per-machine "also export PNG" preference, shared by Compose and Re-gang. */
+function loadExportPng() {
+  try { return localStorage.getItem('gangsheet_export_png') === '1'; } catch { return false; }
+}
+function saveExportPng(v) {
+  try { localStorage.setItem('gangsheet_export_png', v ? '1' : '0'); } catch { /* noop */ }
+}
+
 /** page_format recorded on the hub for a routed chunk. */
 function chunkPageFormat({ tiled, native }) {
   return tiled ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
@@ -532,6 +580,7 @@ function ComposeTab({ source = 'normal' }) {
   const [statuses, setStatuses] = useState(new Set());
   // Bộ filter sản phẩm đầy đủ như trang Orders. Lọc client-side trên danh sách
   // pending đã tải, nên bucket chips + count đều theo filter đang chọn.
+  const [exportPng, setExportPng] = useState(loadExportPng);
   const [pf, setPf] = useState(PF_DEFAULTS);
   const [catalogProducts, setCatalogProducts] = useState([]);
   const [catalogVariants, setCatalogVariants] = useState([]);
@@ -715,9 +764,18 @@ function ComposeTab({ source = 'normal' }) {
 
         const pageFormat = chunkPageFormat(chunks[ci]);
         const built = await buildChunkPdf(chunks[ci], {
-          linePrefix, seq: ci + 1,
+          linePrefix, seq: ci + 1, collectPages: exportPng,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
+
+        // 0) PNG first (khi có tick): từng trang một file, cùng tên với PDF.
+        let pngUrls = null;
+        if (exportPng && built.pageBlobs?.length) {
+          pngUrls = await uploadGangPngs(built.pageBlobs, {
+            creds, pdfFilename: built.filename,
+            onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
+          });
+        }
 
         // 1) Upload PDF directly to B2 from the desktop app — hub is not involved.
         const key = `${creds.folder}/${built.filename}`;
@@ -736,6 +794,7 @@ function ComposeTab({ source = 'normal' }) {
         const res = await api.post('/gangsheets', {
           filename: built.filename,
           file_url: publicUrl,
+          png_urls: pngUrls,
           line_id: linePrefix || '',
           source,
           page_format: pageFormat,
@@ -803,6 +862,12 @@ function ComposeTab({ source = 'normal' }) {
               </div>
             </div>
             <PageFormatSelect />
+            <label className="flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer select-none pb-2" title="Xuất thêm mỗi trang gang thành 1 file .png lên B2 (đặt tên theo tên gang + _p01)">
+              <input type="checkbox" checked={exportPng}
+                onChange={e => { setExportPng(e.target.checked); saveExportPng(e.target.checked); }}
+                className="accent-orange-500" />
+              Xuất PNG
+            </label>
             <button onClick={handleGenerate} disabled={running || selectedIds.size === 0}
               className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
               {running ? 'Generating…' : `Generate (${selectedIds.size})`}
@@ -1102,7 +1167,19 @@ function ComposeTab({ source = 'normal' }) {
             {results.map(g => (
               <li key={g.id} className="flex justify-between gap-3">
                 <span className="font-mono text-neutral-700 truncate">{g.filename}</span>
-                <a href={g.file_url} target="_blank" rel="noreferrer" className="text-orange-500 text-xs">Download</a>
+                <span className="flex gap-3 shrink-0">
+                  {g.png_urls?.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => openGangPngs(g)}
+                      className="text-emerald-600 hover:text-emerald-700 text-xs"
+                      title={`Mở ${g.png_urls.length} file PNG của gang này`}
+                    >
+                      Open PNG ({g.png_urls.length})
+                    </button>
+                  )}
+                  <a href={g.file_url} target="_blank" rel="noreferrer" className="text-orange-500 text-xs">Download</a>
+                </span>
               </li>
             ))}
           </ul>
@@ -1585,6 +1662,7 @@ function FindTab({ source = 'normal' }) {
   // lands on the same sheets the first run would have produced.
   const [layoutMap, setLayoutMap] = useState({});
   const [groupBy, setGroupBy] = useState(loadGroupBy);
+  const [exportPng, setExportPng] = useState(loadExportPng);
   const toggleGroupBy = (dim) => setGroupBy(prev => {
     const next = new Set(prev);
     next.has(dim) ? next.delete(dim) : next.add(dim);
@@ -1670,9 +1748,17 @@ function FindTab({ source = 'normal' }) {
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
 
         const built = await buildChunkPdf(chunks[ci], {
-          linePrefix, seq: ci + 1, includeProduced: true,
+          linePrefix, seq: ci + 1, includeProduced: true, collectPages: exportPng,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
+
+        let pngUrls = null;
+        if (exportPng && built.pageBlobs?.length) {
+          pngUrls = await uploadGangPngs(built.pageBlobs, {
+            creds, pdfFilename: built.filename,
+            onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
+          });
+        }
 
         const key = `${creds.folder}/${built.filename}`;
         const arrayBuffer = await built.blob.arrayBuffer();
@@ -1689,6 +1775,7 @@ function FindTab({ source = 'normal' }) {
         const res = await api.post('/gangsheets', {
           filename: built.filename,
           file_url: publicUrl,
+          png_urls: pngUrls,
           line_id: linePrefix || '',
           source,
           page_format: chunkPageFormat(chunks[ci]),
@@ -1758,6 +1845,12 @@ function FindTab({ source = 'normal' }) {
                   className="mt-1 w-24 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
               </div>
               <PageFormatSelect />
+              <label className="flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer select-none pb-2" title="Xuất thêm mỗi trang gang thành 1 file .png lên B2 (đặt tên theo tên gang + _p01)">
+                <input type="checkbox" checked={exportPng}
+                  onChange={e => { setExportPng(e.target.checked); saveExportPng(e.target.checked); }}
+                  className="accent-orange-500" />
+                Xuất PNG
+              </label>
               <button onClick={handleGenerate} disabled={running || selectedIds.size === 0}
                 className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
                 {running ? 'Generating…' : `Re-gang (${selectedIds.size})`}
@@ -1833,7 +1926,19 @@ function FindTab({ source = 'normal' }) {
             {results.map(g => (
               <li key={g.id} className="flex justify-between gap-3">
                 <span className="font-mono text-neutral-700 truncate">{g.filename}</span>
-                <a href={g.file_url} target="_blank" rel="noreferrer" className="text-orange-500 text-xs">Download</a>
+                <span className="flex gap-3 shrink-0">
+                  {g.png_urls?.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => openGangPngs(g)}
+                      className="text-emerald-600 hover:text-emerald-700 text-xs"
+                      title={`Mở ${g.png_urls.length} file PNG của gang này`}
+                    >
+                      Open PNG ({g.png_urls.length})
+                    </button>
+                  )}
+                  <a href={g.file_url} target="_blank" rel="noreferrer" className="text-orange-500 text-xs">Download</a>
+                </span>
               </li>
             ))}
           </ul>
@@ -1890,6 +1995,40 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     }
   };
   // Auto-mark on actual download (only if not already marked).
+  // PNG export for a gang built earlier: reuse the stored URLs when they exist,
+  // otherwise rasterise the PDF that is already on B2, upload one PNG per page
+  // and save the URLs back onto the record.
+  const [pngBusyId, setPngBusyId] = useState(null);
+  const [pngProgress, setPngProgress] = useState(null);
+  const handleExportPng = async (g, { force = false } = {}) => {
+    if (g.png_urls?.length && !force) { openGangPngs(g); return; }   // đã có → dùng lại
+    if (!window.electronAPI?.s3Upload) {
+      notify('Xuất PNG cần bản desktop (Electron).', { title: 'Xuất PNG', kind: 'error' });
+      return;
+    }
+    setPngBusyId(g.id);
+    setPngProgress({ done: 0, total: 0 });
+    try {
+      const credsRes = await api.get('/gangsheets/storage-credentials');
+      const creds = credsRes.data;
+      const blobs = await rasterizeGangPdf(g.file_url, {
+        onProgress: (p) => setPngProgress(p),
+      });
+      const urls = await uploadGangPngs(blobs, {
+        creds, pdfFilename: g.filename,
+        onProgress: (p) => setPngProgress({ done: p.pngDone, total: p.pngTotal }),
+      });
+      const res = await api.put(`/gangsheets/${g.id}/png-urls`, { png_urls: urls, force });
+      patchGang(g.id, { png_urls: res.data.gangsheet?.png_urls || urls });
+      notify(`Đã ${force ? 'xuất lại' : 'xuất'} ${urls.length} file PNG`, { title: 'Xuất PNG', kind: 'success' });
+    } catch (err) {
+      notify(err?.response?.data?.message || err?.message || 'Xuất PNG thất bại', { title: 'Xuất PNG', kind: 'error' });
+    } finally {
+      setPngBusyId(null);
+      setPngProgress(null);
+    }
+  };
+
   const markDownloaded = async (g) => {
     if (g.downloaded_at) return;
     patchGang(g.id, { downloaded_at: new Date().toISOString() });
@@ -2147,6 +2286,28 @@ function ManageTab({ isAdmin, source = 'normal' }) {
                     >
                       Download
                     </a>
+                    <button
+                      onClick={() => handleExportPng(g)}
+                      disabled={pngBusyId === g.id}
+                      className="text-xs text-emerald-600 hover:text-emerald-700 disabled:opacity-40"
+                      title={g.png_urls?.length
+                        ? `Mở ${g.png_urls.length} file PNG đã xuất`
+                        : 'Tách gang PDF này thành từng file PNG và lưu lên B2'}
+                    >
+                      {pngBusyId === g.id
+                        ? `PNG ${pngProgress?.done ?? 0}/${pngProgress?.total ?? '?'}…`
+                        : (g.png_urls?.length ? `Open PNG (${g.png_urls.length})` : 'Xuất PNG')}
+                    </button>
+                    {g.png_urls?.length > 0 && (
+                      <button
+                        onClick={() => handleExportPng(g, { force: true })}
+                        disabled={pngBusyId === g.id}
+                        className="text-xs text-emerald-600/70 hover:text-emerald-700 disabled:opacity-40"
+                        title="Dựng lại PNG từ file PDF hiện tại và ghi đè các file cũ (cùng tên)"
+                      >
+                        Xuất lại
+                      </button>
+                    )}
                     {isAdmin && (
                       <button
                         onClick={() => handleReconvertGang(g)}

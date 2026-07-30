@@ -174,6 +174,48 @@ export function flattenQrMetas(orders, { includeProduced = false } = {}) {
   return records;
 }
 
+// Lazy-loaded pdfjs (same pattern as converter.jsx) — only pulled in when a
+// gang built earlier has to be rasterised back into PNG pages.
+let _pdfjsPromise = null;
+function getPdfjs() {
+  if (!_pdfjsPromise) {
+    _pdfjsPromise = (async () => {
+      const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
+      const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs')).default;
+      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+      return pdfjs;
+    })();
+  }
+  return _pdfjsPromise;
+}
+
+/**
+ * Rasterise a gang PDF that already exists on B2 into one PNG blob per page —
+ * used by the Manage tab to add PNG exports to gangs built before the feature.
+ * The pages were embedded 1:1 from 300dpi PNGs, so rendering at 300/72 gives
+ * back the exact original pixel size.
+ */
+export async function rasterizeGangPdf(url, { onProgress } = {}) {
+  const pdfjs = await getPdfjs();
+  const data = await fetchImageBytes(url);
+  const doc = await pdfjs.getDocument({ data }).promise;
+  const blobs = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const viewport = page.getViewport({ scale: DPI / PT_PER_IN });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    blobs.push(await canvasToBlob(canvas, 'image/png'));
+    onProgress?.({ done: i, total: doc.numPages });
+  }
+  return blobs;
+}
+
 async function fetchImageBytes(url) {
   if (window.electronAPI?.fetchImage) {
     const { base64 } = await window.electronAPI.fetchImage(url);
@@ -267,7 +309,7 @@ function canvasToBlob(canvas, type = 'image/png') {
  *   { blob, filename, linePrefix, firstSid, lastSid, ordersInChunk, metasUsed,
  *     orderIds, metaIds }
  */
-export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0, pageFormat = 'letter' } = {}) {
+export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0, pageFormat = 'letter', collectPages = false } = {}) {
   if (!orders.length) throw new Error('Empty chunk');
 
   const records = flattenQrMetas(orders, { includeProduced });
@@ -284,6 +326,11 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
   const pdf = await PDFDocument.create();
   const total = records.length;
   let done = 0;
+
+  // Every page as its own PNG blob, in page order — only kept when the caller
+  // asks for it (PNG export), since a big gang would otherwise hold every page
+  // in memory for nothing.
+  const pageBlobs = [];
 
   // For filename — system_ids of first/last orders that actually contributed.
   const orderIdsUsed = [];
@@ -316,6 +363,7 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
       cx.drawImage(img, 0, 0, w, h);
 
       const blob = await canvasToBlob(c, 'image/png');
+      if (collectPages) pageBlobs.push(blob);
       const pngBytes = new Uint8Array(await blob.arrayBuffer());
       const pageImg = await pdf.embedPng(pngBytes);
       const pw = (w / DPI) * PT_PER_IN;
@@ -337,6 +385,7 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
 
       // 3. Snapshot the canvas as a single PNG, embed into PDF as a full page.
       const blob = await canvasToBlob(sheetCanvas, 'image/png');
+      if (collectPages) pageBlobs.push(blob);
       const pngBytes = new Uint8Array(await blob.arrayBuffer());
       const pageImg = await pdf.embedPng(pngBytes);
       const page = pdf.addPage([L.PAGE_W_PT, L.PAGE_H_PT]);
@@ -373,6 +422,7 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
 
   return {
     blob,
+    pageBlobs,
     filename,
     linePrefix,
     firstSid,
@@ -436,6 +486,7 @@ export async function buildTiledGangsheet(orders, {
   cardWpx = CARD_W, cardHpx = CARD_H, bandPx = 200,
   bandReservePx = BAND_RESERVE,
   gapYLeft = GAP_Y_LEFT, gapXCols = GAP_X_COLS, gapYRight = GAP_Y_RIGHT,
+  collectPages = false,
 } = {}) {
   if (!orders.length) throw new Error('Empty chunk');
   const records = flattenQrMetas(orders, { includeProduced });
@@ -469,6 +520,8 @@ export async function buildTiledGangsheet(orders, {
   const orderIdsUsed = [];
   const metaIdsUsed = [];
   const seenOrders = new Set();
+  // Per-page PNGs, kept only for the PNG export (see buildGangsheetForChunk).
+  const pageBlobs = [];
 
   const canvas = document.createElement('canvas');
   canvas.width = PAGE_W;
@@ -480,8 +533,23 @@ export async function buildTiledGangsheet(orders, {
   const pageWpt = (PAGE_W / DPI) * PT_PER_IN;
   const pageHpt = (PAGE_H / DPI) * PT_PER_IN;
 
+  // The working canvas stays TRANSPARENT: card skins print on clear film, and
+  // the composed _qr sources carry their own alpha (composeCardSkinOutside lays
+  // down no white backing). The exported PNG keeps that alpha; the PDF page
+  // gets a white backing composited underneath, so it still reads correctly on
+  // screen and on paper.
   const flushPage = async () => {
-    const blob = await canvasToBlob(canvas, 'image/png');
+    if (collectPages) pageBlobs.push(await canvasToBlob(canvas, 'image/png'));
+
+    const flat = document.createElement('canvas');
+    flat.width = PAGE_W;
+    flat.height = PAGE_H;
+    const fctx = flat.getContext('2d');
+    fctx.fillStyle = '#ffffff';
+    fctx.fillRect(0, 0, PAGE_W, PAGE_H);
+    fctx.drawImage(canvas, 0, 0);
+
+    const blob = await canvasToBlob(flat, 'image/png');
     const pngBytes = new Uint8Array(await blob.arrayBuffer());
     const pageImg = await pdf.embedPng(pngBytes);
     const page = pdf.addPage([pageWpt, pageHpt]);
@@ -489,7 +557,7 @@ export async function buildTiledGangsheet(orders, {
   };
 
   let slot = 0;
-  const resetCanvas = () => { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, PAGE_W, PAGE_H); };
+  const resetCanvas = () => { ctx.clearRect(0, 0, PAGE_W, PAGE_H); };
   resetCanvas();
 
   /**
@@ -581,7 +649,7 @@ export async function buildTiledGangsheet(orders, {
   const pdfBytes = await pdf.save();
   const blob = new Blob([pdfBytes], { type: 'application/pdf' });
   return {
-    blob, filename, linePrefix,
+    blob, pageBlobs, filename, linePrefix,
     firstSid, lastSid,
     ordersInChunk: orderedOrders.length,
     metasUsed: metaIdsUsed.length,
