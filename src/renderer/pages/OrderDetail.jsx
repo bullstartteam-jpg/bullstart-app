@@ -242,6 +242,9 @@ export default function OrderDetail() {
   if (!order) return <div className="p-6 text-red-500">Order not found</div>;
 
   const addr = order.address;
+  // SKU label is an FPT-only field — only widen the items table when the order
+  // actually carries one, so normal orders look exactly as before.
+  const hasSkuLabel = order.source === 'fpt' || (order.items || []).some(it => it.sku_label);
 
   return (
     <div className="p-6">
@@ -476,6 +479,7 @@ export default function OrderDetail() {
               <th className="pb-2 text-left">Add on</th>
               <th className="pb-2 text-left">Mockup Front</th>
               <th className="pb-2 text-left">Mockup Back</th>
+              {hasSkuLabel && <th className="pb-2 text-left">SKU Label</th>}
               <th className="pb-2 text-center">Qty</th>
               <th className="pb-2 text-right">Price</th>
               <th className="pb-2 text-right">Subtotal</th>
@@ -545,6 +549,13 @@ export default function OrderDetail() {
                       failReason={urlFailures?.[item.id]?.mockup_back}
                     />
                   </td>
+                  {hasSkuLabel && (
+                    <td className="py-2">
+                      {item.sku_label
+                        ? <UrlPreview url={item.sku_label} onOpen={setPreviewUrl} label="Preview SKU label" />
+                        : <span className="text-neutral-300 text-xs">-</span>}
+                    </td>
+                  )}
                   <td className="py-2 text-center text-neutral-700">{qty}</td>
                   <td className="py-2 text-right text-neutral-800 font-medium">${item.price}</td>
                   <td className="py-2 text-right text-neutral-800 font-medium">${subtotal.toFixed(2)}</td>

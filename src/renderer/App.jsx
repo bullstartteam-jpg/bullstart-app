@@ -45,6 +45,10 @@ export default function App() {
           <Route path="orders" element={<Orders />} />
           <Route path="orders/create" element={<OrderCreate />} />
           <Route path="orders/:id" element={<OrderDetail />} />
+          {/* FPT channel — same screens, scoped to orders.source = 'fpt'. */}
+          <Route path="orders-fpt" element={<Orders source="fpt" />} />
+          <Route path="orders-fpt/create" element={<OrderCreate source="fpt" />} />
+          <Route path="orders-fpt/:id" element={<OrderDetail />} />
           <Route path="products" element={<Products />} />
           <Route path="products/:id" element={<ProductDetail />} />
           <Route path="inventory" element={<Inventory />} />
@@ -60,6 +64,7 @@ export default function App() {
           <Route path="image-url-check" element={<ImageUrlCheck />} />
           <Route path="reasons" element={<Reasons />} />
           <Route path="gangsheet" element={<Gangsheet />} />
+          <Route path="gangsheet-fpt" element={<Gangsheet source="fpt" />} />
           <Route path="gangsheet-label" element={<GangsheetLabel />} />
           <Route path="profile" element={<Profile />} />
         </Route>

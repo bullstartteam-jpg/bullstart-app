@@ -8,6 +8,7 @@ const navItems = [
   { path: '/', label: 'Dashboard', icon: '◉', module: 'dashboard' },
   { path: '/reports', label: 'Reports', icon: '▥', module: 'dashboard' },
   { path: '/orders', label: 'Orders', icon: '◈', module: 'orders' },
+  { path: '/orders-fpt', label: 'Order FPT', icon: '◈', module: 'orders' },
   { path: '/not-delivered', label: 'Chưa delivered', icon: '📦', module: 'orders' },
   { path: '/image-url-check', label: 'Image URL Check', icon: '🖼', requiresStaff: true },
   { path: '/products', label: 'Products', icon: '◇', module: 'products' },
@@ -22,6 +23,7 @@ const navItems = [
   { path: '/reprint', label: 'Reprint', icon: '🔁', requiresStaff: true },
   { path: '/reasons', label: 'Reasons', icon: '🏷', requiresStaff: true },
   { path: '/gangsheet', label: 'Gangsheet', icon: '▦', requiresStaff: true },
+  { path: '/gangsheet-fpt', label: 'Gangsheet FPT', icon: '▦', requiresStaff: true },
   { path: '/gangsheet-label', label: 'Gangsheet Label', icon: '📦', requiresStaff: true },
 ];
 

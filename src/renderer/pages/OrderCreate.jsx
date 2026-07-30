@@ -15,7 +15,10 @@ const META_KEYS = ['front', 'back', 'left', 'right', 'neck', 'special'];
 const VISIBLE_META_KEYS = ['front', 'back'];
 const META_LABELS = { front: 'Outside', back: 'Inside' };
 
-export default function OrderCreate() {
+// `source` = 'normal' (Orders) or 'fpt' (Order FPT). FPT orders carry an
+// uploaded SKU-label URL per item; everything else is identical.
+export default function OrderCreate({ source = 'normal' }) {
+  const isFpt = source === 'fpt';
   const navigate = useNavigate();
   const { user } = useAuth();
   const userTierId = user?.tier_id ?? null;
@@ -32,7 +35,7 @@ export default function OrderCreate() {
     // Multi-accessory: list of { accessory_id, accessory_item_id } rows. Each
     // row picks an accessory group + a tier-scoped style/price for it.
     accessories: [],
-    mockup_front: '', mockup_back: '', quantity: '1', order_type: 0,
+    mockup_front: '', mockup_back: '', sku_label: '', quantity: '1', order_type: 0,
     metas: [{ key: 'front', value: '' }],
   });
 
@@ -186,6 +189,7 @@ export default function OrderCreate() {
           accessory_ids: accessoryIds,
           mockup_front: it.mockup_front,
           mockup_back: it.mockup_back,
+          sku_label: it.sku_label || null,
           order_type: it.order_type,
           quantity: Math.max(1, parseInt(it.quantity, 10) || 1),
           metas: (it.metas || []).filter(m => m.key && m.key.trim() !== '').map(m => ({ key: m.key, value: m.value })),
@@ -193,6 +197,7 @@ export default function OrderCreate() {
       }),
       force,
       rename,
+      source,
     };
     if (form.method === 'stamp') {
       payload.ship_by_stamp = true;
@@ -502,6 +507,21 @@ export default function OrderCreate() {
                       <input type="text" value={item.mockup_back} onChange={e => updateItem(i, { mockup_back: e.target.value })} placeholder="URL or click Upload" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
                       <UrlPreview url={item.mockup_back} onOpen={setPreviewUrl} label="Preview mockup back" />
                     </div>
+                    {isFpt && (
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs text-neutral-500">SKU Label</label>
+                          <UploadButton
+                            folder="sku-labels"
+                            accept="image/*,application/pdf"
+                            onUrl={(url) => updateItem(i, { sku_label: url })}
+                            title="Upload SKU label to B2"
+                          />
+                        </div>
+                        <input type="text" value={item.sku_label} onChange={e => updateItem(i, { sku_label: e.target.value })} placeholder="URL or click Upload" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                        <UrlPreview url={item.sku_label} onOpen={setPreviewUrl} label="Preview SKU label" />
+                      </div>
+                    )}
                     <button type="button" onClick={() => removeItem(i)} className="px-3 py-2 text-red-500 hover:text-red-600 text-sm">Remove</button>
                   </div>
 

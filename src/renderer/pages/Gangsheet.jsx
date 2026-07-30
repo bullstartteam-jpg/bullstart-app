@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { buildGangsheetForChunk, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey, splitOrdersBySideCount, getGangPageFormat, setGangPageFormat, setGangMarks } from '../services/gangsheetBuilder';
+import { buildGangsheetForChunk, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks } from '../services/gangsheetBuilder';
 import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGroup, deleteOpenGroups } from '../services/groupGang';
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
@@ -16,8 +16,12 @@ const STATUS_OPTIONS = [
   [3, 'fixed'], [4, 'reprint'], [5, 'onhold'], [7, 'cancelled'],
 ];
 
-export default function Gangsheet() {
+// `source` picks the order channel: 'normal' (Gangsheet menu) or 'fpt'
+// (Gangsheet FPT menu). FPT gangs are composed from FPT orders only and are
+// listed on their own screen — the two never mix.
+export default function Gangsheet({ source = 'normal' }) {
   const { hasRole } = useAuth();
+  const isFpt = source === 'fpt';
   const [tab, setTab] = useState('compose');
 
   // Sync registration-mark sizes from the hub (shared) into the local cache the
@@ -41,8 +45,11 @@ export default function Gangsheet() {
     <div className="p-6 space-y-4">
       <div className="flex justify-between items-start">
         <div>
-          <h2 className="text-xl font-bold text-neutral-800">Gangsheet</h2>
-          <p className="text-xs text-neutral-500 mt-1">Compose order item _qr designs into 8.5×11" PDF gang sheets, save to Backblaze.</p>
+          <h2 className="text-xl font-bold text-neutral-800">{isFpt ? 'Gangsheet FPT' : 'Gangsheet'}</h2>
+          <p className="text-xs text-neutral-500 mt-1">
+            Compose order item _qr designs into 8.5×11" PDF gang sheets, save to Backblaze.
+            {isFpt && ' Chỉ gồm đơn FPT.'}
+          </p>
         </div>
       </div>
 
@@ -54,11 +61,11 @@ export default function Gangsheet() {
         <TabBtn active={tab === 'manage'} onClick={() => setTab('manage')}>Manage</TabBtn>
       </div>
 
-      {tab === 'compose' && <ComposeTab />}
+      {tab === 'compose' && <ComposeTab source={source} />}
       {tab === 'groups' && <GroupsTab />}
-      {tab === 'find' && <FindTab />}
+      {tab === 'find' && <FindTab source={source} />}
       {tab === 'reconvert' && <ReconvertTab />}
-      {tab === 'manage' && <ManageTab isAdmin={hasRole('admin')} />}
+      {tab === 'manage' && <ManageTab isAdmin={hasRole('admin')} source={source} />}
     </div>
   );
 }
@@ -133,11 +140,14 @@ function orderAccessoryIds(order) {
   return ids;
 }
 
-function orderSideCount(order) {
+// `includeProduced` matters for re-ganging: an order that was already printed
+// has every meta flagged production=true, so without the flag it would look
+// like it has no sides at all and fall into the 1-mặt bucket.
+function orderSideCount(order, includeProduced = false) {
   let hasFront = false, hasBack = false;
   for (const it of order.items || []) {
     for (const m of it.metas || []) {
-      if (m.production) continue;
+      if (m.production && !includeProduced) continue;
       if (m.key === 'front_qr' || /^front_qr(_\d+)?$/.test(m.key)) hasFront = true;
       if (m.key === 'back_qr'  || /^back_qr(_\d+)?$/.test(m.key))  hasBack  = true;
       if (hasFront && hasBack) return 'two';
@@ -345,8 +355,8 @@ function orderMatchesProductFilters(order, pf) {
 // `groupBy` is a Set of dimension ids. Only selected dimensions enter the key,
 // so orders that differ only on an unselected dimension share a sheet.
 // Returns { key, label, tag, side, prod, acc, mat }.
-function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY)) {
-  const side = orderSideCount(order) === 'two' ? 'two' : 'one';
+function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY), includeProduced = false) {
+  const side = orderSideCount(order, includeProduced) === 'two' ? 'two' : 'one';
   const keyParts = [side];
   const labelParts = [side === 'two' ? '2 mặt' : '1 mặt'];
   const tagParts = [];
@@ -380,6 +390,96 @@ function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY)) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Shared gang routing — used by BOTH Compose and Find / Re-gang so a re-gang
+// lands on exactly the same sheets the first run would have produced.
+//
+// Each order goes down exactly one branch, checked in this order:
+//   card skin (convert layout 'outside') → tiled Letter sheet, grouped by
+//                                          order_type × chip, 3 orders/chunk
+//   keep-native variant size (5x5)       → native-size gang, grouped by size
+//   everything else                      → the bucket flow (side + the chosen
+//                                          product/addon/material dimensions)
+// Returns [{ chunk, suffix, tiled, native }] in native → normal → card order.
+// ---------------------------------------------------------------------------
+function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includeProduced = false } = {}) {
+  const cardOrders = [];
+  const nativeOrders = [];
+  const normalOrders = [];
+  for (const o of orders) {
+    if (orderConvertLayout(o, layoutMap) === 'outside') cardOrders.push(o);
+    else if (orderIsNative(o)) nativeOrders.push(o);
+    else normalOrders.push(o);
+  }
+
+  const chunks = [];
+
+  // Native (e.g. 5x5): merged gang keeping each design's own size, no gap/mark.
+  // Grouped by normalized variant size so different native sizes stay separate.
+  const nativeGroups = new Map();   // size → orders[]
+  for (const o of nativeOrders) {
+    let sz = '';
+    for (const it of o.items || []) {
+      const s = normSize(it.product_variant?.size);
+      if (s && NATIVE_SIZES.has(s)) { sz = s; break; }
+    }
+    if (!nativeGroups.has(sz)) nativeGroups.set(sz, []);
+    nativeGroups.get(sz).push(o);
+  }
+  for (const [sz, ords] of nativeGroups) {
+    for (const chunk of chunkArray(ords, batchSize)) {
+      chunks.push({ chunk, suffix: sz || 'native', tiled: false, native: true });
+    }
+  }
+
+  // Normal: group by the chosen dimensions (+ side), chunk by batchSize.
+  const bucketGroups = new Map();   // key → { tag, orders[] }
+  for (const o of normalOrders) {
+    const b = orderBucketInfo(o, groupBy, includeProduced);
+    if (!bucketGroups.has(b.key)) bucketGroups.set(b.key, { tag: b.tag, orders: [] });
+    bucketGroups.get(b.key).orders.push(o);
+  }
+  for (const [, g] of bucketGroups) {
+    for (const chunk of chunkArray(g.orders, batchSize)) {
+      chunks.push({ chunk, suffix: g.tag, tiled: false });
+    }
+  }
+
+  // Card skin: gom theo order_type × chip. Mỗi trang Letter = 3 mẫu, mỗi mẫu in
+  // 2 bản (bản gốc có khối QR, bản copy dưới nó là design trần): trái 2 mẫu
+  // nằm ngang = 4 thẻ, phải 1 mẫu xoay dọc = 2 thẻ → chunk 3 order / trang.
+  // Đơn lẫn cả hai loại chip đi theo chip của item đầu tiên (xem orderChipTag).
+  const cardGroups = new Map();
+  for (const o of cardOrders) {
+    const ot = orderOrderType(o) || 'skincard';
+    const chip = orderChipTag(o);
+    const key = `${ot}||${chip}`;
+    if (!cardGroups.has(key)) cardGroups.set(key, { ot, chip, orders: [] });
+    cardGroups.get(key).orders.push(o);
+  }
+  for (const [, g] of cardGroups) {
+    const tag = `${slugifyAccessory(g.ot) || 'skincard'}_${g.chip}`;
+    for (const chunk of chunkArray(g.orders, 3)) {
+      chunks.push({ chunk, suffix: tag, tiled: true });
+    }
+  }
+
+  return chunks;
+}
+
+/** page_format recorded on the hub for a routed chunk. */
+function chunkPageFormat({ tiled, native }) {
+  return tiled ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
+}
+
+/** Build one routed chunk into a PDF with the builder its branch calls for. */
+function buildChunkPdf({ chunk, suffix, tiled, native }, { linePrefix, seq, includeProduced = false, onProgress } = {}) {
+  const opts = { linePrefix, nameSuffix: suffix, seq, includeProduced, onProgress };
+  return tiled
+    ? buildTiledGangsheet(chunk, opts)
+    : buildGangsheetForChunk(chunk, { ...opts, pageFormat: chunkPageFormat({ tiled, native }) });
+}
+
 // Gang PDF page-format selector (shared, persisted per machine in localStorage).
 //   Gốc 10×7 = design native size (page = design); Letter 11×8.5 / A4 = sheet
 //   with the design centered + registration marks.
@@ -407,7 +507,7 @@ function loadDefaultBatch() {
   return v > 0 ? v : 10;
 }
 
-function ComposeTab() {
+function ComposeTab({ source = 'normal' }) {
   const [pending, setPending] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [batchSize, setBatchSize] = useState(loadDefaultBatch);
@@ -512,6 +612,7 @@ function ComposeTab() {
       const statusArr = [...statuses];
       do {
         const params = { per_page: 200, page };
+        if (source !== 'normal') params.source = source;
         if (statusArr.length) params.statuses = statusArr;
         const res = await api.get('/gangsheets/pending-orders', { params });
         all.push(...(res.data.data || []));
@@ -591,71 +692,11 @@ function ComposeTab() {
     const selected = pending.filter(o => selectedIds.has(o.id));
     if (selected.length === 0) { alert('Select at least 1 order'); return; }
 
-    // Group selected orders by their FULL bucket (side × accessory × material)
-    // so every gang is homogeneous — never mixes side, accessory or paper. Each
-    // bucket is single-side already, so just chunk it. Filename gets the
-    // accessory + material + two_size tags of that bucket.
-    // Split card-skin orders (convert layout 'outside') from the rest. Card
-    // skins are ganged tiled 6-up on Letter (kept together); the rest use the
-    // normal bucket flow (one design per page).
-    // Route each selected order: card skin ('outside') → tiled Letter; keep-native
-    // variant size (e.g. 5x5) → native-size merged gang; everything else → the
-    // normal 10×7/letter bucket flow.
-    const cardOrders = [];
-    const nativeOrders = [];
-    const normalOrders = [];
-    for (const o of selected) {
-      if (orderConvertLayout(o, layoutMap) === 'outside') cardOrders.push(o);
-      else if (orderIsNative(o)) nativeOrders.push(o);
-      else normalOrders.push(o);
-    }
+    // Route + chunk with the shared flow (same one Find / Re-gang uses), so a
+    // gang always lands on the sheet its branch calls for: card skin → tiled
+    // Letter grouped by chip, keep-native 5x5 → native size, rest → buckets.
+    const chunks = routeOrdersToChunks(selected, { layoutMap, groupBy, batchSize });
 
-    const chunks = [];
-
-    // Native (e.g. 5x5): merged gang keeping each design's own size, no gap/mark.
-    // Grouped by normalized variant size so different native sizes stay separate.
-    const nativeGroups = new Map();   // size → orders[]
-    for (const o of nativeOrders) {
-      let sz = '';
-      for (const it of o.items || []) {
-        const s = normSize(it.product_variant?.size);
-        if (s && NATIVE_SIZES.has(s)) { sz = s; break; }
-      }
-      if (!nativeGroups.has(sz)) nativeGroups.set(sz, []);
-      nativeGroups.get(sz).push(o);
-    }
-    for (const [sz, ords] of nativeGroups) {
-      for (const chunk of chunkArray(ords, batchSize)) chunks.push({ chunk, suffix: sz || 'native', tiled: false, native: true });
-    }
-
-    // Normal: group by the chosen dimensions (+ side), chunk by batchSize.
-    const bucketGroups = new Map();   // key → { tag, orders[] }
-    for (const o of normalOrders) {
-      const b = orderBucketInfo(o, groupBy);
-      if (!bucketGroups.has(b.key)) bucketGroups.set(b.key, { tag: b.tag, orders: [] });
-      bucketGroups.get(b.key).orders.push(o);
-    }
-    for (const [, g] of bucketGroups) {
-      for (const chunk of chunkArray(g.orders, batchSize)) chunks.push({ chunk, suffix: g.tag, tiled: false });
-    }
-
-    // Card skin: gom theo order_type × chip. Mỗi trang Letter = 3 mẫu, mỗi mẫu
-    // in 2 bản (bản gốc có khối QR, bản copy dưới nó là design trần): trái 2 mẫu
-    // nằm ngang = 4 thẻ, phải 1 mẫu xoay dọc = 2 thẻ → chunk 3 order / trang.
-    // Gom theo order_type × loại chip: big chip một gang, small chip một gang.
-    // Đơn lẫn cả hai đi theo chip của item đầu tiên (xem orderChipTag).
-    const cardGroups = new Map();
-    for (const o of cardOrders) {
-      const ot = orderOrderType(o) || 'skincard';
-      const chip = orderChipTag(o);
-      const key = `${ot}||${chip}`;
-      if (!cardGroups.has(key)) cardGroups.set(key, { ot, chip, orders: [] });
-      cardGroups.get(key).orders.push(o);
-    }
-    for (const [, g] of cardGroups) {
-      const tag = `${slugifyAccessory(g.ot) || 'skincard'}_${g.chip}`;
-      for (const chunk of chunkArray(g.orders, 3)) chunks.push({ chunk, suffix: tag, tiled: true });
-    }
     setRunning(true); setResults([]);
     const out = [];
     try {
@@ -667,22 +708,16 @@ function ComposeTab() {
       }
 
       for (let ci = 0; ci < chunks.length; ci++) {
-        const { chunk, suffix, tiled, native } = chunks[ci];
+        const { chunk } = chunks[ci];
         const linePrefix = dominantLineId(chunk);
         const totalInChunk = flattenQrMetas(chunk).length;
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
 
-        const pageFormat = tiled ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
-        const built = tiled
-          ? await buildTiledGangsheet(chunk, {
-              linePrefix, nameSuffix: suffix, seq: ci + 1,
-              onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
-            })
-          : await buildGangsheetForChunk(chunk, {
-              linePrefix, nameSuffix: suffix, seq: ci + 1,
-              pageFormat,
-              onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
-            });
+        const pageFormat = chunkPageFormat(chunks[ci]);
+        const built = await buildChunkPdf(chunks[ci], {
+          linePrefix, seq: ci + 1,
+          onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
+        });
 
         // 1) Upload PDF directly to B2 from the desktop app — hub is not involved.
         const key = `${creds.folder}/${built.filename}`;
@@ -702,6 +737,7 @@ function ComposeTab() {
           filename: built.filename,
           file_url: publicUrl,
           line_id: linePrefix || '',
+          source,
           page_format: pageFormat,
           first_system_id: built.firstSid,
           last_system_id: built.lastSid,
@@ -1534,16 +1570,33 @@ function ReconvertTab() {
   );
 }
 
-function FindTab() {
+function FindTab({ source = 'normal' }) {
   const [input, setInput] = useState('');
   const [searching, setSearching] = useState(false);
   const [orders, setOrders] = useState([]);
   const [missing, setMissing] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [batchSize, setBatchSize] = useState(10);
+  const [batchSize, setBatchSize] = useState(loadDefaultBatch);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
   const [results, setResults] = useState([]);
+  // Same routing inputs as Compose: the order_type → convert layout map and
+  // the classification dimensions (shared per-machine setting), so a re-gang
+  // lands on the same sheets the first run would have produced.
+  const [layoutMap, setLayoutMap] = useState({});
+  const [groupBy, setGroupBy] = useState(loadGroupBy);
+  const toggleGroupBy = (dim) => setGroupBy(prev => {
+    const next = new Set(prev);
+    next.has(dim) ? next.delete(dim) : next.add(dim);
+    saveGroupBy(next);
+    return next;
+  });
+
+  useEffect(() => {
+    api.get('/settings/convert-layouts')
+      .then(res => setLayoutMap(res.data?.map || {}))
+      .catch(() => {});
+  }, []);
 
   const parseIds = (raw) => Array.from(new Set(
     raw.split(/[\s,;\n\r\t]+/).map(s => s.trim()).filter(Boolean)
@@ -1594,22 +1647,13 @@ function FindTab() {
   const handleGenerate = async () => {
     const selected = orders.filter(o => selectedIds.has(o.id));
     if (selected.length === 0) { alert('Select at least 1 order'); return; }
-    // Split by material first (so a re-gang never mixes paper stock), then by
-    // side. includeProduced=true here, so two-sidedness considers all metas.
-    const matGroups = new Map();   // matId → { name, orders[] }
-    for (const o of selected) {
-      const m = orderMaterial(o);
-      if (!matGroups.has(m.id)) matGroups.set(m.id, { name: m.name, orders: [] });
-      matGroups.get(m.id).orders.push(o);
-    }
-    const joinTags = (...xs) => xs.filter(Boolean).join('_');
-    const chunks = [];
-    for (const [matId, { name, orders: matOrders }] of matGroups) {
-      const matTag = matId ? slugifyAccessory(name) : '';
-      const { oneSide, twoSide } = splitOrdersBySideCount(matOrders, { includeProduced: true });
-      for (const chunk of chunkArray(oneSide, batchSize)) chunks.push({ chunk, suffix: joinTags(matTag, '') });
-      for (const chunk of chunkArray(twoSide, batchSize)) chunks.push({ chunk, suffix: joinTags(matTag, 'two_size') });
-    }
+    // Same routing as Compose — card skin → tiled Letter grouped by chip,
+    // keep-native 5x5 → native size, rest → buckets. includeProduced=true so
+    // already-printed metas are re-ganged (that is the point of this tab) and
+    // 1/2-mặt is judged on ALL metas, not just the unprinted ones.
+    const chunks = routeOrdersToChunks(selected, {
+      layoutMap, groupBy, batchSize, includeProduced: true,
+    });
     setRunning(true); setResults([]);
     const out = [];
     try {
@@ -1620,17 +1664,13 @@ function FindTab() {
       }
 
       for (let ci = 0; ci < chunks.length; ci++) {
-        const { chunk, suffix } = chunks[ci];
+        const { chunk } = chunks[ci];
         const linePrefix = dominantLineId(chunk);
         const totalInChunk = flattenQrMetas(chunk, { includeProduced: true }).length;
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
 
-        const built = await buildGangsheetForChunk(chunk, {
-          linePrefix,
-          includeProduced: true,
-          nameSuffix: suffix,
-          seq: ci + 1,
-          pageFormat: getGangPageFormat(),
+        const built = await buildChunkPdf(chunks[ci], {
+          linePrefix, seq: ci + 1, includeProduced: true,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 
@@ -1650,7 +1690,8 @@ function FindTab() {
           filename: built.filename,
           file_url: publicUrl,
           line_id: linePrefix || '',
-          page_format: getGangPageFormat(),
+          source,
+          page_format: chunkPageFormat(chunks[ci]),
           first_system_id: built.firstSid,
           last_system_id: built.lastSid,
           orders_count: built.ordersInChunk,
@@ -1716,11 +1757,22 @@ function FindTab() {
                   onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
                   className="mt-1 w-24 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
               </div>
+              <PageFormatSelect />
               <button onClick={handleGenerate} disabled={running || selectedIds.size === 0}
                 className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
                 {running ? 'Generating…' : `Re-gang (${selectedIds.size})`}
               </button>
             </div>
+          </div>
+
+          {/* Cùng bộ phân loại với Compose (lưu chung per-machine). Card skin,
+              native 5x5 và chip vẫn tự tách bất kể chọn gì ở đây. */}
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-xs text-neutral-500 mr-1">Phân loại theo:</span>
+            {GANG_DIMS.map(d => (
+              <SubChip key={d.id} active={groupBy.has(d.id)} onClick={() => toggleGroupBy(d.id)}>{d.label}</SubChip>
+            ))}
+            <span className="text-[11px] text-neutral-400 ml-1">· 1/2 mặt luôn tách · gồm cả meta đã in</span>
           </div>
 
           <table className="w-full text-sm">
@@ -1806,7 +1858,7 @@ function gangCategory(filename) {
 }
 const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Khác';
 
-function ManageTab({ isAdmin }) {
+function ManageTab({ isAdmin, source = 'normal' }) {
   const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
@@ -1853,6 +1905,7 @@ function ManageTab({ isAdmin }) {
     setLoading(true);
     try {
       const params = { page: filters.page, per_page: 20 };
+      if (source !== 'normal') params.source = source;
       if (filters.date_from) params.date_from = filters.date_from;
       if (filters.date_to) params.date_to = filters.date_to;
       if (filters.line_id) params.line_id = filters.line_id;

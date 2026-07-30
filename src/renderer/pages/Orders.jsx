@@ -101,8 +101,11 @@ const ORDERS_FILTER_DEFAULTS = {
   page: 1, per_page: 20,
 };
 
-function buildOrderFilterParams(filters, { includePagination = false, orderIds } = {}) {
+function buildOrderFilterParams(filters, { includePagination = false, orderIds, source } = {}) {
   const params = {};
+  // Order channel. Omitted for the normal screen so its requests stay exactly
+  // as they were; the API defaults to 'normal' anyway.
+  if (source && source !== 'normal') params.source = source;
   if (includePagination) {
     params.page = filters.page;
     params.per_page = filters.per_page || 20;
@@ -151,7 +154,14 @@ const STATUS_COLORS = {
   7: 'bg-rose-100 text-rose-600',
 };
 
-export default function Orders() {
+// `source` picks the order channel this screen works on: 'normal' (the Orders
+// menu) or 'fpt' (the Order FPT menu). It is sent on every list/export request
+// and keeps its own saved filters, so the two screens never bleed into each
+// other. Everything else — pricing, wallet, convert, tracking — is shared.
+export default function Orders({ source = 'normal' }) {
+  const isFpt = source === 'fpt';
+  const filtersKey = isFpt ? 'orders_filters_fpt' : 'orders_filters';
+  const basePath = isFpt ? '/orders-fpt' : '/orders';
   const [orders, setOrders] = useState([]);
   const [meta, setMeta] = useState({});
   const [loading, setLoading] = useState(true);
@@ -160,7 +170,7 @@ export default function Orders() {
   // Cleared when they hit "Clear all" or close the app.
   const [filters, setFilters] = useState(() => {
     try {
-      const saved = JSON.parse(sessionStorage.getItem('orders_filters') || 'null');
+      const saved = JSON.parse(sessionStorage.getItem(filtersKey) || 'null');
       return saved && typeof saved === 'object' ? { ...ORDERS_FILTER_DEFAULTS, ...saved } : { ...ORDERS_FILTER_DEFAULTS };
     } catch { return { ...ORDERS_FILTER_DEFAULTS }; }
   });
@@ -168,7 +178,7 @@ export default function Orders() {
   const [catalogVariants, setCatalogVariants] = useState([]);
   const [catalogMaterials, setCatalogMaterials] = useState([]);
   const [catalogAccessories, setCatalogAccessories] = useState([]);
-  useEffect(() => { sessionStorage.setItem('orders_filters', JSON.stringify(filters)); }, [filters]);
+  useEffect(() => { sessionStorage.setItem(filtersKey, JSON.stringify(filters)); }, [filters, filtersKey]);
   const [showRefIdsModal, setShowRefIdsModal] = useState(false);
   const [refIdsInput, setRefIdsInput] = useState('');
   const [selected, setSelected] = useState([]);
@@ -264,7 +274,7 @@ export default function Orders() {
 
   const fetchOrders = () => {
     setLoading(true);
-    const params = buildOrderFilterParams(filters, { includePagination: true });
+    const params = buildOrderFilterParams(filters, { includePagination: true, source });
 
     api.get('/orders', { params }).then(res => {
       setOrders(res.data.data);
@@ -571,7 +581,7 @@ export default function Orders() {
       } else {
         targetOrders = [];
         let page = 1;
-        const params = buildOrderFilterParams(filters);
+        const params = buildOrderFilterParams(filters, { source });
         // Paginate through the whole filtered set — the index endpoint returns
         // items.metas (incl. _qr) for admin/support.
         // eslint-disable-next-line no-constant-condition
@@ -666,6 +676,7 @@ export default function Orders() {
   const handleExport = async () => {
     const params = buildOrderFilterParams(filters, {
       orderIds: selected.length > 0 ? selected : undefined,
+      source,
     });
     try {
       const res = await api.get('/orders/export', { params, responseType: 'blob' });
@@ -691,6 +702,7 @@ export default function Orders() {
     // filters so admin sees one consistent dataset across both exports.
     const params = buildOrderFilterParams(filters, {
       orderIds: selected.length > 0 ? selected : undefined,
+      source,
     });
 
     try {
@@ -1026,7 +1038,7 @@ export default function Orders() {
   return (
     <div className="p-6">
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-bold text-neutral-800">Orders</h2>
+        <h2 className="text-xl font-bold text-neutral-800">{isFpt ? 'Order FPT' : 'Orders'}</h2>
         <div className="flex gap-2">
           <button
             onClick={handleExport}
@@ -1127,8 +1139,8 @@ export default function Orders() {
             Pay All Unpaid
           </button>
           {hasPermission('orders', 'can_create') && (
-            <Link to="/orders/create" className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg transition-colors">
-              New Order
+            <Link to={`${basePath}/create`} className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg transition-colors">
+              {isFpt ? 'New FPT Order' : 'New Order'}
             </Link>
           )}
         </div>
@@ -1585,7 +1597,7 @@ export default function Orders() {
             ) : orders.length === 0 ? (
               <tr><td colSpan={isStaff ? 11 : 10} className="p-6 text-center text-neutral-400">No orders found</td></tr>
             ) : orders.map(order => (
-              <tr key={order.id} className="border-b border-neutral-100 hover:bg-orange-50/50 cursor-pointer transition-colors" onClick={() => navigate(`/orders/${order.id}`)}>
+              <tr key={order.id} className="border-b border-neutral-100 hover:bg-orange-50/50 cursor-pointer transition-colors" onClick={() => navigate(`${basePath}/${order.id}`)}>
                 <td className="p-3" onClick={e => e.stopPropagation()}>
                   <input type="checkbox" checked={selected.includes(order.id)} onChange={() => toggleSelect(order.id)} className="accent-orange-500" />
                 </td>
