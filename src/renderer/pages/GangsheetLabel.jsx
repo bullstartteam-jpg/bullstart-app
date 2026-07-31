@@ -10,8 +10,12 @@ import { buildMergedLabelPdf } from '../services/mergedLabelBuilder';
 // public scan page (/gs/{code}) hosted by hubbullstart so warehouse staff
 // can scan the barcode and bulk-complete from a tablet/laptop.
 
-export default function GangsheetLabel() {
+// `source` picks the channel: 'normal' (Gangsheet Label) or 'fpt' (Gangsheet
+// Label FPT). A label is created alongside its gang and inherits its channel,
+// so the two queues stay apart.
+export default function GangsheetLabel({ source = 'normal' }) {
   const { hasRole } = useAuth();
+  const isFpt = source === 'fpt';
   const [data, setData] = useState({ data: [], current_page: 1, last_page: 1 });
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({ status: '', line_id: '', date_from: '', date_to: '', page: 1, per_page: 20 });
@@ -29,6 +33,7 @@ export default function GangsheetLabel() {
     setLoading(true);
     try {
       const params = { page: filters.page, per_page: filters.per_page };
+      if (source !== 'normal') params.source = source;
       if (filters.status) params.status = filters.status;
       if (filters.line_id) params.line_id = filters.line_id;
       if (filters.date_from) params.date_from = filters.date_from;
@@ -37,7 +42,7 @@ export default function GangsheetLabel() {
       setData(res.data);
     } finally { setLoading(false); }
   };
-  useEffect(() => { fetch(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filters.page]);
+  useEffect(() => { fetch(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filters.page, source]);
 
   const openDetail = async (label) => {
     setOpenId(label.id);
@@ -193,7 +198,7 @@ export default function GangsheetLabel() {
     setMergeProgress(null);
     setMergeResult(null);
     try {
-      const res = await api.post('/gangsheet-labels/merge-by-system-ids', { system_ids: ids });
+      const res = await api.post('/gangsheet-labels/merge-by-system-ids', { system_ids: ids, source });
       const { merged_label: merged, scan_code: scanCode, order_ids: orderIds, missing } = res.data;
       await finishMerge(merged, scanCode, orderIds);
       setSidText('');
@@ -214,7 +219,7 @@ export default function GangsheetLabel() {
   if (!hasRole('admin') && !hasRole('support')) {
     return (
       <div className="p-6">
-        <h2 className="text-xl font-bold text-neutral-800 mb-2">Gangsheet Label</h2>
+        <h2 className="text-xl font-bold text-neutral-800 mb-2">{isFpt ? 'Gangsheet Label FPT' : 'Gangsheet Label'}</h2>
         <p className="text-sm text-neutral-500">Admin or Support access required.</p>
       </div>
     );
@@ -226,7 +231,7 @@ export default function GangsheetLabel() {
     <div className="p-6 space-y-4">
       <div className="flex justify-between items-start">
         <div>
-          <h2 className="text-xl font-bold text-neutral-800">Gangsheet Label</h2>
+          <h2 className="text-xl font-bold text-neutral-800">{isFpt ? 'Gangsheet Label FPT' : 'Gangsheet Label'}</h2>
           <p className="text-xs text-neutral-500 mt-1">
             Auto-created when a <Link to="/gangsheet" className="text-orange-600 hover:underline">_qr gangsheet</Link> is generated. Scan the GSL barcode at the QC station to bulk-complete all orders in the group.
           </p>

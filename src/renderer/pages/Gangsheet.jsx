@@ -22,6 +22,10 @@ const STATUS_OPTIONS = [
 export default function Gangsheet({ source = 'normal' }) {
   const { hasRole } = useAuth();
   const isFpt = source === 'fpt';
+  // Groups = automation buckets, and automation only ever sweeps the normal
+  // channel (GangsheetGroupController::assign filters on source). Showing the
+  // tab on the FPT screen would list the OTHER channel's groups and let a
+  // finalize build an "FPT" gang out of normal orders — so it is hidden here.
   const [tab, setTab] = useState('compose');
 
   // Sync registration-mark sizes from the hub (shared) into the local cache the
@@ -55,14 +59,14 @@ export default function Gangsheet({ source = 'normal' }) {
 
       <div className="flex gap-2 border-b border-neutral-200">
         <TabBtn active={tab === 'compose'} onClick={() => setTab('compose')}>Compose</TabBtn>
-        <TabBtn active={tab === 'groups'} onClick={() => setTab('groups')}>Groups</TabBtn>
+        {!isFpt && <TabBtn active={tab === 'groups'} onClick={() => setTab('groups')}>Groups</TabBtn>}
         <TabBtn active={tab === 'find'} onClick={() => setTab('find')}>Find / Re-gang</TabBtn>
         <TabBtn active={tab === 'reconvert'} onClick={() => setTab('reconvert')}>Reconvert 11×7</TabBtn>
         <TabBtn active={tab === 'manage'} onClick={() => setTab('manage')}>Manage</TabBtn>
       </div>
 
       {tab === 'compose' && <ComposeTab source={source} />}
-      {tab === 'groups' && <GroupsTab />}
+      {tab === 'groups' && !isFpt && <GroupsTab />}
       {tab === 'find' && <FindTab source={source} />}
       {tab === 'reconvert' && <ReconvertTab />}
       {tab === 'manage' && <ManageTab isAdmin={hasRole('admin')} source={source} />}

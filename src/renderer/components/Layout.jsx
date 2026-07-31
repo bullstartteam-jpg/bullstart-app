@@ -25,6 +25,7 @@ const navItems = [
   { path: '/gangsheet', label: 'Gangsheet', icon: '▦', requiresStaff: true },
   { path: '/gangsheet-fpt', label: 'Gangsheet FPT', icon: '▦', requiresStaff: true },
   { path: '/gangsheet-label', label: 'Gangsheet Label', icon: '📦', requiresStaff: true },
+  { path: '/gangsheet-label-fpt', label: 'Gangsheet Label FPT', icon: '📦', requiresStaff: true },
 ];
 
 export default function Layout() {

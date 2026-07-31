@@ -69,7 +69,8 @@ export default function App() {
           <Route path="reasons" element={<Reasons />} />
           <Route path="gangsheet" element={<Gangsheet key="gangsheet-normal" />} />
           <Route path="gangsheet-fpt" element={<Gangsheet key="gangsheet-fpt" source="fpt" />} />
-          <Route path="gangsheet-label" element={<GangsheetLabel />} />
+          <Route path="gangsheet-label" element={<GangsheetLabel key="gslabel-normal" />} />
+          <Route path="gangsheet-label-fpt" element={<GangsheetLabel key="gslabel-fpt" source="fpt" />} />
           <Route path="profile" element={<Profile />} />
         </Route>
       </Routes>
