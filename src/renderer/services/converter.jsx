@@ -141,6 +141,7 @@ const qrJob = createJob({
         line_id: it.line_id || '',
         convert_layout: it.convert_layout || 'default',
         addon_code: it.addon_code || '',
+        order_items_count: it.order_items_count || 1,
         target_key: p.target_key,
         source_key: p.source_key,
         is_greeting_card_back: !!p.is_greeting_card_back,
@@ -626,6 +627,7 @@ export async function reconvertResizeItems(items, { targetW = 3300, targetH = 21
         line_id: item.line_id,
         convert_layout: item.convert_layout,
         addon_code: item.addon_code,
+        order_items_count: item.order_items_count,
         is_greeting_card_back: !!t.is_greeting_card_back,
         targetW, targetH,
       });
@@ -654,6 +656,7 @@ async function processOne(item, meta) {
       line_id: item.line_id,
       convert_layout: item.convert_layout,
       addon_code: item.addon_code,
+      order_items_count: item.order_items_count,
       is_greeting_card_back: !!meta.is_greeting_card_back,
     }
   );
@@ -984,7 +987,12 @@ const CARD_SKIN_BAND_W = 200;   // left strip width for barcode + info (~0.67" @
 // by eye. Light tones keep the black QR modules scannable. Detection is by the
 // add-on style text (e.g. "Small Chip", "Holographic Rainbow") with a fallback
 // to the short codes (SMC / BC / HLG*). Priority: Holo wins over any chip.
-function qrBgForAddon(addonCode) {
+function qrBgForAddon(addonCode, orderItemsCount = 1) {
+  // Đơn có từ 2 item trở lên: TÍM, bỏ qua mọi luật chip bên dưới. Thẻ của một
+  // đơn nhiều item phải gom lại đóng chung, nên dấu hiệu đó quan trọng hơn loại
+  // chip — thợ nhìn màu là biết phải tìm cho đủ bộ.
+  if (Number(orderItemsCount) >= 2) return '#D8B4FE';         // Nhiều item → tím pastel
+
   const s = String(addonCode || '').toLowerCase();
   const has = (re) => re.test(s);
   // Match on the human style text, which in the data is "Small Ship"/"Big Chip"
@@ -994,7 +1002,7 @@ function qrBgForAddon(addonCode) {
   if (has(/big/)   || has(/\bbc\b/))        return '#BBF7D0'; // Big chip   → xanh lá pastel
   return '#F97316';                                           // No chip    → cam đậm
 }
-async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, addonCode, sourceKey) {
+async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, addonCode, sourceKey, orderItemsCount = 1) {
   const portrait = sourceW < sourceH;
   const dW = portrait ? sourceH : sourceW;   // landscape design width
   const dH = portrait ? sourceW : sourceH;   // landscape design height
@@ -1029,7 +1037,7 @@ async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, add
     // Add-on colour keyed to the item (Holo=đỏ, Small chip=vàng, Big chip=xanh
     // lá, No chip=cam) — it backs the WHOLE info block (QR + text) so the
     // operator can sort skin cards by eye; light tones keep the QR scannable.
-    const addonBg = qrBgForAddon(addonCode);
+    const addonBg = qrBgForAddon(addonCode, orderItemsCount);
     // QR encodes the system_id (same value the barcode used) so scan/lookup by
     // system_id keeps working; its own background matches the block colour.
     const qr = await generateQrCanvas(systemId, 240, addonBg);
@@ -1103,7 +1111,7 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   // Card Skin ('outside'): keep the design at native size (landscape) and add a
   // LEFT strip with a rotated barcode + the selected add-on code.
   if (cardSkin) {
-    return await composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, opts.addon_code || '', source_key);
+    return await composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, opts.addon_code || '', source_key, opts.order_items_count || 1);
   }
 
   // 'native' layout = greeting card 5x5: FIXED 11×5.5" canvas (3300×1650 @300dpi),

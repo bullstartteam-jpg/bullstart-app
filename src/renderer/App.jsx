@@ -42,12 +42,16 @@ export default function App() {
         <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route index element={<Dashboard />} />
           <Route path="reports" element={<Reports />} />
-          <Route path="orders" element={<Orders />} />
-          <Route path="orders/create" element={<OrderCreate />} />
+          <Route path="orders" element={<Orders key="orders-normal" />} />
+          <Route path="orders/create" element={<OrderCreate key="create-normal" />} />
           <Route path="orders/:id" element={<OrderDetail />} />
-          {/* FPT channel — same screens, scoped to orders.source = 'fpt'. */}
-          <Route path="orders-fpt" element={<Orders source="fpt" />} />
-          <Route path="orders-fpt/create" element={<OrderCreate source="fpt" />} />
+          {/* FPT channel — same screens, scoped to orders.source = 'fpt'.
+              Each route carries its own `key`: both paths render the SAME
+              component type in the same Outlet slot, so without it React
+              reconciles instead of remounting and the screen would keep the
+              other channel's list, filters and page. */}
+          <Route path="orders-fpt" element={<Orders key="orders-fpt" source="fpt" />} />
+          <Route path="orders-fpt/create" element={<OrderCreate key="create-fpt" source="fpt" />} />
           <Route path="orders-fpt/:id" element={<OrderDetail />} />
           <Route path="products" element={<Products />} />
           <Route path="products/:id" element={<ProductDetail />} />
@@ -63,8 +67,8 @@ export default function App() {
           <Route path="not-delivered" element={<NotDelivered />} />
           <Route path="image-url-check" element={<ImageUrlCheck />} />
           <Route path="reasons" element={<Reasons />} />
-          <Route path="gangsheet" element={<Gangsheet />} />
-          <Route path="gangsheet-fpt" element={<Gangsheet source="fpt" />} />
+          <Route path="gangsheet" element={<Gangsheet key="gangsheet-normal" />} />
+          <Route path="gangsheet-fpt" element={<Gangsheet key="gangsheet-fpt" source="fpt" />} />
           <Route path="gangsheet-label" element={<GangsheetLabel />} />
           <Route path="profile" element={<Profile />} />
         </Route>

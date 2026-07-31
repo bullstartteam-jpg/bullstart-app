@@ -291,6 +291,9 @@ export default function Orders({ source = 'normal' }) {
     fetchOrders();
     refreshUnpaidBanner();
   }, [
+    // `source` too: the two channels share this component, so a remount is not
+    // guaranteed if the route keys are ever dropped.
+    source,
     filters.page, filters.status, filters.tracking_status, filters.paid, filters.ship_type,
     filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page,
     filters.product_id, filters.line_id, filters.product_variant_id, filters.sku,
