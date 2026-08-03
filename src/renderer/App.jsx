@@ -18,6 +18,8 @@ import Convert from './pages/Convert';
 import ConvertLabel from './pages/ConvertLabel';
 import Gangsheet from './pages/Gangsheet';
 import GangsheetLabel from './pages/GangsheetLabel';
+import BulkFrontUpdate from './pages/BulkFrontUpdate';
+import DesignCheck from './pages/DesignCheck';
 import AutoPay from './pages/AutoPay';
 import Reprint from './pages/Reprint';
 import NotDelivered from './pages/NotDelivered';
@@ -66,6 +68,8 @@ export default function App() {
           <Route path="reprint" element={<Reprint />} />
           <Route path="not-delivered" element={<NotDelivered />} />
           <Route path="image-url-check" element={<ImageUrlCheck />} />
+          <Route path="bulk-front-update" element={<BulkFrontUpdate />} />
+          <Route path="design-check" element={<DesignCheck />} />
           <Route path="reasons" element={<Reasons />} />
           <Route path="gangsheet" element={<Gangsheet key="gangsheet-normal" />} />
           <Route path="gangsheet-fpt" element={<Gangsheet key="gangsheet-fpt" source="fpt" />} />
