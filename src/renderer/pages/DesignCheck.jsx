@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
 import { UrlPreview, PreviewModal } from '../components/Preview';
+import PunchHoleModal from '../components/PunchHoleModal';
+import { TEMPLATES } from '../services/holePunch';
 import {
   subscribeDesignCheck, startDesignCheck, stopDesignCheck, runDesignCheckNow,
   isDesignCheckAuto, getCheckStatuses, setCheckStatuses, SPEC, CHECKER_VERSION,
@@ -24,6 +26,7 @@ export default function DesignCheck() {
   const [verdict, setVerdict] = useState('fail');
   const [loading, setLoading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState(null);
+  const [punchTarget, setPunchTarget] = useState(null);
 
   useEffect(() => subscribeDesignCheck(setJob), []);
   useEffect(() => { if (isDesignCheckAuto()) startDesignCheck(); }, []);
@@ -123,6 +126,7 @@ export default function DesignCheck() {
                 <th className="py-2 text-left">Lỗ khoét</th>
                 <th className="py-2 text-left">Kết quả</th>
                 <th className="py-2 text-left">Design</th>
+                <th className="py-2 text-right">Sửa</th>
               </tr>
             </thead>
             <tbody>
@@ -141,10 +145,19 @@ export default function DesignCheck() {
                     {r.status === 'ok' ? 'Đạt' : r.reason || r.status}
                   </td>
                   <td className="py-1.5"><UrlPreview url={r.url} onOpen={setPreviewUrl} label="Design" size="sm" /></td>
+                  <td className="py-1.5 text-right">
+                    {/* Chỉ đục được khi có template cho đúng loại chip. */}
+                    {r.status === 'fail' && TEMPLATES[r.chip] && (
+                      <button onClick={() => setPunchTarget(r)}
+                        className="text-xs text-orange-600 hover:text-orange-700">
+                        {r.punched_url && !r.applied_at ? 'Chờ duyệt →' : 'Đục lỗ'}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
               {(rows.data || []).length === 0 && (
-                <tr><td colSpan={7} className="py-4 text-center text-neutral-400 text-sm">Chưa có kết quả nào.</td></tr>
+                <tr><td colSpan={8} className="py-4 text-center text-neutral-400 text-sm">Chưa có kết quả nào.</td></tr>
               )}
             </tbody>
           </table>
@@ -162,6 +175,14 @@ export default function DesignCheck() {
             ))}
           </div>
         </div>
+      )}
+
+      {punchTarget && (
+        <PunchHoleModal
+          check={punchTarget}
+          onClose={() => setPunchTarget(null)}
+          onDone={fetchRows}
+        />
       )}
 
       <PreviewModal url={previewUrl} onClose={() => setPreviewUrl(null)} />
