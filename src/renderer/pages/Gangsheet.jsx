@@ -775,6 +775,41 @@ function ComposeTab({ source = 'normal' }) {
     return best;
   };
 
+  const handleAssignPartner = async () => {
+    if (selectedPartners.size !== 1) { alert('Chọn đúng 1 partner để assign đơn.'); return; }
+    const selected = pending.filter(o => selectedIds.has(o.id));
+    if (selected.length === 0) { alert('Chọn ít nhất 1 đơn.'); return; }
+    const partnerId = [...selectedPartners][0];
+    const partnerName = partnerUsers.find(u => u.id === partnerId)?.name || `#${partnerId}`;
+    if (!confirm(`Assign ${selected.length} đơn cho partner "${partnerName}"?`)) return;
+    try {
+      const res = await api.post('/orders/bulk-assign-partner', {
+        order_ids: selected.map(o => o.id),
+        partner_id: partnerId,
+      });
+      alert(res.data?.message || 'Assigned');
+      await fetchPending();
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Assign partner failed');
+    }
+  };
+
+  const handleUnassignPartner = async () => {
+    const selected = pending.filter(o => selectedIds.has(o.id) && o.partner_id);
+    if (selected.length === 0) { alert('Chọn ít nhất 1 đơn đã có partner.'); return; }
+    if (!confirm(`Bỏ assign partner cho ${selected.length} đơn?`)) return;
+    try {
+      const res = await api.post('/orders/bulk-assign-partner', {
+        order_ids: selected.map(o => o.id),
+        partner_id: null,
+      });
+      alert(res.data?.message || 'Unassigned');
+      await fetchPending();
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'Unassign partner failed');
+    }
+  };
+
   const handleGenerate = async () => {
     const selected = pending.filter(o => selectedIds.has(o.id));
     if (selected.length === 0) { alert('Select at least 1 order'); return; }
@@ -910,6 +945,20 @@ function ComposeTab({ source = 'normal' }) {
               className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
               {running ? 'Generating…' : `Generate (${selectedIds.size})`}
             </button>
+            {partnerUsers.length > 0 && (
+              <button onClick={handleAssignPartner} disabled={running || selectedIds.size === 0 || selectedPartners.size !== 1}
+                className="px-4 py-2 bg-violet-500 hover:bg-violet-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium"
+                title="Gán partner_id cho các đơn đã chọn (chọn đúng 1 partner ở dưới)">
+                Assign Partner ({selectedIds.size})
+              </button>
+            )}
+            {partnerUsers.length > 0 && (
+              <button onClick={handleUnassignPartner} disabled={running || selectedIds.size === 0}
+                className="px-3 py-2 bg-neutral-200 hover:bg-neutral-300 disabled:opacity-50 text-neutral-700 text-sm rounded-lg font-medium"
+                title="Bỏ partner_id khỏi các đơn đã chọn">
+                Unassign
+              </button>
+            )}
             <button onClick={fetchPending} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Refresh</button>
           </div>
         </div>
@@ -1122,11 +1171,12 @@ function ComposeTab({ source = 'normal' }) {
                 <th className="py-2 text-left">Accessory</th>
                 <th className="py-2 text-left">Code</th>
                 <th className="py-2 text-right">_qr</th>
+                <th className="py-2 text-left">Partner</th>
                 <th className="py-2 text-right">Created</th>
               </tr>
             </thead>
             {/* Một <tbody> cho mỗi đơn, một <tr> cho mỗi order_item. Checkbox +
-                System ID + Ref + Created dùng rowSpan nên vẫn chọn theo ĐƠN
+                System ID + Ref + Partner + Created dùng rowSpan nên vẫn chọn theo ĐƠN
                 (Generate làm việc trên đơn), còn Line/SKU/Accessory/Code/_qr
                 hiện riêng từng item. */}
             {filteredPending.map(o => {
@@ -1171,7 +1221,12 @@ function ComposeTab({ source = 'normal' }) {
                           {it ? countItemQrMetas(it) : 0}
                         </td>
                         {idx === 0 && (
-                          <td className="py-1.5 align-top text-right text-xs text-neutral-500" rowSpan={items.length}>{created}</td>
+                          <>
+                            <td className="py-1.5 align-top text-xs text-violet-600" rowSpan={items.length}>
+                              {o.partner?.name || <span className="text-neutral-300">-</span>}
+                            </td>
+                            <td className="py-1.5 align-top text-right text-xs text-neutral-500" rowSpan={items.length}>{created}</td>
+                          </>
                         )}
                       </tr>
                     );
