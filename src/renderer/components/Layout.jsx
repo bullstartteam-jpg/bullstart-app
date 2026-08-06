@@ -110,7 +110,7 @@ export default function Layout() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-auto">
         <Outlet />
       </main>
     </div>

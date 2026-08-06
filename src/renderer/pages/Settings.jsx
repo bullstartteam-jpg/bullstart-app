@@ -1450,7 +1450,7 @@ function TiersTab({ tiers, setTiers }) {
         <button type="submit" className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Add Tier</button>
       </form>
 
-      <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden shadow-sm">
+      <div className="bg-white rounded-xl border border-neutral-200 overflow-x-auto shadow-sm">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-neutral-200 text-neutral-500 text-xs bg-[#faf8f6]">

@@ -342,7 +342,7 @@ export default function GangsheetLabel({ source = 'normal' }) {
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-xs uppercase tracking-wider text-neutral-500 bg-[#faf8f6]">
             <tr>

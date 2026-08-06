@@ -120,7 +120,7 @@ export default function Reports() {
 
       {/* Table */}
       {rows.length > 0 && (
-        <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
+        <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="text-xs uppercase text-neutral-500 bg-[#faf8f6]">
               <tr>

@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; }
+/* Scrollbar (vertical + horizontal) */
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: #f5f0eb; }
 ::-webkit-scrollbar-thumb { background: #d4cfc9; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #b8b2ab; }

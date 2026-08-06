@@ -70,7 +70,7 @@ export default function AutoPay() {
       </div>
 
       {/* Active sellers */}
-      <section className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
+      <section className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-x-auto">
         <div className="px-4 py-2 flex items-center justify-between border-b border-neutral-100 bg-[#faf8f6]">
           <span className="text-sm font-semibold text-neutral-700">
             Sellers đang bật auto-pay ({data.users.length})
@@ -136,7 +136,7 @@ export default function AutoPay() {
       </section>
 
       {/* Recent auto-paid transactions */}
-      <section className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
+      <section className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-x-auto">
         <div className="px-4 py-2 border-b border-neutral-100 bg-[#faf8f6]">
           <span className="text-sm font-semibold text-neutral-700">
             Recent auto-paid transactions ({data.recent.length})

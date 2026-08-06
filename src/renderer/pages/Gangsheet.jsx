@@ -2327,7 +2327,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
       )}
 
       {/* Table */}
-      <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-neutral-500 text-xs bg-[#faf8f6] border-b border-neutral-200">

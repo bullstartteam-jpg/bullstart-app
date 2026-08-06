@@ -555,7 +555,7 @@ export default function Inventory() {
 
       {/* Tab content */}
       {tab === 'imports' && (
-        <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
+        <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-[#faf8f6] text-neutral-500 text-xs uppercase tracking-wide">
               <tr>
@@ -636,7 +636,7 @@ function StockTable({ title, rows }) {
   // Backend now returns one row per accessory_price (per-code stock), so
   // we don't need to expand here anymore — render rows as-is.
   return (
-    <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-x-auto">
       <div className="px-3 py-2 text-sm font-medium text-neutral-800 border-b border-neutral-100 bg-[#faf8f6]">{title}</div>
       <div className="max-h-[60vh] overflow-y-auto">
         <table className="w-full text-sm">
