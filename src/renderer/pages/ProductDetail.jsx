@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -408,10 +408,11 @@ export default function ProductDetail() {
           )}
 
           <p className="text-xs text-neutral-400 mt-3">
-            Export lists all variants x tiers x keys (base_cost, label_fee, shipping_cost). Update the "price" column and import back.
+            Export all variants x tiers x keys with both "price" (seller) and "partner_price" columns. Update and import back.
           </p>
         </div>
       )}
+
     </div>
   );
 }
@@ -427,20 +428,34 @@ function VariantPriceSummary({ prices }) {
   const byTier = {};
   prices.forEach(p => {
     const tid = p.tier_id;
-    if (!byTier[tid]) byTier[tid] = { name: p.tier?.name || `Tier ${tid}`, prices: {} };
+    if (!byTier[tid]) byTier[tid] = { name: p.tier?.name || `Tier ${tid}`, prices: {}, partnerPrices: {} };
     byTier[tid].prices[p.key] = p.price;
+    if (p.partner_price != null) byTier[tid].partnerPrices[p.key] = p.partner_price;
   });
   return (
     <div className="space-y-0.5 inline-block text-left">
       {Object.entries(byTier).map(([tid, data]) => (
-        <div key={tid} className="flex items-center gap-1.5 text-[11px] whitespace-nowrap">
-          <span className="px-1.5 py-0.5 bg-neutral-100 text-neutral-700 rounded font-medium">{data.name}</span>
-          {PRICE_KEYS.map(k => data.prices[k] !== undefined && (
-            <span key={k} className="text-neutral-600">
-              <span className="text-neutral-400">{PRICE_LABEL[k]}</span>{' '}
-              <span className="font-medium tabular-nums">${data.prices[k]}</span>
-            </span>
-          ))}
+        <div key={tid}>
+          <div className="flex items-center gap-1.5 text-[11px] whitespace-nowrap">
+            <span className="px-1.5 py-0.5 bg-neutral-100 text-neutral-700 rounded font-medium">{data.name}</span>
+            {PRICE_KEYS.map(k => data.prices[k] !== undefined && (
+              <span key={k} className="text-neutral-600">
+                <span className="text-neutral-400">{PRICE_LABEL[k]}</span>{' '}
+                <span className="font-medium tabular-nums">${data.prices[k]}</span>
+              </span>
+            ))}
+          </div>
+          {Object.keys(data.partnerPrices).length > 0 && (
+            <div className="flex items-center gap-1.5 text-[11px] whitespace-nowrap ml-[2px]">
+              <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px]">partner</span>
+              {PRICE_KEYS.map(k => data.partnerPrices[k] !== undefined && (
+                <span key={k} className="text-blue-600">
+                  <span className="text-blue-400">{PRICE_LABEL[k]}</span>{' '}
+                  <span className="font-medium tabular-nums">${data.partnerPrices[k]}</span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -462,6 +477,7 @@ function VariantRow({ variant, tiers, isAdmin, onSaved, onDelete }) {
   });
   const [form, setForm] = useState(initialForm);
   const [priceMatrix, setPriceMatrix] = useState({});
+  const [partnerPriceMatrix, setPartnerPriceMatrix] = useState({});
   const [saving, setSaving] = useState(false);
 
   const buildPriceMatrix = () => {
@@ -475,9 +491,21 @@ function VariantRow({ variant, tiers, isAdmin, onSaved, onDelete }) {
     return m;
   };
 
+  const buildPartnerPriceMatrix = () => {
+    const m = {};
+    (tiers || []).forEach(t => {
+      PRICE_KEYS.forEach(k => {
+        const found = (variant.prices || []).find(p => p.tier_id === t.id && p.key === k);
+        m[`${t.id}-${k}`] = found && found.partner_price != null ? String(found.partner_price) : '';
+      });
+    });
+    return m;
+  };
+
   const startEdit = () => {
     setForm(initialForm());
     setPriceMatrix(buildPriceMatrix());
+    setPartnerPriceMatrix(buildPartnerPriceMatrix());
     setEditing(true);
   };
 
@@ -496,21 +524,24 @@ function VariantRow({ variant, tiers, isAdmin, onSaved, onDelete }) {
       });
       await api.put(`/variants/${variant.id}`, payload);
 
-      // Upsert prices that have a value entered
+      // Upsert prices (including partner_price) that have a value entered
       const prices = [];
       (tiers || []).forEach(t => {
         PRICE_KEYS.forEach(k => {
-          const v = priceMatrix[`${t.id}-${k}`];
-          if (v !== '' && v !== undefined && v !== null) {
-            const num = Number(v);
-            if (!Number.isNaN(num)) {
-              prices.push({
-                product_variant_id: variant.id,
-                tier_id: t.id,
-                key: k,
-                price: num,
-              });
-            }
+          const cellKey = `${t.id}-${k}`;
+          const v = priceMatrix[cellKey];
+          const pp = partnerPriceMatrix[cellKey];
+          const hasPrice = v !== '' && v !== undefined && v !== null && !Number.isNaN(Number(v));
+          const hasPartner = pp !== '' && pp !== undefined && pp !== null && !Number.isNaN(Number(pp));
+          if (hasPrice || hasPartner) {
+            const entry = {
+              product_variant_id: variant.id,
+              tier_id: t.id,
+              key: k,
+              price: hasPrice ? Number(v) : 0,
+            };
+            if (hasPartner) entry.partner_price = Number(pp);
+            prices.push(entry);
           }
         });
       });
@@ -566,9 +597,17 @@ function VariantRow({ variant, tiers, isAdmin, onSaved, onDelete }) {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-neutral-500 border-b border-neutral-200">
-                    <th className="py-1 px-2 text-left">Tier</th>
+                    <th className="py-1 px-2 text-left" rowSpan={2}>Tier</th>
                     {PRICE_KEYS.map(k => (
-                      <th key={k} className="py-1 px-2 text-right">{k.replace('_', ' ')}</th>
+                      <th key={k} className="py-1 px-1 text-center" colSpan={2}>{k.replace('_', ' ')}</th>
+                    ))}
+                  </tr>
+                  <tr className="text-neutral-400 border-b border-neutral-200 text-[10px]">
+                    {PRICE_KEYS.map(k => (
+                      <React.Fragment key={k}>
+                        <th className="py-0.5 px-1 text-right">seller</th>
+                        <th className="py-0.5 px-1 text-right text-blue-400">partner</th>
+                      </React.Fragment>
                     ))}
                   </tr>
                 </thead>
@@ -579,16 +618,28 @@ function VariantRow({ variant, tiers, isAdmin, onSaved, onDelete }) {
                       {PRICE_KEYS.map(k => {
                         const cellKey = `${t.id}-${k}`;
                         return (
-                          <td key={k} className="py-1 px-2">
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={priceMatrix[cellKey] ?? ''}
-                              onChange={e => setPriceMatrix(prev => ({ ...prev, [cellKey]: e.target.value }))}
-                              placeholder="—"
-                              className="w-full px-2 py-1 bg-white border border-neutral-200 rounded text-xs text-right"
-                            />
-                          </td>
+                          <React.Fragment key={k}>
+                            <td className="py-1 px-1">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={priceMatrix[cellKey] ?? ''}
+                                onChange={e => setPriceMatrix(prev => ({ ...prev, [cellKey]: e.target.value }))}
+                                placeholder="—"
+                                className="w-full px-1.5 py-1 bg-white border border-neutral-200 rounded text-xs text-right"
+                              />
+                            </td>
+                            <td className="py-1 px-1">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={partnerPriceMatrix[cellKey] ?? ''}
+                                onChange={e => setPartnerPriceMatrix(prev => ({ ...prev, [cellKey]: e.target.value }))}
+                                placeholder="—"
+                                className="w-full px-1.5 py-1 bg-white border border-blue-200 rounded text-xs text-right text-blue-700"
+                              />
+                            </td>
+                          </React.Fragment>
                         );
                       })}
                     </tr>
@@ -596,7 +647,7 @@ function VariantRow({ variant, tiers, isAdmin, onSaved, onDelete }) {
                 </tbody>
               </table>
             )}
-            <p className="text-[11px] text-neutral-400 mt-2">Empty cells are skipped (existing values preserved). Enter a number to upsert.</p>
+            <p className="text-[11px] text-neutral-400 mt-2">Empty cells are skipped. Blue columns = partner price (giá tính cho partner khi gán đơn).</p>
           </td>
         </tr>
       </>
@@ -635,6 +686,7 @@ function AccessoryPriceRow({ price, tiers, isAdmin, onSaved, onDelete }) {
   const [style, setStyle] = useState(price.style ?? '');
   const [code, setCode] = useState(price.accessory_code ?? '');
   const [val, setVal] = useState(String(price.price ?? ''));
+  const [partnerVal, setPartnerVal] = useState(String(price.partner_price ?? ''));
   const [saving, setSaving] = useState(false);
 
   const startEdit = () => {
@@ -642,6 +694,7 @@ function AccessoryPriceRow({ price, tiers, isAdmin, onSaved, onDelete }) {
     setStyle(price.style ?? '');
     setCode(price.accessory_code ?? '');
     setVal(String(price.price ?? ''));
+    setPartnerVal(String(price.partner_price ?? ''));
     setEditing(true);
   };
 
@@ -653,6 +706,7 @@ function AccessoryPriceRow({ price, tiers, isAdmin, onSaved, onDelete }) {
         style: style || null,
         accessory_code: code || null,
         price: val === '' ? 0 : parseFloat(val),
+        partner_price: partnerVal === '' ? null : parseFloat(partnerVal),
       });
       setEditing(false);
       onSaved();
@@ -680,6 +734,9 @@ function AccessoryPriceRow({ price, tiers, isAdmin, onSaved, onDelete }) {
         <td className="py-1 pr-1 text-right">
           <input type="text" inputMode="decimal" value={val} onChange={e => setVal(e.target.value)} className="w-full px-1.5 py-1 bg-white border border-neutral-200 rounded text-xs text-right" />
         </td>
+        <td className="py-1 pr-1 text-right">
+          <input type="text" inputMode="decimal" value={partnerVal} onChange={e => setPartnerVal(e.target.value)} placeholder="—" className="w-full px-1.5 py-1 bg-white border border-blue-200 rounded text-xs text-right text-blue-700" />
+        </td>
         {isAdmin && (
           <td className="py-1 text-right">
             <div className="flex gap-2 justify-end">
@@ -698,6 +755,7 @@ function AccessoryPriceRow({ price, tiers, isAdmin, onSaved, onDelete }) {
       <td className="py-1 text-neutral-600">{price.style || '-'}</td>
       <td className="py-1 text-neutral-600 font-mono">{price.accessory_code || '-'}</td>
       <td className="py-1 text-right text-neutral-800 font-medium">${price.price}</td>
+      <td className="py-1 text-right text-blue-600 font-medium">{price.partner_price != null ? `$${price.partner_price}` : '—'}</td>
       {isAdmin && (
         <td className="py-1 text-right">
           <div className="flex gap-2 justify-end">
@@ -715,6 +773,7 @@ function AccessoryRow({ accessory, tiers, isAdmin, onDeleteAccessory, onDeletePr
   const [style, setStyle] = useState('');
   const [accessoryCode, setAccessoryCode] = useState('');
   const [price, setPrice] = useState('');
+  const [partnerPrice, setPartnerPrice] = useState('');
   const [saving, setSaving] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [name, setName] = useState(accessory.name);
@@ -732,11 +791,13 @@ function AccessoryRow({ accessory, tiers, isAdmin, onDeleteAccessory, onDeletePr
         style: style || null,
         accessory_code: accessoryCode || null,
         price: parseFloat(price),
+        partner_price: partnerPrice === '' ? null : parseFloat(partnerPrice),
       });
       setTierId('');
       setStyle('');
       setAccessoryCode('');
       setPrice('');
+      setPartnerPrice('');
       onSaved();
     } catch (err) {
       alert(err.response?.data?.message || 'Error saving price');
@@ -810,6 +871,7 @@ function AccessoryRow({ accessory, tiers, isAdmin, onDeleteAccessory, onDeletePr
               <th className="py-1 text-left">Style</th>
               <th className="py-1 text-left">Code</th>
               <th className="py-1 text-right">Price</th>
+              <th className="py-1 text-right text-blue-500">Partner</th>
               {isAdmin && <th className="py-1 text-right"></th>}
             </tr>
           </thead>
@@ -831,7 +893,7 @@ function AccessoryRow({ accessory, tiers, isAdmin, onDeleteAccessory, onDeletePr
       )}
 
       {isAdmin && (
-        <div className="grid grid-cols-5 gap-2 items-end pt-2 border-t border-neutral-100">
+        <div className="grid grid-cols-6 gap-2 items-end pt-2 border-t border-neutral-100">
           <div>
             <label className="text-xs text-neutral-500">Tier</label>
             <select value={tierId} onChange={e => setTierId(e.target.value)} className="w-full mt-1 px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-neutral-800 text-xs">
@@ -868,6 +930,17 @@ function AccessoryRow({ accessory, tiers, isAdmin, onDeleteAccessory, onDeletePr
               onChange={e => setPrice(e.target.value)}
               placeholder="0.00"
               className="w-full mt-1 px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-neutral-800 text-xs"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-blue-500">Partner</label>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={partnerPrice}
+              onChange={e => setPartnerPrice(e.target.value)}
+              placeholder="—"
+              className="w-full mt-1 px-2 py-1.5 bg-[#faf8f6] border border-blue-200 rounded text-blue-700 text-xs"
             />
           </div>
           <button type="button" onClick={handleSave} disabled={saving} className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs rounded">
