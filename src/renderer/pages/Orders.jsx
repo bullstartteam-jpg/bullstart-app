@@ -383,6 +383,18 @@ export default function Orders({ source = 'normal' }) {
     copyToClipboard(ids.join('\n'), `system ID${ids.length > 1 ? 's' : ''}`, ids.length);
   };
 
+  const handleCopyRefs = async () => {
+    if (selected.length === 0) return;
+    const refs = orders
+      .filter(o => selected.includes(o.id))
+      .map(o => o.ref_id)
+      .filter(r => r && r.trim() !== '');
+    if (refs.length === 0) {
+      return notify('Selected orders have no ref_id.', { title: 'Nothing to copy' });
+    }
+    copyToClipboard(refs.join('\n'), `ref_id${refs.length > 1 ? 's' : ''}`, refs.length);
+  };
+
   const handleCopyTrackings = async () => {
     if (selected.length === 0) return;
     const tracks = orders
@@ -1325,6 +1337,9 @@ export default function Orders({ source = 'normal' }) {
             <span className="text-neutral-500 text-sm py-1.5">{selected.length} selected</span>
             <button onClick={handleCopyIds} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg" title="Copy all selected system IDs to clipboard (newline-separated)">
               Copy IDs
+            </button>
+            <button onClick={handleCopyRefs} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg" title="Copy ref_id of selected orders to clipboard">
+              Copy Refs
             </button>
             <button onClick={handleCopyTrackings} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg" title="Copy tracking_id of selected orders to clipboard">
               Copy Trackings
