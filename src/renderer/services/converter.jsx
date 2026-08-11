@@ -922,46 +922,36 @@ async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, add
   }
 
   if (band > 0) {
-    // Build a horizontal label strip (QR + text), then draw it rotated 90°
-    // so it runs vertically down the narrow left band.
+    // Build a horizontal label strip (barcode + text), then draw it rotated
+    // -90° so it runs vertically down the narrow left band.
     const codeText = addonCode ? `${systemId}-${addonCode}` : systemId;
-    // Add-on colour keyed to the item (Holo=đỏ, Small chip=vàng, Big chip=xanh
-    // lá, No chip=cam) — it backs the WHOLE info block (QR + text) so the
-    // operator can sort skin cards by eye; light tones keep the QR scannable.
     const addonBg = qrBgForAddon(addonCode, orderItemsCount);
-    // QR encodes the system_id (same value the barcode used) so scan/lookup by
-    // system_id keeps working; its own background matches the block colour.
-    const qr = await generateQrCanvas(systemId, 240, addonBg);
+
+    // Code 128 barcode encoding the system_id.
+    const barcode = generateBarcodeCanvas(systemId, 3);
     const TXT = 30, GAP = 6;
-    // Size the strip to whichever is wider — QR or label text — so a longer
-    // style label (e.g. "Small Chip") isn't clipped; the QR is centered in
-    // the widened strip.
     ctx.font = `bold ${TXT}px sans-serif`;
     const textW = Math.ceil(ctx.measureText(codeText).width);
     const strip = document.createElement('canvas');
-    strip.width = Math.max(qr.width, textW + 8);
-    strip.height = qr.height + GAP + TXT;
+    strip.width = Math.max(barcode.width, textW + 8);
+    strip.height = barcode.height + GAP + TXT;
     const s = strip.getContext('2d');
-    // Add-on colour backs the whole info block (QR + text). Rest of the band
-    // stays transparent (clear film).
+    // Add-on colour backs the whole info block so operators can sort by eye.
     s.fillStyle = addonBg;
     s.fillRect(0, 0, strip.width, strip.height);
-    s.drawImage(qr, (strip.width - qr.width) / 2, 0);
+    s.drawImage(barcode, (strip.width - barcode.width) / 2, 0);
     s.fillStyle = '#000000';
     s.textAlign = 'center';
     s.textBaseline = 'top';
     s.font = `bold ${TXT}px sans-serif`;
-    s.fillText(codeText, strip.width / 2, qr.height + GAP);
+    s.fillText(codeText, strip.width / 2, barcode.height + GAP);
 
-    // Fit the rotated strip into the band, leaving a clear gap from the design
-    // (DESIGN_GAP) so the QR/info sits away from the artwork. After -90° the
-    // strip's height maps horizontally and width maps vertically.
-    const EDGE = 12;         // margin from the outer (left) band edge
-    const DESIGN_GAP = 10;   // clear space between the info strip and the design
+    // Fit the rotated strip into the band.
+    const EDGE = 12;
+    const DESIGN_GAP = 10;
     const availW = Math.max(1, band - EDGE - DESIGN_GAP);
     const scale = Math.min(availW / strip.height, (dH - 20) / strip.width);
     ctx.save();
-    // Center within [EDGE .. band-DESIGN_GAP] → pushed away from the design edge.
     ctx.translate((EDGE + (band - DESIGN_GAP)) / 2, dH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.drawImage(strip, -strip.width * scale / 2, -strip.height * scale / 2, strip.width * scale, strip.height * scale);

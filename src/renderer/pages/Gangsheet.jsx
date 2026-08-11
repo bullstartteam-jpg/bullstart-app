@@ -107,6 +107,49 @@ function CountBadge({ n }) {
   );
 }
 
+// Count _qr metas of an order (for skin card chunking).
+function orderMetaCount(order, includeProduced = false) {
+  let n = 0;
+  for (const it of order.items || [])
+    for (const m of it.metas || [])
+      if (isQrKey(m.key) && (includeProduced || !m.production)) n++;
+  return n;
+}
+
+// Chunk orders so that each chunk's total _qr metas is a multiple of
+// `perPage` (3 designs per page). Orders are added greedily; when adding
+// the next order would NOT make the running total a multiple, it still
+// goes in — the chunk only breaks when the total IS a multiple (i.e. the
+// page is full). This avoids orphan pages with 1–2 designs.
+function chunkCardOrders(orders, perPage = 3, includeProduced = false) {
+  if (orders.length === 0) return [];
+  const chunks = [];
+  let cur = [];
+  let metas = 0;
+  for (const o of orders) {
+    const n = orderMetaCount(o, includeProduced);
+    cur.push(o);
+    metas += n;
+    // Break when we hit a full page boundary AND have enough for at least one page.
+    if (metas > 0 && metas % perPage === 0) {
+      chunks.push(cur);
+      cur = [];
+      metas = 0;
+    }
+  }
+  // Remaining orders: attach to last chunk if it would fill better,
+  // otherwise push as a new (partial) chunk.
+  if (cur.length > 0) {
+    if (chunks.length > 0 && metas < perPage) {
+      // Fewer than one full page left — merge into previous chunk.
+      chunks[chunks.length - 1] = chunks[chunks.length - 1].concat(cur);
+    } else {
+      chunks.push(cur);
+    }
+  }
+  return chunks;
+}
+
 // Turn an accessory name into a filename-safe token: "Scratch Card" → "scratch-card".
 function slugifyAccessory(name) {
   return String(name || '')
@@ -217,7 +260,8 @@ function orderChipTag(order) {
   for (const it of order.items || []) {
     for (const a of itemAccessoryList(it)) {
       const kind = chipKindOf(a.style) || chipKindOf(a.code) || chipKindOf(a.name);
-      if (kind) return kind;
+      if (kind === 'holo') return 'holo';
+      if (kind === 'bigchip' || kind === 'smallchip') return 'chip';
     }
   }
   return 'nochip';
@@ -449,10 +493,10 @@ function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includePro
     }
   }
 
-  // Card skin: gom theo order_type × chip. Mỗi trang Letter = 3 mẫu, mỗi mẫu in
-  // 2 bản (bản gốc có khối QR, bản copy dưới nó là design trần): trái 2 mẫu
-  // nằm ngang = 4 thẻ, phải 1 mẫu xoay dọc = 2 thẻ → chunk 3 order / trang.
-  // Đơn lẫn cả hai loại chip đi theo chip của item đầu tiên (xem orderChipTag).
+  // Card skin: group by order_type × chip kind, then chunk so that each
+  // chunk's total _qr metas is a multiple of 3 (= 1 full page of 6 cards).
+  // This avoids partial pages with 1–2 designs regardless of whether orders
+  // are single-item or multi-item.
   const cardGroups = new Map();
   for (const o of cardOrders) {
     const ot = orderOrderType(o) || 'skincard';
@@ -463,7 +507,7 @@ function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includePro
   }
   for (const [, g] of cardGroups) {
     const tag = `${slugifyAccessory(g.ot) || 'skincard'}_${g.chip}`;
-    for (const chunk of chunkArray(g.orders, 3)) {
+    for (const chunk of chunkCardOrders(g.orders, 3, includeProduced)) {
       chunks.push({ chunk, suffix: tag, tiled: true });
     }
   }
