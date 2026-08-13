@@ -103,6 +103,17 @@ export function gangsheetFilename({ linePrefix, firstSid, lastSid, ordersCount, 
 }
 
 /**
+ * Card-skin gangs ship one PDF per page: same base name as the chunk plus a
+ * zero-padded page number, so the sheets sort in print order and sit next to
+ * their …_p01.png twin.
+ *   01_PS_C3071-PS_C3090_9_9_AUG13_skin-card_chip_01.pdf
+ */
+export function pdfNameForPage(baseFilename, pageIndex) {
+  const base = String(baseFilename || 'gangsheet').replace(/\.pdf$/i, '');
+  return `${base}_${String(pageIndex + 1).padStart(2, '0')}.pdf`;
+}
+
+/**
  * Split orders into two buckets:
  *   - twoSide: order has BOTH a front_qr AND a back_qr meta among unproduced
  *              metas (respecting `includeProduced` the same way flattenQrMetas
@@ -523,7 +534,6 @@ export async function buildTiledGangsheet(orders, {
   const leftSlotY = (i) => leftTop + i * (cardHpx + gapYLeft);
   const rightSlotY = (i) => rightTop + i * (rightCellH + gapYRight) + bandReservePx;
 
-  const pdf = await PDFDocument.create();
   const total = records.length;
   let done = 0;
   const orderIdsUsed = [];
@@ -531,6 +541,12 @@ export async function buildTiledGangsheet(orders, {
   const seenOrders = new Set();
   // Per-page PNGs, kept only for the PNG export (see buildGangsheetForChunk).
   const pageBlobs = [];
+  // Flattened (white-backed) page bytes. Each becomes its OWN single-page PDF
+  // at the end — the press prints one sheet at a time, so a multi-page file
+  // just makes the operator split it by hand. Named …_01.pdf, …_02.pdf so they
+  // pair up with the …_p01.png exports. Held as bytes rather than PDFDocument
+  // objects so a long chunk does not keep N pdf-lib graphs alive at once.
+  const pagePngBytes = [];
 
   const canvas = document.createElement('canvas');
   canvas.width = PAGE_W;
@@ -559,10 +575,7 @@ export async function buildTiledGangsheet(orders, {
     fctx.drawImage(canvas, 0, 0);
 
     const blob = await canvasToBlob(flat, 'image/png');
-    const pngBytes = new Uint8Array(await blob.arrayBuffer());
-    const pageImg = await pdf.embedPng(pngBytes);
-    const page = pdf.addPage([pageWpt, pageHpt]);
-    page.drawImage(pageImg, { x: 0, y: 0, width: pageWpt, height: pageHpt });
+    pagePngBytes.push(new Uint8Array(await blob.arrayBuffer()));
   };
 
   let slot = 0;
@@ -655,10 +668,31 @@ export async function buildTiledGangsheet(orders, {
     seq,
   });
 
-  const pdfBytes = await pdf.save();
-  const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+  // One single-page PDF per sheet.
+  const pdfPages = [];
+  for (let i = 0; i < pagePngBytes.length; i++) {
+    const doc = await PDFDocument.create();
+    const pageImg = await doc.embedPng(pagePngBytes[i]);
+    const page = doc.addPage([pageWpt, pageHpt]);
+    page.drawImage(pageImg, { x: 0, y: 0, width: pageWpt, height: pageHpt });
+    const bytes = await doc.save();
+    pdfPages.push({
+      blob: new Blob([bytes], { type: 'application/pdf' }),
+      filename: pdfNameForPage(filename, i),
+    });
+  }
+
   return {
-    blob, pageBlobs, filename, linePrefix,
+    // `blob`/`filename` stay the FIRST page so every existing caller (upload,
+    // hub record, download link) keeps working unchanged; `pdfPages` carries
+    // the whole set for callers that upload them all.
+    blob: pdfPages[0]?.blob ?? new Blob([], { type: 'application/pdf' }),
+    filename: pdfPages[0]?.filename ?? filename,
+    pdfPages,
+    // The chunk's un-paginated name. PNG page names must be derived from THIS,
+    // not from `filename` — that one already carries a page number now.
+    baseFilename: filename,
+    pageBlobs, linePrefix,
     firstSid, lastSid,
     ordersInChunk: orderedOrders.length,
     metasUsed: metaIdsUsed.length,

@@ -9,6 +9,7 @@ import {
   fetchResizeTargets, reconvertResizeItems,
 } from '../services/converter';
 import Pagination from '../components/Pagination';
+import { notify } from '../components/Dialog';
 
 // fulfill_status (order.status) options relevant to ganging (exclude shipped).
 const STATUS_OPTIONS = [
@@ -117,10 +118,17 @@ function orderMetaCount(order, includeProduced = false) {
 }
 
 // Chunk orders so that each chunk's total _qr metas is a multiple of
-// `perPage` (3 designs per page). Orders are added greedily; when adding
-// the next order would NOT make the running total a multiple, it still
-// goes in — the chunk only breaks when the total IS a multiple (i.e. the
-// page is full). This avoids orphan pages with 1–2 designs.
+// `perPage` (3 designs per page). Orders are added greedily and never split
+// across chunks; the chunk only breaks when the running total IS a multiple,
+// i.e. on a full-page boundary.
+//
+// The leftovers at the end are ALWAYS folded into the previous chunk, however
+// many they are. A group whose total metas is not a multiple of perPage has to
+// end on a partial page — that is arithmetic — but it should be exactly one
+// partial page, at the very end of the last gang. Giving the leftovers their
+// own chunk instead (the old `metas < perPage` rule) produced a separate gang
+// whose last page carried 1–2 designs, which is the orphan page this function
+// exists to prevent.
 function chunkCardOrders(orders, perPage = 3, includeProduced = false) {
   if (orders.length === 0) return [];
   const chunks = [];
@@ -137,14 +145,11 @@ function chunkCardOrders(orders, perPage = 3, includeProduced = false) {
       metas = 0;
     }
   }
-  // Remaining orders: attach to last chunk if it would fill better,
-  // otherwise push as a new (partial) chunk.
   if (cur.length > 0) {
-    if (chunks.length > 0 && metas < perPage) {
-      // Fewer than one full page left — merge into previous chunk.
+    if (chunks.length > 0) {
       chunks[chunks.length - 1] = chunks[chunks.length - 1].concat(cur);
     } else {
-      chunks.push(cur);
+      chunks.push(cur);   // whole group is smaller than one page
     }
   }
   return chunks;
@@ -886,32 +891,45 @@ function ComposeTab({ source = 'normal' }) {
         });
 
         // 0) PNG first (khi có tick): từng trang một file, cùng tên với PDF.
+        //    Tên PNG bám theo baseFilename (tên chunk chưa đánh số trang) —
+        //    built.filename giờ đã là tên của TRANG 1.
         let pngUrls = null;
         if (exportPng && built.pageBlobs?.length) {
           pngUrls = await uploadGangPngs(built.pageBlobs, {
-            creds, pdfFilename: built.filename,
+            creds, pdfFilename: built.baseFilename || built.filename,
             onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
           });
         }
 
         // 1) Upload PDF directly to B2 from the desktop app — hub is not involved.
-        const key = `${creds.folder}/${built.filename}`;
-        const arrayBuffer = await built.blob.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuffer);
-        await window.electronAPI.s3Upload({
-          credentials: creds,
-          bucket: creds.bucket,
-          key,
-          body: bytes,
-          contentType: 'application/pdf',
-        });
-        const publicUrl = `${creds.public_url_base}/${key}`;
+        //    Card-skin gangs come back as one PDF per page (built.pdfPages);
+        //    every other branch still returns a single multi-page file.
+        const pdfFiles = built.pdfPages?.length
+          ? built.pdfPages
+          : [{ blob: built.blob, filename: built.filename }];
+        const pdfUrls = [];
+        for (const f of pdfFiles) {
+          const key = `${creds.folder}/${f.filename}`;
+          const bytes = new Uint8Array(await f.blob.arrayBuffer());
+          await window.electronAPI.s3Upload({
+            credentials: creds,
+            bucket: creds.bucket,
+            key,
+            body: bytes,
+            contentType: 'application/pdf',
+          });
+          pdfUrls.push(`${creds.public_url_base}/${key}`);
+        }
+        // First page is the record's file_url so existing screens and download
+        // links keep working; the rest ride along in pdf_urls.
+        const publicUrl = pdfUrls[0];
 
         // 2) Tell the hub to record the gangsheet + flip productions=true.
         const res = await api.post('/gangsheets', {
           filename: built.filename,
           file_url: publicUrl,
           png_urls: pngUrls,
+          pdf_urls: pdfUrls.length > 1 ? pdfUrls : null,
           line_id: linePrefix || '',
           source,
           page_format: pageFormat,
@@ -1892,27 +1910,35 @@ function FindTab({ source = 'normal' }) {
         let pngUrls = null;
         if (exportPng && built.pageBlobs?.length) {
           pngUrls = await uploadGangPngs(built.pageBlobs, {
-            creds, pdfFilename: built.filename,
+            creds, pdfFilename: built.baseFilename || built.filename,
             onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
           });
         }
 
-        const key = `${creds.folder}/${built.filename}`;
-        const arrayBuffer = await built.blob.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuffer);
-        await window.electronAPI.s3Upload({
-          credentials: creds,
-          bucket: creds.bucket,
-          key,
-          body: bytes,
-          contentType: 'application/pdf',
-        });
-        const publicUrl = `${creds.public_url_base}/${key}`;
+        // Card-skin gangs: one PDF per page (see the Compose flow above).
+        const pdfFiles = built.pdfPages?.length
+          ? built.pdfPages
+          : [{ blob: built.blob, filename: built.filename }];
+        const pdfUrls = [];
+        for (const f of pdfFiles) {
+          const key = `${creds.folder}/${f.filename}`;
+          const bytes = new Uint8Array(await f.blob.arrayBuffer());
+          await window.electronAPI.s3Upload({
+            credentials: creds,
+            bucket: creds.bucket,
+            key,
+            body: bytes,
+            contentType: 'application/pdf',
+          });
+          pdfUrls.push(`${creds.public_url_base}/${key}`);
+        }
+        const publicUrl = pdfUrls[0];
 
         const res = await api.post('/gangsheets', {
           filename: built.filename,
           file_url: publicUrl,
           png_urls: pngUrls,
+          pdf_urls: pdfUrls.length > 1 ? pdfUrls : null,
           line_id: linePrefix || '',
           source,
           page_format: chunkPageFormat(chunks[ci]),
@@ -2110,7 +2136,9 @@ function ManageTab({ isAdmin, source = 'normal' }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [reconvertingId, setReconvertingId] = useState(null);
+  const [bulkReconverting, setBulkReconverting] = useState(false);
   const [partnerModal, setPartnerModal] = useState(null);   // gang being assigned to partners
+  const [bulkPartnerOpen, setBulkPartnerOpen] = useState(false);
   // Sub-tab filter (client-side) by filename category — material / scratch /
   // two_size — so the loaded page is easy to tell apart. 'all' = no filter.
   const [subTab, setSubTab] = useState('all');
@@ -2256,6 +2284,36 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     }
   };
 
+  // Same as the per-row Reconvert, over every selected gang at once. Orders are
+  // de-duplicated: a re-ganged order can sit in two gangs, and sending its id
+  // twice would delete its _qr metas, then "delete" nothing on the second pass
+  // while still counting it — the totals shown would be wrong.
+  const handleBulkReconvert = async () => {
+    if (selectedIds.size === 0) return;
+    const gangs = list.data.filter(g => selectedIds.has(g.id));
+    const ids = [...new Set(gangs.flatMap(g => g.order_ids || []))];
+    const gangsWithout = gangs.filter(g => !(g.order_ids || []).length).length;
+    if (ids.length === 0) {
+      notify('Các gang đã chọn không có order_ids để reconvert.', { title: 'Reconvert', kind: 'error' });
+      return;
+    }
+    const skipNote = gangsWithout ? `\n(${gangsWithout} gang không có order_ids — bỏ qua.)` : '';
+    if (!confirm(
+      `Reconvert ${ids.length} đơn trong ${gangs.length - gangsWithout} gangsheet?\n`
+      + `Các meta _qr sẽ bị xoá và converter cron sẽ build lại từ mockup URL.${skipNote}`
+    )) return;
+
+    setBulkReconverting(true);
+    try {
+      const res = await api.post('/orders/bulk-reconvert', { order_ids: ids });
+      notify(res?.data?.message || `Reconvert queued cho ${ids.length} đơn`, { title: 'Reconvert', kind: 'success' });
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Reconvert failed', { title: 'Reconvert', kind: 'error' });
+    } finally {
+      setBulkReconverting(false);
+    }
+  };
+
   const applyFilters = (e) => {
     e?.preventDefault();
     setFilters(f => ({ ...f, page: 1 }));
@@ -2331,6 +2389,28 @@ function ManageTab({ isAdmin, source = 'normal' }) {
             ? `Zipping ${zipProgress?.done ?? 0}/${zipProgress?.total ?? '?'}…`
             : `Tải PNG .zip (${selectedIds.size})`}
         </button>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setBulkPartnerOpen(true)}
+            disabled={selectedIds.size === 0}
+            className="px-3 py-1.5 bg-purple-500 hover:bg-purple-600 disabled:opacity-40 text-white text-sm rounded-lg"
+            title="Phân quyền partner cho toàn bộ gang đã chọn"
+          >
+            {`Phân quyền partner (${selectedIds.size})`}
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={handleBulkReconvert}
+            disabled={selectedIds.size === 0 || bulkReconverting}
+            className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-sm rounded-lg"
+            title="Xoá meta _qr của mọi đơn trong các gang đã chọn; cron build lại từ mockup URL"
+          >
+            {bulkReconverting ? 'Reconverting…' : `Reconvert all (${selectedIds.size})`}
+          </button>
+        )}
         {isAdmin && (
           <button
             type="button"
@@ -2516,6 +2596,13 @@ function ManageTab({ isAdmin, source = 'normal' }) {
 
       {detail && <DetailModal gs={detail} onClose={() => setDetail(null)} />}
       {partnerModal && <PartnerAssignModal gs={partnerModal} onClose={() => setPartnerModal(null)} onSaved={fetchList} />}
+      {bulkPartnerOpen && (
+        <PartnerBulkAssignModal
+          gangs={list.data.filter(g => selectedIds.has(g.id))}
+          onClose={() => setBulkPartnerOpen(false)}
+          onSaved={fetchList}
+        />
+      )}
     </div>
   );
 }
@@ -2585,6 +2672,133 @@ function DetailModal({ gs, onClose }) {
 }
 
 // Admin: assign a gangsheet to partner users (they see it in partner-bullstart).
+/**
+ * Assign partners to MANY gangs at once (Manage tab, bulk-select).
+ *
+ * Deliberately has no revenue editor: revenue is entered per order for a single
+ * partner, which only makes sense on one gang at a time — that stays in
+ * PartnerAssignModal.
+ *
+ * `PUT /gangsheets/{id}/partners` REPLACES a gang's partner list, so applying a
+ * checkbox set straight across a mixed selection would silently drop partners
+ * that were already on some of the gangs. Hence the two modes, with 'add'
+ * (union with what each gang already has) as the default.
+ */
+function PartnerBulkAssignModal({ gangs, onClose, onSaved }) {
+  const [users, setUsers] = useState([]);
+  const [selected, setSelected] = useState(new Set());
+  const [mode, setMode] = useState('add');       // 'add' | 'replace'
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [progress, setProgress] = useState(null); // { done, total }
+
+  useEffect(() => {
+    api.get('/gangsheets/partner-users')
+      .then(res => setUsers(res.data || []))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const toggle = (id) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  // How many gangs already carry at least one partner — the ones 'replace'
+  // would overwrite. Shown so the choice is made with the number in view.
+  const withPartners = gangs.filter(g => g.partners?.length).length;
+
+  const save = async () => {
+    if (mode === 'replace' && selected.size === 0
+      && !confirm(`Bỏ hết partner khỏi ${gangs.length} gang đã chọn?`)) return;
+
+    setSaving(true);
+    setProgress({ done: 0, total: gangs.length });
+    const failed = [];
+    for (let i = 0; i < gangs.length; i++) {
+      const g = gangs[i];
+      const ids = mode === 'add'
+        ? [...new Set([...(g.partners || []).map(p => p.id), ...selected])]
+        : [...selected];
+      try {
+        await api.put(`/gangsheets/${g.id}/partners`, { user_ids: ids });
+      } catch {
+        failed.push(g.filename);
+      }
+      setProgress({ done: i + 1, total: gangs.length });
+    }
+    setSaving(false);
+    setProgress(null);
+
+    const ok = gangs.length - failed.length;
+    notify(
+      failed.length
+        ? `${ok}/${gangs.length} gang đã lưu · lỗi: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`
+        : `Đã phân quyền ${gangs.length} gang`,
+      { title: 'Phân quyền partner', kind: failed.length ? 'error' : 'success' },
+    );
+    onSaved?.();
+    if (!failed.length) onClose();
+  };
+
+  return (
+    <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
+      <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[90vw] max-w-lg max-h-[85vh] flex flex-col overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-200 flex justify-between items-center">
+          <h3 className="text-sm font-semibold text-neutral-800">Phân quyền partner — {gangs.length} gang</h3>
+          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800 text-xl leading-none">×</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div className="flex gap-1">
+            <SubChip active={mode === 'add'} onClick={() => setMode('add')}>Thêm vào</SubChip>
+            <SubChip active={mode === 'replace'} onClick={() => setMode('replace')}>Thay thế</SubChip>
+          </div>
+          <p className="text-xs text-neutral-500">
+            {mode === 'add'
+              ? 'Giữ nguyên partner sẵn có của từng gang, chỉ thêm những người chọn bên dưới.'
+              : <>Đặt lại danh sách partner của <b>mọi</b> gang đã chọn đúng bằng danh sách bên dưới
+                  {withPartners > 0 && <> — <b className="text-red-600">{withPartners} gang</b> đang có partner sẽ bị ghi đè</>}.</>}
+          </p>
+
+          {loading ? (
+            <p className="text-neutral-400 text-sm">Loading…</p>
+          ) : users.length === 0 ? (
+            <p className="text-neutral-400 text-sm">Chưa có tài khoản role <b>partner</b> nào. Tạo user partner ở Users trước.</p>
+          ) : (
+            <div className="space-y-1">
+              {users.map(u => (
+                <label key={u.id} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-neutral-50 cursor-pointer">
+                  <input type="checkbox" checked={selected.has(u.id)} onChange={() => toggle(u.id)} className="accent-orange-500" />
+                  <span className="text-sm text-neutral-800">{u.name}</span>
+                  <span className="text-xs text-neutral-400">{u.email}</span>
+                </label>
+              ))}
+            </div>
+          )}
+
+          <div className="border-t border-neutral-100 pt-3 max-h-32 overflow-y-auto">
+            <div className="text-xs text-neutral-500 mb-1">Gang sẽ áp dụng:</div>
+            {gangs.map(g => (
+              <div key={g.id} className="text-xs font-mono text-neutral-600 truncate">
+                {g.filename}{g.partners?.length ? ` · ${g.partners.length} partner` : ''}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="px-4 py-3 border-t border-neutral-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Huỷ</button>
+          <button onClick={save} disabled={saving || loading}
+            className="px-4 py-1.5 bg-purple-500 hover:bg-purple-600 disabled:opacity-40 text-white text-sm rounded-lg">
+            {saving ? `Đang lưu ${progress?.done ?? 0}/${progress?.total ?? gangs.length}…` : 'Lưu'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PartnerAssignModal({ gs, onClose, onSaved }) {
   const [users, setUsers] = useState([]);
   const [selected, setSelected] = useState(new Set((gs.partners || []).map(p => p.id)));

@@ -94,7 +94,7 @@ const PRODUCT_FILTER_KEYS = [
 ];
 
 const ORDERS_FILTER_DEFAULTS = {
-  status: '', tracking_status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', tracking_id: '',
+  status: '', tracking_status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', system_ids: '', tracking_id: '',
   user_id: '', date_from: '', date_to: '', ship_type: '',
   product_id: '', line_id: '', product_variant_id: '', sku: '', color: '', size: '', paper_type: '',
   material_id: '', accessory_id: '', accessory_code: '',
@@ -117,6 +117,7 @@ function buildOrderFilterParams(filters, { includePagination = false, orderIds, 
   if (filters.ref_id) params.ref_id = filters.ref_id;
   if (filters.ref_ids) params.ref_ids = filters.ref_ids;
   if (filters.system_id) params.system_id = filters.system_id;
+  if (filters.system_ids) params.system_ids = filters.system_ids;
   if (filters.tracking_id) params.tracking_id = filters.tracking_id;
   if (filters.user_id) params.user_id = filters.user_id;
   if (filters.date_from) params.date_from = filters.date_from;
@@ -181,6 +182,8 @@ export default function Orders({ source = 'normal' }) {
   useEffect(() => { sessionStorage.setItem(filtersKey, JSON.stringify(filters)); }, [filters, filtersKey]);
   const [showRefIdsModal, setShowRefIdsModal] = useState(false);
   const [refIdsInput, setRefIdsInput] = useState('');
+  const [showSystemIdsModal, setShowSystemIdsModal] = useState(false);
+  const [systemIdsInput, setSystemIdsInput] = useState('');
   const [selected, setSelected] = useState([]);
   const [previewUrl, setPreviewUrl] = useState(null);
 
@@ -295,7 +298,7 @@ export default function Orders({ source = 'normal' }) {
     // guaranteed if the route keys are ever dropped.
     source,
     filters.page, filters.status, filters.tracking_status, filters.paid, filters.ship_type,
-    filters.user_id, filters.ref_ids, filters.date_from, filters.date_to, filters.per_page,
+    filters.user_id, filters.ref_ids, filters.system_ids, filters.date_from, filters.date_to, filters.per_page,
     filters.product_id, filters.line_id, filters.product_variant_id, filters.sku,
     filters.color, filters.size, filters.paper_type, filters.material_id, filters.accessory_id, filters.accessory_code,
   ]);
@@ -1237,6 +1240,30 @@ export default function Orders({ source = 'normal' }) {
               ✕
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => { setSystemIdsInput(filters.system_ids); setShowSystemIdsModal(true); }}
+            className={`px-3 py-1.5 text-xs rounded-lg ${
+              filters.system_ids
+                ? 'bg-orange-100 text-orange-700 border border-orange-300'
+                : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
+            }`}
+            title="Paste a list of system_ids (newline / comma separated)"
+          >
+            {filters.system_ids
+              ? `System list (${filters.system_ids.split(/[\s,]+/).filter(Boolean).length})`
+              : 'System List'}
+          </button>
+          {filters.system_ids && (
+            <button
+              type="button"
+              onClick={() => setFilters(f => ({ ...f, system_ids: '', page: 1 }))}
+              className="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-500"
+              title="Clear system_id list filter"
+            >
+              ✕
+            </button>
+          )}
         </form>
 
         <select
@@ -2091,6 +2118,41 @@ export default function Orders({ source = 'normal' }) {
                 onClick={() => {
                   setFilters(f => ({ ...f, ref_ids: refIdsInput, page: 1 }));
                   setShowRefIdsModal(false);
+                }}
+                className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Search by system_id list modal */}
+      {showSystemIdsModal && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setShowSystemIdsModal(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-[560px] max-w-[95%] p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-neutral-800 mb-2">Search by list of system_ids</h3>
+            <p className="text-xs text-neutral-500 mb-3">
+              Paste system_ids cách nhau bằng <strong>xuống dòng</strong> hoặc <strong>dấu phẩy</strong>. Tìm exact match
+              (khác ô <span className="font-mono">Search system_id</span> ở trên — ô đó tìm gần đúng).
+            </p>
+            <textarea
+              value={systemIdsInput}
+              onChange={e => setSystemIdsInput(e.target.value)}
+              placeholder="PS_C3071&#10;PS_C3072&#10;CCS8089&#10;..."
+              rows={10}
+              className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm font-mono"
+            />
+            <div className="text-xs text-neutral-500 mt-2">
+              Detected: <span className="font-semibold">{systemIdsInput.split(/[\s,]+/).filter(Boolean).length}</span> system_id(s)
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setShowSystemIdsModal(false)} className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Cancel</button>
+              <button
+                onClick={() => {
+                  setFilters(f => ({ ...f, system_ids: systemIdsInput, page: 1 }));
+                  setShowSystemIdsModal(false);
                 }}
                 className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg"
               >
