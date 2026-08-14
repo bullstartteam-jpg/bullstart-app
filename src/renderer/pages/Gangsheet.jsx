@@ -2510,18 +2510,44 @@ function ManageTab({ isAdmin, source = 'normal' }) {
                     ✓
                   </button>
                 </td>
-                <td className="px-3 py-2 font-mono text-xs text-neutral-700 truncate max-w-[260px]">
-                  {g.is_duplicate && (
-                    <span className="mr-1.5 px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-sans font-semibold"
-                      title={`Trùng order với gang #${(g.duplicate_gang_ids || []).join(', #')}`}>duplicate</span>
+                <td className="px-3 py-2 font-mono text-xs text-neutral-700 max-w-[260px]">
+                  <div className="truncate">
+                    {g.is_duplicate && (
+                      <span className="mr-1.5 px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-sans font-semibold"
+                        title={`Trùng order với gang #${(g.duplicate_gang_ids || []).join(', #')}`}>duplicate</span>
+                    )}
+                    {g.filename}
+                  </div>
+                  {/* Who this gang was handed to. On its own line rather than in
+                      the actions column: which partner has a gang is something
+                      you scan a whole page for, not something you click into. */}
+                  {g.partners?.length > 0 && (
+                    <div className="mt-1 flex items-center gap-1 font-sans text-[10px]"
+                      title={`Đã chia cho: ${g.partners.map(p => p.name).join(', ')}`}>
+                      <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-semibold shrink-0">
+                        Đã chia
+                      </span>
+                      <span className="text-neutral-600 truncate">
+                        {g.partners.map(p => p.name).join(', ')}
+                      </span>
+                    </div>
                   )}
-                  {g.filename}
                 </td>
                 <td className="px-3 py-2 font-mono text-xs text-neutral-500">
                   {g.first_system_id}{g.first_system_id !== g.last_system_id && <> → {g.last_system_id}</>}
                 </td>
                 <td className="px-3 py-2 font-mono text-xs">{g.line_id || '-'}</td>
-                <td className="px-3 py-2 text-right">{g.orders_count}</td>
+                <td className="px-3 py-2 text-right">
+                  {g.orders_count}
+                  {/* Still-open share of the gang. Silent once everything has
+                      shipped — a zero on every finished row is noise. */}
+                  {g.unshipped_orders_count > 0 && (
+                    <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold"
+                      title={`${g.unshipped_orders_count}/${g.orders_count} đơn chưa shipped`}>
+                      {g.unshipped_orders_count} chưa ship
+                    </span>
+                  )}
+                </td>
                 <td className="px-3 py-2 text-right">{g.metas_count}</td>
                 <td className="px-3 py-2 text-xs">{g.creator?.name || '-'}</td>
                 <td className="px-3 py-2 text-xs text-neutral-500">{new Date(g.created_at).toLocaleString()}</td>
