@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { notify, askConfirm } from '../components/Dialog';
 import { buildInvoicePdf } from '../services/invoicePdf';
 import { PreviewModal } from '../components/Preview';
+import { CreateTicketModal } from '../components/TicketModals';
 import { driveThumb, isPreviewable } from '../utils/drive';
 import {
   subscribeFetchTrackingJob, startFetchTrackingJob, stopFetchTrackingJob,
@@ -92,6 +93,31 @@ const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
 const PRODUCT_FILTER_KEYS = [
   'product_id', 'line_id', 'product_variant_id', 'sku', 'color', 'size', 'paper_type', 'material_id', 'accessory_id', 'accessory_code',
 ];
+
+/**
+ * Ticket marker on an order row. Red while any thread still needs attention
+ * (open or a new message), green once every thread is closed, nothing when the
+ * order has no tickets.
+ *
+ * `tickets_count` / `open_tickets_count` come from the orders index already
+ * scoped to what this user may see (Ticket::scopeVisibleTo), so the badge can
+ * never hint at a thread the viewer is not allowed to open.
+ */
+function TicketDot({ order }) {
+  const total = order.tickets_count ?? 0;
+  if (!total) return null;
+  const open = order.open_tickets_count ?? 0;
+  const cls = open > 0 ? 'bg-red-500' : 'bg-emerald-500';
+  const title = open > 0 ? `${open}/${total} ticket đang mở` : `${total} ticket đã xong`;
+  return (
+    <span
+      title={title}
+      className={`inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full ${cls} text-white text-[10px] leading-none`}
+    >
+      {total > 1 ? total : '💬'}
+    </span>
+  );
+}
 
 const ORDERS_FILTER_DEFAULTS = {
   status: '', tracking_status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', system_ids: '', tracking_id: '',
@@ -184,6 +210,8 @@ export default function Orders({ source = 'normal' }) {
   const [refIdsInput, setRefIdsInput] = useState('');
   const [showSystemIdsModal, setShowSystemIdsModal] = useState(false);
   const [systemIdsInput, setSystemIdsInput] = useState('');
+  // Order the "create ticket" popup is open for; null = closed.
+  const [ticketFor, setTicketFor] = useState(null);
   const [selected, setSelected] = useState([]);
   const [previewUrl, setPreviewUrl] = useState(null);
 
@@ -780,8 +808,10 @@ export default function Orders({ source = 'normal' }) {
     let q = [...trackingQueue];
     const BASE_DELAY = 3000;
     const ERROR_BACKOFF = 8000;
-    const CONSECUTIVE_FAIL_LIMIT = 5; // auto-stop after this many in a row
-    let consecutiveFails = 0;
+    // Failures never stop the queue: carrier outages are usually transient and
+    // the queue is long, so stopping just meant coming back to a half-done run.
+    // Each failure is logged on its own row and the pacing stays what it always
+    // was; Pause and Cancel are the ways to stop it.
     let delay = BASE_DELAY;
 
     while (q.length > 0 && !trackingCancelRef.current) {
@@ -801,14 +831,12 @@ export default function Orders({ source = 'normal' }) {
         if (!tk) {
           pushTrackingLog({ kind: 'warn', sid: item.system_id, msg: 'No tracking in carrier response' });
           setTrackingErrors(e => e + 1);
-          consecutiveFails = 0;
         } else {
           // 2. Save to backend.
           await api.post(`/orders/${item.id}/save-tracking`, { tracking_id: tk });
           const carrier = result.carrier ? ` (${result.carrier})` : '';
           pushTrackingLog({ kind: 'ok', sid: item.system_id, msg: `tracking = ${tk}${carrier}` });
           setTrackingDone(d => d + 1);
-          consecutiveFails = 0;
         }
       } catch (err) {
         const upstreamStatus = err.upstreamStatus;
@@ -823,17 +851,6 @@ export default function Orders({ source = 'normal' }) {
         pushTrackingLog({ kind: 'error', sid: item.system_id, msg });
         setTrackingErrors(e => e + 1);
         hadError = true;
-        consecutiveFails++;
-      }
-
-      // Circuit breaker: bail out if upstream keeps failing — pointless to keep hammering it.
-      if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
-        pushTrackingLog({
-          kind: 'error',
-          sid: '!!',
-          msg: `Stopping — ${consecutiveFails} consecutive upstream failures. Verify carrier.pressify.us is reachable.`,
-        });
-        break;
       }
 
       delay = hadError ? ERROR_BACKOFF : BASE_DELAY;
@@ -1655,6 +1672,14 @@ export default function Orders({ source = 'normal' }) {
                     {hasOrderFailure(order.id) && (
                       <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[10px] leading-none" title={`${countOrderFailures(order.id)} image URL(s) failed validation`}>!</span>
                     )}
+                    <TicketDot order={order} />
+                    <button
+                      onClick={e => { e.stopPropagation(); setTicketFor(order); }}
+                      className="text-neutral-300 hover:text-blue-600 text-[11px] leading-none"
+                      title="Tạo ticket cho đơn này"
+                    >
+                      ＋💬
+                    </button>
                   </span>
                 </td>
                 <td className={`p-3 text-xs ${order.is_duplicate_ref ? 'text-red-600 font-semibold' : 'text-neutral-700'}`}>
@@ -2126,6 +2151,16 @@ export default function Orders({ source = 'normal' }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Create a ticket for one order, straight from the list */}
+      {ticketFor && (
+        <CreateTicketModal
+          orderId={ticketFor.id}
+          systemId={ticketFor.system_id}
+          onClose={() => setTicketFor(null)}
+          onCreated={fetchOrders}
+        />
       )}
 
       {/* Search by system_id list modal */}

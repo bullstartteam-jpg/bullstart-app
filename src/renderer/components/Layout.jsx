@@ -10,6 +10,9 @@ const navItems = [
   { path: '/orders', label: 'Orders', icon: '◈', module: 'orders' },
   { path: '/orders-fpt', label: 'Order FPT', icon: '◈', module: 'orders' },
   { path: '/not-delivered', label: 'Chưa delivered', icon: '📦', module: 'orders' },
+  // Staff-gated rather than permission-gated: a new module slug would need a
+  // permissions row seeded for every existing role before anyone could see it.
+  { path: '/tickets', label: 'Tickets', icon: '💬', requiresStaff: true },
   { path: '/image-url-check', label: 'Image URL Check', icon: '🖼', requiresStaff: true },
   { path: '/bulk-front-update', label: 'Update Front', icon: '🔄', requiresStaff: true },
   { path: '/design-check', label: 'Design Check', icon: '📐', requiresStaff: true },

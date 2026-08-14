@@ -23,6 +23,7 @@ import DesignCheck from './pages/DesignCheck';
 import AutoPay from './pages/AutoPay';
 import Reprint from './pages/Reprint';
 import NotDelivered from './pages/NotDelivered';
+import Tickets from './pages/Tickets';
 import ImageUrlCheck from './pages/ImageUrlCheck';
 import Reasons from './pages/Reasons';
 import Profile from './pages/Profile';
@@ -67,6 +68,7 @@ export default function App() {
           <Route path="auto-pay" element={<AutoPay />} />
           <Route path="reprint" element={<Reprint />} />
           <Route path="not-delivered" element={<NotDelivered />} />
+          <Route path="tickets" element={<Tickets />} />
           <Route path="image-url-check" element={<ImageUrlCheck />} />
           <Route path="bulk-front-update" element={<BulkFrontUpdate />} />
           <Route path="design-check" element={<DesignCheck />} />

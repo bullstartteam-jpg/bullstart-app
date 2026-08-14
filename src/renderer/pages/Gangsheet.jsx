@@ -2715,13 +2715,17 @@ function PartnerBulkAssignModal({ gangs, onClose, onSaved }) {
     setSaving(true);
     setProgress({ done: 0, total: gangs.length });
     const failed = [];
+    let ordersAssigned = 0;
+    let ordersLocked = 0;
     for (let i = 0; i < gangs.length; i++) {
       const g = gangs[i];
       const ids = mode === 'add'
         ? [...new Set([...(g.partners || []).map(p => p.id), ...selected])]
         : [...selected];
       try {
-        await api.put(`/gangsheets/${g.id}/partners`, { user_ids: ids });
+        const res = await api.put(`/gangsheets/${g.id}/partners`, { user_ids: ids });
+        ordersAssigned += res.data?.orders_assigned || 0;
+        ordersLocked += res.data?.orders_skipped_locked || 0;
       } catch {
         failed.push(g.filename);
       }
@@ -2731,10 +2735,14 @@ function PartnerBulkAssignModal({ gangs, onClose, onSaved }) {
     setProgress(null);
 
     const ok = gangs.length - failed.length;
+    const orderNote = ordersAssigned
+      ? ` · gán ${ordersAssigned} đơn cho partner`
+      : ' · chưa gán đơn (cần đúng 1 partner/gang)';
+    const lockNote = ordersLocked ? ` · bỏ qua ${ordersLocked} đơn đã khoá` : '';
     notify(
       failed.length
         ? `${ok}/${gangs.length} gang đã lưu · lỗi: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`
-        : `Đã phân quyền ${gangs.length} gang`,
+        : `Đã phân quyền ${gangs.length} gang${orderNote}${lockNote}`,
       { title: 'Phân quyền partner', kind: failed.length ? 'error' : 'success' },
     );
     onSaved?.();
@@ -2759,6 +2767,16 @@ function PartnerBulkAssignModal({ gangs, onClose, onSaved }) {
               ? 'Giữ nguyên partner sẵn có của từng gang, chỉ thêm những người chọn bên dưới.'
               : <>Đặt lại danh sách partner của <b>mọi</b> gang đã chọn đúng bằng danh sách bên dưới
                   {withPartners > 0 && <> — <b className="text-red-600">{withPartners} gang</b> đang có partner sẽ bị ghi đè</>}.</>}
+          </p>
+          {/* partner_id chỉ gán được khi gang có đúng 1 partner — nó là cột đơn
+              trên orders. Nói trước để không tưởng phân quyền xong là partner
+              thấy đơn. */}
+          <p className="text-xs rounded-lg px-3 py-2 bg-[#faf8f6] border border-neutral-200 text-neutral-600">
+            Gang nào kết thúc với <b>đúng 1 partner</b> thì các đơn trong gang được gán{' '}
+            <span className="font-mono">partner_id</span> → partner thấy đơn ở partner-bullstart.
+            Gang có <b>2 partner trở lên</b> chỉ được quyền xem/tải file, <b>không</b> gán đơn.
+            Đơn đã khoá (partner đã đánh dấu in) luôn được bỏ qua. Doanh thu không đổi —
+            nhập riêng ở nút <b>Partners</b> của từng gang.
           </p>
 
           {loading ? (

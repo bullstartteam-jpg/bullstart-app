@@ -893,6 +893,17 @@ function qrBgForAddon(addonCode, orderItemsCount = 1) {
   if (has(/big/)   || has(/\bbc\b/))        return '#BBF7D0'; // Big chip   → xanh lá pastel
   return '#F97316';                                           // No chip    → cam đậm
 }
+
+// Shorten the add-on label PRINTED on the card-skin band: "Holographic Broken
+// Glass" → "HOLO Broken Glass". Every Holographic variant (Rainbow, Heart,
+// Starts, Broken Glass, Glitters) keeps its distinguishing word — only the long
+// prefix goes, so the label still fits the narrow band at a readable size.
+//
+// Display only: qrBgForAddon() runs on the RAW value, and would match "HOLO"
+// anyway since it tests /holo/ case-insensitively.
+function shortenAddonLabel(text) {
+  return String(text || '').replace(/holographic/gi, 'HOLO');
+}
 async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, addonCode, sourceKey, orderItemsCount = 1) {
   const portrait = sourceW < sourceH;
   const dW = portrait ? sourceH : sourceW;   // landscape design width
@@ -924,7 +935,7 @@ async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, add
   if (band > 0) {
     // Build a horizontal label strip (barcode + text), then draw it rotated
     // -90° so it runs vertically down the narrow left band.
-    const codeText = addonCode ? `${systemId}-${addonCode}` : systemId;
+    const codeText = addonCode ? `${systemId}-${shortenAddonLabel(addonCode)}` : systemId;
     const addonBg = qrBgForAddon(addonCode, orderItemsCount);
 
     // Code 128 barcode encoding the system_id.
