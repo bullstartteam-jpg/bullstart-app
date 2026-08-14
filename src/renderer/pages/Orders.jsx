@@ -1645,6 +1645,7 @@ export default function Orders({ source = 'normal' }) {
               <th className="p-3 text-left">Ref ID</th>
               <th className="p-3 text-left">Items</th>
               {isStaff && <th className="p-3 text-left">User</th>}
+              <th className="p-3 text-left">Ticket</th>
               <th className="p-3 text-left">Status</th>
               <th className="p-3 text-left">Ship Type</th>
               <th className="p-3 text-right">Total</th>
@@ -1655,9 +1656,9 @@ export default function Orders({ source = 'normal' }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={isStaff ? 11 : 10} className="p-6 text-center text-neutral-400">Loading...</td></tr>
+              <tr><td colSpan={isStaff ? 12 : 11} className="p-6 text-center text-neutral-400">Loading...</td></tr>
             ) : orders.length === 0 ? (
-              <tr><td colSpan={isStaff ? 11 : 10} className="p-6 text-center text-neutral-400">No orders found</td></tr>
+              <tr><td colSpan={isStaff ? 12 : 11} className="p-6 text-center text-neutral-400">No orders found</td></tr>
             ) : orders.map(order => (
               <tr key={order.id} className="border-b border-neutral-100 hover:bg-orange-50/50 cursor-pointer transition-colors" onClick={() => navigate(`${basePath}/${order.id}`)}>
                 <td className="p-3" onClick={e => e.stopPropagation()}>
@@ -1672,14 +1673,6 @@ export default function Orders({ source = 'normal' }) {
                     {hasOrderFailure(order.id) && (
                       <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[10px] leading-none" title={`${countOrderFailures(order.id)} image URL(s) failed validation`}>!</span>
                     )}
-                    <TicketDot order={order} />
-                    <button
-                      onClick={e => { e.stopPropagation(); setTicketFor(order); }}
-                      className="text-neutral-300 hover:text-blue-600 text-[11px] leading-none"
-                      title="Tạo ticket cho đơn này"
-                    >
-                      ＋💬
-                    </button>
                   </span>
                 </td>
                 <td className={`p-3 text-xs ${order.is_duplicate_ref ? 'text-red-600 font-semibold' : 'text-neutral-700'}`}>
@@ -1732,8 +1725,32 @@ export default function Orders({ source = 'normal' }) {
                     {order.user ? (
                       <span title={order.user.email}>{order.user.name}</span>
                     ) : <span className="text-neutral-400">-</span>}
+                    {/* Who is printing it. Just the name — the purple pill under
+                        the seller already says what it is, and spelling out
+                        "Partner" next to a partner called "partner2" reads
+                        twice. Absent when unassigned. */}
+                    {order.partner?.name && (
+                      <div className="mt-0.5">
+                        <span className="inline-block px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px] font-medium truncate max-w-full"
+                          title={`Đã giao cho partner ${order.partner.name}`}>
+                          {order.partner.name}
+                        </span>
+                      </div>
+                    )}
                   </td>
                 )}
+                <td className="p-3" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center gap-1.5">
+                    <TicketDot order={order} />
+                    <button
+                      onClick={() => setTicketFor(order)}
+                      className="text-neutral-300 hover:text-blue-600 text-xs leading-none"
+                      title="Tạo ticket cho đơn này"
+                    >
+                      ＋💬
+                    </button>
+                  </div>
+                </td>
                 <td className="p-3">
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[order.status]}`}>{STATUS_MAP[order.status]}</span>
                 </td>
