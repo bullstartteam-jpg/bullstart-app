@@ -2127,7 +2127,7 @@ function gangCategory(filename) {
 const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Khác';
 
 function ManageTab({ isAdmin, source = 'normal' }) {
-  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', page: 1 });
+  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
@@ -2214,6 +2214,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
       if (filters.date_to) params.date_to = filters.date_to;
       if (filters.line_id) params.line_id = filters.line_id;
       if (filters.page_format) params.page_format = filters.page_format;
+      if (filters.unshipped) params.unshipped = 1;
       const res = await api.get('/gangsheets', { params });
       setList(res.data);
       setSelectedIds(new Set()); // reset on every re-fetch
@@ -2221,7 +2222,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchList(); }, [filters.page, filters.page_format]);
+  useEffect(() => { fetchList(); }, [filters.page, filters.page_format, filters.unshipped]);
 
   // Category chips + filtered rows (client-side, on the current page).
   const catCounts = {};
@@ -2320,7 +2321,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     fetchList();
   };
   const clearFilters = () => {
-    setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', page: 1 });
+    setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, page: 1 });
     setTimeout(fetchList, 0);
   };
 
@@ -2389,6 +2390,14 @@ function ManageTab({ isAdmin, source = 'normal' }) {
             ? `Zipping ${zipProgress?.done ?? 0}/${zipProgress?.total ?? '?'}…`
             : `Tải PNG .zip (${selectedIds.size})`}
         </button>
+        {/* Hides gangs whose orders have all shipped — the working set on a
+            busy day is the handful still open. */}
+        <label className="flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg cursor-pointer">
+          <input type="checkbox" checked={filters.unshipped}
+            onChange={e => setFilters(f => ({ ...f, unshipped: e.target.checked, page: 1 }))}
+            className="accent-orange-500" />
+          <span className="text-neutral-600">Còn đơn chưa ship</span>
+        </label>
         {isAdmin && (
           <button
             type="button"

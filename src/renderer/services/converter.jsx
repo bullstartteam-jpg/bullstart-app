@@ -32,7 +32,7 @@ const qrJob = createJob({
         line_id: it.line_id || '',
         convert_layout: it.convert_layout || 'default',
         addon_code: it.addon_code || '',
-        order_items_count: it.order_items_count || 1,
+        order_card_total: it.order_card_total || it.order_items_count || 1,
         target_key: p.target_key,
         source_key: p.source_key,
         is_greeting_card_back: !!p.is_greeting_card_back,
@@ -518,7 +518,7 @@ export async function reconvertResizeItems(items, { targetW = 3300, targetH = 21
         line_id: item.line_id,
         convert_layout: item.convert_layout,
         addon_code: item.addon_code,
-        order_items_count: item.order_items_count,
+        order_card_total: item.order_card_total || item.order_items_count,
         is_greeting_card_back: !!t.is_greeting_card_back,
         targetW, targetH,
       });
@@ -547,7 +547,7 @@ async function processOne(item, meta) {
       line_id: item.line_id,
       convert_layout: item.convert_layout,
       addon_code: item.addon_code,
-      order_items_count: item.order_items_count,
+      order_card_total: item.order_card_total || item.order_items_count,
       is_greeting_card_back: !!meta.is_greeting_card_back,
     }
   );
@@ -878,16 +878,19 @@ const CARD_SKIN_BAND_W = 200;   // left strip width for barcode + info (~0.67" @
 // by eye. Light tones keep the black QR modules scannable. Detection is by the
 // add-on style text (e.g. "Small Chip", "Holographic Rainbow") with a fallback
 // to the short codes (SMC / BC / HLG*). Priority: Holo wins over any chip.
-function qrBgForAddon(addonCode, orderItemsCount = 1) {
-  // Đơn có từ 2 item trở lên: TÍM, bỏ qua mọi luật chip bên dưới. Thẻ của một
-  // đơn nhiều item phải gom lại đóng chung, nên dấu hiệu đó quan trọng hơn loại
+function qrBgForAddon(addonCode, orderCardTotal = 1) {
+  // Đơn ra từ 2 thẻ trở lên: TÍM, bỏ qua mọi luật chip bên dưới. Thẻ của một
+  // đơn nhiều thẻ phải gom lại đóng chung, nên dấu hiệu đó quan trọng hơn loại
   // chip — thợ nhìn màu là biết phải tìm cho đủ bộ.
-  if (Number(orderItemsCount) >= 2) return '#D8B4FE';         // Nhiều item → tím pastel
+  // Đếm theo TỔNG QUANTITY chứ không phải số dòng item: đơn 1 item × qty 3 vẫn
+  // là 3 thẻ phải đóng chung.
+  if (Number(orderCardTotal) >= 2) return '#D8B4FE';          // Nhiều thẻ → tím pastel
 
   const s = String(addonCode || '').toLowerCase();
   const has = (re) => re.test(s);
-  // Match on the human style text, which in the data is "Small Ship"/"Big Chip"
-  // (note the "Small Ship" typo) — so match "small"/"big", plus the SMC/BC codes.
+  // Match on the human style text ("Small Chip" / "Big Chip"). Matching stays
+  // on the loose "small"/"big" substrings: the data carried a "Small Ship" typo
+  // for a long time and older/unmigrated DBs may still have it.
   if (has(/holo/) || has(/\bhlg[a-z]*\b/))  return '#FCA5A5'; // Holo       → đỏ pastel
   if (has(/small/) || has(/\bsmc\b/))       return '#FACC15'; // Small chip → vàng đậm
   if (has(/big/)   || has(/\bbc\b/))        return '#BBF7D0'; // Big chip   → xanh lá pastel
@@ -904,7 +907,7 @@ function qrBgForAddon(addonCode, orderItemsCount = 1) {
 function shortenAddonLabel(text) {
   return String(text || '').replace(/holographic/gi, 'HOLO');
 }
-async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, addonCode, sourceKey, orderItemsCount = 1) {
+async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, addonCode, sourceKey, orderCardTotal = 1) {
   const portrait = sourceW < sourceH;
   const dW = portrait ? sourceH : sourceW;   // landscape design width
   const dH = portrait ? sourceW : sourceH;   // landscape design height
@@ -936,7 +939,7 @@ async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, add
     // Build a horizontal label strip (barcode + text), then draw it rotated
     // -90° so it runs vertically down the narrow left band.
     const codeText = addonCode ? `${systemId}-${shortenAddonLabel(addonCode)}` : systemId;
-    const addonBg = qrBgForAddon(addonCode, orderItemsCount);
+    const addonBg = qrBgForAddon(addonCode, orderCardTotal);
 
     // Code 128 barcode encoding the system_id.
     const barcode = generateBarcodeCanvas(systemId, 3);
@@ -1003,7 +1006,12 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   // Card Skin ('outside'): keep the design at native size (landscape) and add a
   // LEFT strip with a rotated barcode + the selected add-on code.
   if (cardSkin) {
-    return await composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, opts.addon_code || '', source_key, opts.order_items_count || 1);
+    return await composeCardSkinOutside(
+      sourceImg, sourceW, sourceH, systemId, opts.addon_code || '', source_key,
+      // order_items_count is the pre-order_card_total fallback: an older hub
+      // still counts item rows, which is at least right for multi-line orders.
+      opts.order_card_total || opts.order_items_count || 1,
+    );
   }
 
   // 'native' layout = greeting card 5x5: FIXED 11×5.5" canvas (3300×1650 @300dpi),
