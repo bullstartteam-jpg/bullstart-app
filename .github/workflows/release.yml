@@ -13,6 +13,13 @@ jobs:
     strategy:
       # Don't let a mac failure cancel the Windows build.
       fail-fast: false
+      # Run the platforms one at a time. Both jobs publish with
+      # --publish always, and electron-builder creates the GitHub release
+      # by checking whether it exists and then POSTing it — run in
+      # parallel, both see "missing" and the loser gets
+      # 422 already_exists on the tag. Serialised, the first job creates
+      # the release and the second just uploads into it.
+      max-parallel: 1
       matrix:
         include:
           - os: windows-latest
