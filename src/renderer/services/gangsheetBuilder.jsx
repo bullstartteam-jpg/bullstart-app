@@ -185,6 +185,38 @@ export function flattenQrMetas(orders, { includeProduced = false } = {}) {
   return records;
 }
 
+/**
+ * Walk `records`, handing each one its decoded image, with the next few
+ * downloads already in flight.
+ *
+ * The pages must be drawn in order, but the downloads need not happen in
+ * order — and they were, one at a time, so a sheet spent nearly all its wall
+ * clock waiting on B2 round-trips it could have overlapped. A small look-ahead
+ * keeps the network busy without holding every decoded page in memory at once:
+ * depth 3 means at most three buffers ahead of the one being drawn.
+ */
+async function* withPrefetchedImages(records, depth = 3) {
+  const queue = [];
+  let next = 0;
+  const fill = () => {
+    while (queue.length < depth && next < records.length) {
+      const rec = records[next++];
+      // Started here, awaited later — a rejection has no handler until then,
+      // so park one now or the app sees an unhandled rejection.
+      const p = fetchImageBytes(rec.meta.value).then(loadImageFromBytes);
+      p.catch(() => {});
+      queue.push({ rec, p });
+    }
+  };
+
+  fill();
+  while (queue.length > 0) {
+    const { rec, p } = queue.shift();
+    fill();
+    yield { rec, img: await p };
+  }
+}
+
 // Lazy-loaded pdfjs (same pattern as converter.jsx) — only pulled in when a
 // gang built earlier has to be rasterised back into PNG pages.
 let _pdfjsPromise = null;
@@ -366,9 +398,7 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
     sheetCtx = sheetCanvas.getContext('2d');
   }
 
-  for (const rec of records) {
-    const bytes = await fetchImageBytes(rec.meta.value);
-    const img = await loadImageFromBytes(bytes);
+  for await (const { rec, img } of withPrefetchedImages(records)) {
 
     if (native) {
       // Page = the design's own size; draw 1:1 on a white backing, no marks/gap.
@@ -613,9 +643,7 @@ export async function buildTiledGangsheet(orders, {
     ctx.restore();
   };
 
-  for (const rec of records) {
-    const bytes = await fetchImageBytes(rec.meta.value);
-    const img = await loadImageFromBytes(bytes);
+  for await (const { rec, img } of withPrefetchedImages(records)) {
 
     // The composed _qr source is [ band | design ]: the band is exactly the
     // first `bandPx` px (composeCardSkinOutside draws it at x=[0..bandPx]).

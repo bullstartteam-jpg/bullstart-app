@@ -2120,6 +2120,30 @@ function FindTab({ source = 'normal' }) {
 // "..._JUN06_scratch-card_gloss-300gsm.pdf" → "scratch-card_gloss-300gsm",
 // "..._JUN06_gloss-300gsm_two_size.pdf" → "gloss-300gsm_two_size".
 // No suffix (plain) → '' (shown as "Khác").
+/**
+ * Pull the batch sequence and the category suffix back out of a gang filename,
+ * so a rebuild can reproduce the same name.
+ *
+ *   31_CCS_CCS9147-CCS9149_3_3_AUG18_credit-card-skin_chip_01.pdf
+ *   └seq                              └suffix                └page
+ *
+ * Two traps, both hit in practice. The leading sequence is what orders the
+ * sheets on disk, and rebuilding without it dropped every re-ganged sheet to
+ * the front of the listing. And gangCategory() stops at the date, so it hands
+ * back "credit-card-skin_chip_01" — page number included — which then went
+ * back in as the suffix and came out doubled as "..._chip_01_01". The trailing
+ * page groups are stripped repeatedly, because names that already went through
+ * that carry more than one.
+ */
+function parseGangName(filename) {
+  const base = String(filename || '').replace(/\.pdf$/i, '');
+  const seqMatch = base.match(/^(\d+)_/);
+  const afterDate = base.match(/_[A-Za-z]{3}\d{2}_(.+)$/);
+  let suffix = afterDate ? afterDate[1] : '';
+  while (/_\d{2}$/.test(suffix)) suffix = suffix.replace(/_\d{2}$/, '');
+  return { seq: seqMatch ? parseInt(seqMatch[1], 10) : 0, suffix };
+}
+
 function gangCategory(filename) {
   const m = String(filename || '').match(/_[A-Za-z]{3}\d{2}_(.+)\.pdf$/i);
   return m ? m[1] : '';
@@ -2139,6 +2163,17 @@ function ManageTab({ isAdmin, source = 'normal' }) {
   const [bulkReconverting, setBulkReconverting] = useState(false);
   const [partnerModal, setPartnerModal] = useState(null);   // gang being assigned to partners
   const [bulkPartnerOpen, setBulkPartnerOpen] = useState(false);
+  const [regangId, setRegangId] = useState(null);
+  const [regangProgress, setRegangProgress] = useState(null);
+  const [bulkRegang, setBulkRegang] = useState(null);
+  // order_type → convert layout, so a re-gang picks the same branch (tiled
+  // card skin vs native vs default) the original build did.
+  const [layoutMap, setLayoutMap] = useState({});
+  useEffect(() => {
+    api.get('/settings/convert-layouts')
+      .then(res => setLayoutMap(res.data?.map || {}))
+      .catch(() => {});
+  }, []);
   // Sub-tab filter (client-side) by filename category — material / scratch /
   // two_size — so the loaded page is easy to tell apart. 'all' = no filter.
   const [subTab, setSubTab] = useState('all');
@@ -2270,6 +2305,192 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     }
   };
 
+  /**
+   * Rebuild ONE gang's files and swap them onto the same record.
+   *
+   * This exists because "Export PNG" on this tab rasterises the finished PDF,
+   * and the PDF has a white backing composited in — fine on paper, wrong for
+   * card skins printed on clear film. Only a rebuild can produce transparent
+   * pages, because the PNG is taken from the canvas before that backing is
+   * laid down.
+   *
+   * The gang's own orders go in as a SINGLE chunk: the builder still splits
+   * them across pages internally, but re-routing them through
+   * routeOrdersToChunks could split one record into several, and there would
+   * be no record left to swap the files onto. includeProduced is on — every
+   * meta on an existing gang is already produced, and without it the rebuild
+   * would come back empty.
+   */
+  /**
+   * Rebuild ONE gang's files and swap them onto the same record. Shared by the
+   * per-row button and the bulk action, so the two can never drift; it throws
+   * on failure and lets the caller decide how loudly to complain.
+   *
+   * `skipMissing` is what separates the two callers: a single re-gang stops to
+   * ask when some of the gang's orders have been deleted, while a bulk run
+   * cannot stop on every one, so it is told up front to carry on.
+   */
+  const regangOne = async (g, { skipMissing = false, onProgress, creds: given } = {}) => {
+    const src = await api.get(`/gangsheets/${g.id}/rebuild-source`);
+    const orders = src.data?.orders || [];
+    const missing = src.data?.missing || [];
+    if (orders.length === 0) throw new Error('Gang không còn đơn nào để dựng lại');
+    if (missing.length > 0 && !skipMissing && !confirm(
+      `${missing.length} đơn trong gang ${g.filename} đã bị xoá khỏi hệ thống.
+`
+      + 'Dựng lại sẽ ra sheet ít hơn trước. Tiếp tục?'
+    )) return null;
+
+    // Same branch the router would pick, but kept as ONE chunk so the result
+    // maps 1:1 onto this record — re-routing could split it into several and
+    // leave no record to swap the files onto.
+    const tiled = orderConvertLayout(orders[0], layoutMap) === 'outside';
+    const native = !tiled && orders.some(orderIsNative);
+
+    // Reproduce the old name: same batch sequence, same category suffix. Only
+    // the date and the counts move, and those follow the rebuild.
+    const { seq, suffix } = parseGangName(g.filename);
+    const built = await buildChunkPdf(
+      { chunk: orders, suffix, tiled, native },
+      {
+        seq,
+        linePrefix: g.line_id || dominantLineId(orders),
+        // Every meta on an existing gang is already produced; without this the
+        // rebuild comes back empty.
+        includeProduced: true,
+        collectPages: true,
+        onProgress,
+      },
+    );
+
+    // Handed in by the bulk run so twenty sheets do not ask for the same
+    // credentials twenty times.
+    const creds = given || (await api.get('/gangsheets/storage-credentials')).data;
+
+    // PNG from the build canvas — transparent, unlike the PDF rasteriser that
+    // Export PNG uses.
+    const pngUrls = built.pageBlobs?.length
+      ? await uploadGangPngs(built.pageBlobs, {
+          creds, pdfFilename: built.baseFilename || built.filename, onProgress,
+        })
+      : null;
+
+    const pdfFiles = built.pdfPages?.length
+      ? built.pdfPages
+      : [{ blob: built.blob, filename: built.filename }];
+    const pdfUrls = [];
+    for (const f of pdfFiles) {
+      const key = `${creds.folder}/${f.filename}`;
+      const bytes = new Uint8Array(await f.blob.arrayBuffer());
+      await window.electronAPI.s3Upload({
+        credentials: creds, bucket: creds.bucket, key, body: bytes,
+        contentType: 'application/pdf',
+      });
+      pdfUrls.push(`${creds.public_url_base}/${key}`);
+    }
+
+    const res = await api.put(`/gangsheets/${g.id}/files`, {
+      filename: built.filename,
+      file_url: pdfUrls[0],
+      pdf_urls: pdfUrls.length > 1 ? pdfUrls : null,
+      png_urls: pngUrls,
+    });
+    patchGang(g.id, res.data.gangsheet || {});
+
+    return { filename: built.filename, pdfs: pdfUrls.length, pngs: pngUrls?.length || 0 };
+  };
+
+  const requireDesktop = () => {
+    if (window.electronAPI?.s3Upload) return true;
+    notify('Re-gang cần bản desktop (Electron).', { title: 'Re-gang', kind: 'error' });
+    return false;
+  };
+
+  const handleRegang = async (g) => {
+    if (!requireDesktop()) return;
+    if (!confirm(
+      `Dựng lại gang ${g.filename}?
+
+`
+      + 'File PDF và PNG mới sẽ thay link cũ trên chính gang này. '
+      + 'PNG dựng lại có nền trong suốt. Đơn, partner và dấu "đã làm" giữ nguyên.'
+    )) return;
+
+    setRegangId(g.id);
+    setRegangProgress({ done: 0, total: 0 });
+    try {
+      const r = await regangOne(g, { onProgress: (p) => setRegangProgress(prev => ({ ...prev, ...p })) });
+      if (r) {
+        notify(`${r.filename} · ${r.pdfs} PDF${r.pngs ? ` · ${r.pngs} PNG` : ''}`,
+          { title: 'Đã dựng lại', kind: 'success' });
+      }
+    } catch (err) {
+      notify(err?.response?.data?.message || err?.message || 'Dựng lại thất bại',
+        { title: 'Re-gang', kind: 'error' });
+    } finally {
+      setRegangId(null);
+      setRegangProgress(null);
+    }
+  };
+
+  /**
+   * Re-gang every selected sheet, one after another — they all upload to B2 and
+   * each is several MB, so running them at once would just fight for bandwidth
+   * and make the progress meaningless.
+   *
+   * A failure does not stop the run: with twenty sheets queued, aborting on the
+   * first bad one leaves the rest untouched and the operator none the wiser.
+   * Failures are collected and named at the end instead.
+   */
+  const handleBulkRegang = async () => {
+    if (selectedIds.size === 0 || !requireDesktop()) return;
+    const gangs = list.data.filter(g => selectedIds.has(g.id));
+    if (!confirm(
+      `Dựng lại ${gangs.length} gang đã chọn?
+
+`
+      + 'Mỗi gang được dựng lại và thay link PDF + PNG tại chỗ. '
+      + 'Chạy tuần tự, có thể mất vài phút. Đơn đã bị xoá sẽ được bỏ qua, không hỏi lại từng cái.'
+    )) return;
+
+    setBulkRegang({ done: 0, total: gangs.length, current: '' });
+    const failed = [];
+    const creds = (await api.get('/gangsheets/storage-credentials')).data;
+    const startedAt = Date.now();
+    for (let i = 0; i < gangs.length; i++) {
+      const g = gangs[i];
+      // 1-based: this is the one being worked on, not the count finished. A
+      // 20-item run otherwise sits on 0/20 through the whole first gang and
+      // never shows 20/20 at all.
+      setBulkRegang({ done: i + 1, total: gangs.length, current: g.filename });
+      setRegangId(g.id);
+      try {
+        const t0 = Date.now();
+        await regangOne(g, {
+          skipMissing: true, creds,
+          onProgress: (p) => setRegangProgress(prev => ({ ...prev, ...p })),
+        });
+        // Timings in the console, so "this one is taking forever" becomes a
+        // number you can point at rather than a feeling.
+        console.info(`[re-gang] ${g.filename} — ${Math.round((Date.now() - t0) / 1000)}s`);
+      } catch (err) {
+        failed.push(`${g.filename}: ${err?.response?.data?.message || err?.message || 'lỗi'}`);
+      } finally {
+        setRegangId(null);
+        setRegangProgress(null);
+      }
+    }
+    setBulkRegang(null);
+
+    const ok = gangs.length - failed.length;
+    notify(
+      failed.length
+        ? `${ok}/${gangs.length} gang đã dựng lại · lỗi: ${failed.slice(0, 3).join(' | ')}${failed.length > 3 ? '…' : ''}`
+        : `Đã dựng lại ${gangs.length} gang · ${Math.round((Date.now() - startedAt) / 1000)}s`,
+      { title: 'Re-gang', kind: failed.length ? 'error' : 'success' },
+    );
+  };
+
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
     if (!confirm(`Delete ${selectedIds.size} gangsheet(s)?\n(Orders/metas remain marked as production.)`)) return;
@@ -2398,6 +2619,24 @@ function ManageTab({ isAdmin, source = 'normal' }) {
             className="accent-orange-500" />
           <span className="text-neutral-600">Còn đơn chưa ship</span>
         </label>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={handleBulkRegang}
+            disabled={selectedIds.size === 0 || !!bulkRegang}
+            className="px-3 py-1.5 bg-purple-500 hover:bg-purple-600 disabled:opacity-40 text-white text-sm rounded-lg"
+            title="Dựng lại PDF + PNG (nền trong suốt) cho các gang đã chọn, thay link tại chỗ"
+          >
+            {bulkRegang
+              ? `Re-gang ${bulkRegang.done}/${bulkRegang.total}…`
+              : `Re-gang (${selectedIds.size})`}
+          </button>
+        )}
+        {bulkRegang?.current && (
+          <span className="text-xs text-neutral-500 truncate max-w-[280px]" title={bulkRegang.current}>
+            {bulkRegang.current}
+          </span>
+        )}
         {isAdmin && (
           <button
             type="button"
@@ -2592,6 +2831,18 @@ function ManageTab({ isAdmin, source = 'normal' }) {
                         title="Dựng lại PNG từ file PDF hiện tại và ghi đè các file cũ (cùng tên)"
                       >
                         Xuất lại
+                      </button>
+                    )}
+                    {isAdmin && (
+                      <button
+                        onClick={() => handleRegang(g)}
+                        disabled={regangId === g.id}
+                        className="text-xs text-purple-600 hover:text-purple-700 disabled:opacity-40"
+                        title="Dựng lại PDF + PNG (nền trong suốt) và thay link trên chính gang này"
+                      >
+                        {regangId === g.id
+                          ? `Re-gang ${regangProgress?.done ?? 0}/${regangProgress?.total ?? '?'}…`
+                          : 'Re-gang'}
                       </button>
                     )}
                     {isAdmin && (

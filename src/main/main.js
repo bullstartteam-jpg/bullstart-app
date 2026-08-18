@@ -169,8 +169,23 @@ ipcMain.handle('s3-delete', async (_event, { credentials, bucket, key }) => {
 // Fetch image binary from any URL bypassing renderer CORS — used by the QR
 // converter cron to grab Drive thumbnails / direct image URLs and re-render
 // them locally on a canvas.
+// Node's fetch has no default timeout, so a stalled connection hangs the
+// caller forever rather than failing. That is how one unreachable _qr image
+// froze a 20-gang re-gang run at the first bad file: every gang after it
+// simply never started. Failing is recoverable — the caller logs it and moves
+// on — so bound it. 60s is well past a slow B2 read of a few MB.
+const FETCH_IMAGE_TIMEOUT_MS = 60_000;
+
 ipcMain.handle('fetch-image', async (_event, url) => {
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_IMAGE_TIMEOUT_MS) })
+    .catch((e) => {
+      // TimeoutError reads as "The operation was aborted" otherwise, which
+      // says nothing about which file or why.
+      const reason = e?.name === 'TimeoutError'
+        ? `timeout sau ${FETCH_IMAGE_TIMEOUT_MS / 1000}s`
+        : (e?.message || String(e));
+      throw new Error(`Tải ảnh thất bại (${reason}): ${url}`);
+    });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   const buf = Buffer.from(await res.arrayBuffer());
   const contentType = res.headers.get('content-type') || 'image/png';
