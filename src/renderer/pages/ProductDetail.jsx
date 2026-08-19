@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import UploadButton from '../components/UploadButton';
 
 export default function ProductDetail() {
   const { id } = useParams();
@@ -687,6 +688,8 @@ function AccessoryPriceRow({ price, tiers, isAdmin, onSaved, onDelete }) {
   const [code, setCode] = useState(price.accessory_code ?? '');
   const [val, setVal] = useState(String(price.price ?? ''));
   const [partnerVal, setPartnerVal] = useState(String(price.partner_price ?? ''));
+  // Reference photo of this add-on choice, shown to the packer on /qr.
+  const [imageDes, setImageDes] = useState(price.image_des ?? '');
   const [saving, setSaving] = useState(false);
 
   const startEdit = () => {
@@ -695,6 +698,7 @@ function AccessoryPriceRow({ price, tiers, isAdmin, onSaved, onDelete }) {
     setCode(price.accessory_code ?? '');
     setVal(String(price.price ?? ''));
     setPartnerVal(String(price.partner_price ?? ''));
+    setImageDes(price.image_des ?? '');
     setEditing(true);
   };
 
@@ -707,6 +711,7 @@ function AccessoryPriceRow({ price, tiers, isAdmin, onSaved, onDelete }) {
         accessory_code: code || null,
         price: val === '' ? 0 : parseFloat(val),
         partner_price: partnerVal === '' ? null : parseFloat(partnerVal),
+        image_des: imageDes || null,
       });
       setEditing(false);
       onSaved();
@@ -737,6 +742,20 @@ function AccessoryPriceRow({ price, tiers, isAdmin, onSaved, onDelete }) {
         <td className="py-1 pr-1 text-right">
           <input type="text" inputMode="decimal" value={partnerVal} onChange={e => setPartnerVal(e.target.value)} placeholder="—" className="w-full px-1.5 py-1 bg-white border border-blue-200 rounded text-xs text-right text-blue-700" />
         </td>
+        <td className="py-1 pr-1">
+          <div className="flex items-center gap-1">
+            {imageDes && (
+              <img src={imageDes} alt="" className="w-7 h-7 rounded border border-neutral-200 object-cover shrink-0"
+                onError={e => { e.currentTarget.style.display = 'none'; }} />
+            )}
+            <UploadButton folder="addons" accept="image/*" title="Ảnh mô tả add-on"
+              onUrl={(url) => setImageDes(url)} />
+            {imageDes && (
+              <button type="button" onClick={() => setImageDes('')}
+                className="text-[11px] text-neutral-400 hover:text-red-500" title="Bỏ ảnh">×</button>
+            )}
+          </div>
+        </td>
         {isAdmin && (
           <td className="py-1 text-right">
             <div className="flex gap-2 justify-end">
@@ -756,6 +775,14 @@ function AccessoryPriceRow({ price, tiers, isAdmin, onSaved, onDelete }) {
       <td className="py-1 text-neutral-600 font-mono">{price.accessory_code || '-'}</td>
       <td className="py-1 text-right text-neutral-800 font-medium">${price.price}</td>
       <td className="py-1 text-right text-blue-600 font-medium">{price.partner_price != null ? `$${price.partner_price}` : '—'}</td>
+      <td className="py-1 text-center">
+        {price.image_des ? (
+          <a href={price.image_des} target="_blank" rel="noreferrer" title="Mở ảnh mô tả">
+            <img src={price.image_des} alt="" className="w-7 h-7 rounded border border-neutral-200 object-cover inline-block hover:ring-2 hover:ring-orange-400"
+              onError={e => { e.currentTarget.style.display = 'none'; }} />
+          </a>
+        ) : <span className="text-neutral-300">—</span>}
+      </td>
       {isAdmin && (
         <td className="py-1 text-right">
           <div className="flex gap-2 justify-end">
@@ -872,6 +899,7 @@ function AccessoryRow({ accessory, tiers, isAdmin, onDeleteAccessory, onDeletePr
               <th className="py-1 text-left">Code</th>
               <th className="py-1 text-right">Price</th>
               <th className="py-1 text-right text-blue-500">Partner</th>
+              <th className="py-1 text-center">Ảnh</th>
               {isAdmin && <th className="py-1 text-right"></th>}
             </tr>
           </thead>
