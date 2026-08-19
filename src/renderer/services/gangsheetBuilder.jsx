@@ -485,6 +485,159 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
 }
 
 // ---------------------------------------------------------------------------
+// Pass Sleeve gangsheet — the same composed card as a skin, laid out 6 to a
+// sheet in a plain 2×3 grid.
+//
+//   ┌───────────────────────────────┐   Six DISTINCT designs, each printed
+//   │ ▭ design A│qr   ▭ design B│qr │   once. The skin sheet repeats every
+//   │ ▭ design C│qr   ▭ design D│qr │   design twice; a sleeve is a single
+//   │ ▭ design E│qr   ▭ design F│qr │   piece, so a copy underneath would
+//   └───────────────────────────────┘   just be waste.
+//
+// The band is on the RIGHT of each card here (composeCardSkinOutside puts it
+// there for this layout), so a cell reads [ CARD ][band] and the grid is
+// uniform — no rotated column, nothing to mirror.
+// ---------------------------------------------------------------------------
+const SLEEVE_COLS = 2;
+const SLEEVE_ROWS = 3;
+const SLEEVE_GAP_X = 60;   // card-edge to card-edge across; 32px of page margin left over
+const SLEEVE_GAP_Y = 60;   // between rows
+
+/**
+ * @param opts.cardWpx/cardHpx  card cell in px @300dpi, band excluded.
+ * @param opts.bandPx           band width in the SOURCE _qr image, sliced off
+ *                              so the design alone drives the card size.
+ * @param opts.bandReservePx    gutter reserved beside the card for the band.
+ */
+export async function buildSleeveGangsheet(orders, {
+  onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0,
+  cardWpx = CARD_W, cardHpx = CARD_H, bandPx = 200,
+  bandReservePx = BAND_RESERVE,
+  gapX = SLEEVE_GAP_X, gapY = SLEEVE_GAP_Y,
+  collectPages = false,
+} = {}) {
+  if (!orders.length) throw new Error('Empty chunk');
+  const records = flattenQrMetas(orders, { includeProduced });
+  if (!records.length) throw new Error('No _qr metas in this chunk');
+
+  const perPage = SLEEVE_COLS * SLEEVE_ROWS;         // 6
+  const cellW = cardWpx + bandReservePx;             // card then band
+  const blockW = SLEEVE_COLS * cellW + (SLEEVE_COLS - 1) * gapX;
+  const blockH = SLEEVE_ROWS * cardHpx + (SLEEVE_ROWS - 1) * gapY;
+  // Gaps are the spec; the margins are whatever is left, split evenly.
+  const marginX = Math.max(0, Math.round((PAGE_W - blockW) / 2));
+  const marginY = Math.max(0, Math.round((PAGE_H - blockH) / 2));
+  const slotX = (i) => marginX + (i % SLEEVE_COLS) * (cellW + gapX);
+  const slotY = (i) => marginY + Math.floor(i / SLEEVE_COLS) * (cardHpx + gapY);
+
+  const total = records.length;
+  let done = 0;
+  const orderIdsUsed = [];
+  const metaIdsUsed = [];
+  const seenOrders = new Set();
+  const pageBlobs = [];
+  const pagePngBytes = [];
+
+  const canvas = document.createElement('canvas');
+  canvas.width = PAGE_W;
+  canvas.height = PAGE_H;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  const pageWpt = (PAGE_W / DPI) * PT_PER_IN;
+  const pageHpt = (PAGE_H / DPI) * PT_PER_IN;
+
+  // Transparent working canvas, white backing only for the PDF — same reason
+  // as the skin sheet: these print on clear film.
+  const flushPage = async () => {
+    if (collectPages) pageBlobs.push(await canvasToBlob(canvas, 'image/png'));
+    const flat = document.createElement('canvas');
+    flat.width = PAGE_W;
+    flat.height = PAGE_H;
+    const fctx = flat.getContext('2d');
+    fctx.fillStyle = '#ffffff';
+    fctx.fillRect(0, 0, PAGE_W, PAGE_H);
+    fctx.drawImage(canvas, 0, 0);
+    const blob = await canvasToBlob(flat, 'image/png');
+    pagePngBytes.push(new Uint8Array(await blob.arrayBuffer()));
+  };
+
+  let slot = 0;
+  const resetCanvas = () => { ctx.clearRect(0, 0, PAGE_W, PAGE_H); };
+  resetCanvas();
+
+  for await (const { rec, img } of withPrefetchedImages(records)) {
+    // Source is [ CARD | band ] with the band on the right, so the design is
+    // the first `img.width - bandPx` px.
+    const srcBand = Math.min(img.width - 1, bandPx);
+    const srcDesignW = Math.max(1, img.width - srcBand);
+    const sc = cardWpx / srcDesignW;
+    const bandSc = Math.min(sc, bandReservePx / srcBand);
+    const bandW = Math.max(1, Math.round(srcBand * bandSc));
+    const bandH = Math.max(1, Math.round(img.height * bandSc));
+
+    const x = slotX(slot);
+    const y = slotY(slot);
+    // Design into the fixed card cell, exact die size whatever the source res.
+    ctx.drawImage(img, 0, 0, srcDesignW, img.height, x, y, cardWpx, cardHpx);
+    // Band in the reserved gutter to its right, centred on the card's height.
+    ctx.drawImage(
+      img, srcDesignW, 0, srcBand, img.height,
+      x + cardWpx, y + Math.round((cardHpx - bandH) / 2), bandW, bandH,
+    );
+
+    metaIdsUsed.push(rec.meta.id);
+    if (!seenOrders.has(rec.order.id)) { seenOrders.add(rec.order.id); orderIdsUsed.push(rec.order.id); }
+    done++;
+    onProgress?.({ done, total, system_id: rec.order.system_id, key: rec.meta.key });
+
+    slot++;
+    if (slot === perPage) { await flushPage(); resetCanvas(); slot = 0; }
+  }
+  if (slot > 0) await flushPage();   // last partial page
+
+  const orderedOrders = orders.filter(o => seenOrders.has(o.id));
+  const firstSid = orderedOrders[0]?.system_id || '';
+  const lastSid = orderedOrders[orderedOrders.length - 1]?.system_id || firstSid;
+
+  const filename = gangsheetFilename({
+    linePrefix: (linePrefix || '').toUpperCase(),
+    firstSid, lastSid,
+    ordersCount: orderedOrders.length,
+    metasCount: metaIdsUsed.length,
+    suffix: nameSuffix,
+    seq,
+  });
+
+  const pdfPages = [];
+  for (let i = 0; i < pagePngBytes.length; i++) {
+    const doc = await PDFDocument.create();
+    const pageImg = await doc.embedPng(pagePngBytes[i]);
+    const page = doc.addPage([pageWpt, pageHpt]);
+    page.drawImage(pageImg, { x: 0, y: 0, width: pageWpt, height: pageHpt });
+    const bytes = await doc.save();
+    pdfPages.push({
+      blob: new Blob([bytes], { type: 'application/pdf' }),
+      filename: pdfNameForPage(filename, i),
+    });
+  }
+
+  return {
+    blob: pdfPages[0]?.blob ?? new Blob([], { type: 'application/pdf' }),
+    filename: pdfPages[0]?.filename ?? filename,
+    pdfPages,
+    baseFilename: filename,
+    pageBlobs, linePrefix,
+    firstSid, lastSid,
+    ordersInChunk: orderedOrders.length,
+    metasUsed: metaIdsUsed.length,
+    orderIds: orderIdsUsed,
+    metaIds: metaIdsUsed,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Tiled gangsheet (card skin) — reproduces the printer's sample sheet exactly.
 //
 // One Letter page holds 3 designs, each printed TWICE: the original carries the

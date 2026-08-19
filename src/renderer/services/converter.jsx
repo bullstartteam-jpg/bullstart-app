@@ -907,7 +907,10 @@ function qrBgForAddon(addonCode, orderCardTotal = 1) {
 function shortenAddonLabel(text) {
   return String(text || '').replace(/holographic/gi, 'HOLO');
 }
-async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, addonCode, sourceKey, orderCardTotal = 1) {
+// `bandSide` places the info strip: 'left' for card skins, 'right' for Pass
+// Sleeve, whose sleeve opening is on the other edge. Everything else about the
+// two is identical, so they share this rather than growing a near-copy.
+async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, addonCode, sourceKey, orderCardTotal = 1, bandSide = 'left') {
   const portrait = sourceW < sourceH;
   const dW = portrait ? sourceH : sourceW;   // landscape design width
   const dH = portrait ? sourceW : sourceH;   // landscape design height
@@ -924,15 +927,18 @@ async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, add
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
 
-  // Design on the right (after the band). Portrait → rotate -90° to landscape.
+  // Design goes opposite the band: band on the left pushes it right, band on
+  // the right leaves it at x=0. Portrait → rotate -90° to landscape first.
+  const bandRight = bandSide === 'right';
+  const designX = bandRight ? 0 : band;
   if (portrait) {
     ctx.save();
-    ctx.translate(band + dW / 2, dH / 2);
+    ctx.translate(designX + dW / 2, dH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.drawImage(sourceImg, -sourceW / 2, -sourceH / 2, sourceW, sourceH);
     ctx.restore();
   } else {
-    ctx.drawImage(sourceImg, band, 0, dW, dH);
+    ctx.drawImage(sourceImg, designX, 0, dW, dH);
   }
 
   if (band > 0) {
@@ -960,14 +966,22 @@ async function composeCardSkinOutside(sourceImg, sourceW, sourceH, systemId, add
     s.font = `bold ${TXT}px sans-serif`;
     s.fillText(codeText, strip.width / 2, barcode.height + GAP);
 
-    // Fit the rotated strip into the band.
+    // Fit the rotated strip into the band. EDGE is the margin from the sheet's
+    // outer edge, DESIGN_GAP the clear space against the artwork — which side
+    // each is on flips with the band.
     const EDGE = 12;
     const DESIGN_GAP = 10;
     const availW = Math.max(1, band - EDGE - DESIGN_GAP);
     const scale = Math.min(availW / strip.height, (dH - 20) / strip.width);
+    // Centre of the usable slice of the band.
+    const bandCenter = bandRight
+      ? dW + (DESIGN_GAP + (band - EDGE)) / 2
+      : (EDGE + (band - DESIGN_GAP)) / 2;
     ctx.save();
-    ctx.translate((EDGE + (band - DESIGN_GAP)) / 2, dH / 2);
-    ctx.rotate(-Math.PI / 2);
+    ctx.translate(bandCenter, dH / 2);
+    // Rotate the other way on the right so the label still reads outward
+    // rather than upside down relative to the left-band version.
+    ctx.rotate(bandRight ? Math.PI / 2 : -Math.PI / 2);
     ctx.drawImage(strip, -strip.width * scale / 2, -strip.height * scale / 2, strip.width * scale, strip.height * scale);
     ctx.restore();
   }
@@ -980,6 +994,8 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
   // Convert layout comes from the item's order_type (Settings → Convert layouts,
   // resolved server-side). 'outside' puts the barcode + info outside the design.
   const cardSkin = opts.convert_layout === 'outside';
+  // Pass Sleeve: the same composed card with the band on the other edge.
+  const sleeve = opts.convert_layout === 'sleeve';
   // Two-sided convert: back faces are no longer flipped 180° — they keep the
   // same orientation as the front. The QR code is also skipped for backs
   // (only the front carries it). source_key === 'back' is the single switch.
@@ -1005,12 +1021,13 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
 
   // Card Skin ('outside'): keep the design at native size (landscape) and add a
   // LEFT strip with a rotated barcode + the selected add-on code.
-  if (cardSkin) {
+  if (cardSkin || sleeve) {
     return await composeCardSkinOutside(
       sourceImg, sourceW, sourceH, systemId, opts.addon_code || '', source_key,
       // order_items_count is the pre-order_card_total fallback: an older hub
       // still counts item rows, which is at least right for multi-line orders.
       opts.order_card_total || opts.order_items_count || 1,
+      sleeve ? 'right' : 'left',
     );
   }
 

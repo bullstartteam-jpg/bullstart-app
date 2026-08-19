@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { buildGangsheetForChunk, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks, rasterizeGangPdf, fetchFileBytes } from '../services/gangsheetBuilder';
+import { buildGangsheetForChunk, buildTiledGangsheet, buildSleeveGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks, rasterizeGangPdf, fetchFileBytes } from '../services/gangsheetBuilder';
 import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGroup, deleteOpenGroups } from '../services/groupGang';
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
@@ -457,10 +457,13 @@ function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY), includeProd
 // ---------------------------------------------------------------------------
 function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includeProduced = false } = {}) {
   const cardOrders = [];
+  const sleeveOrders = [];
   const nativeOrders = [];
   const normalOrders = [];
   for (const o of orders) {
-    if (orderConvertLayout(o, layoutMap) === 'outside') cardOrders.push(o);
+    const layout = orderConvertLayout(o, layoutMap);
+    if (layout === 'outside') cardOrders.push(o);
+    else if (layout === 'sleeve') sleeveOrders.push(o);
     else if (orderIsNative(o)) nativeOrders.push(o);
     else normalOrders.push(o);
   }
@@ -514,6 +517,22 @@ function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includePro
     const tag = `${slugifyAccessory(g.ot) || 'skincard'}_${g.chip}`;
     for (const chunk of chunkCardOrders(g.orders, 3, includeProduced)) {
       chunks.push({ chunk, suffix: tag, tiled: true });
+    }
+  }
+
+  // Pass Sleeve: grouped like the card skin (order_type × chip), but six
+  // DISTINCT designs fill a sheet instead of three printed twice, so chunks
+  // are cut on multiples of 6.
+  const sleeveGroups = new Map();
+  for (const o of sleeveOrders) {
+    const key = `${orderOrderType(o) || 'sleeve'}||${orderChipTag(o)}`;
+    if (!sleeveGroups.has(key)) sleeveGroups.set(key, { ot: orderOrderType(o), chip: orderChipTag(o), orders: [] });
+    sleeveGroups.get(key).orders.push(o);
+  }
+  for (const [, g] of sleeveGroups) {
+    const tag = `${slugifyAccessory(g.ot) || 'pass-sleeve'}_${g.chip}`;
+    for (const chunk of chunkCardOrders(g.orders, 6, includeProduced)) {
+      chunks.push({ chunk, suffix: tag, sleeve: true });
     }
   }
 
@@ -603,16 +622,19 @@ function saveExportPng(v) {
 }
 
 /** page_format recorded on the hub for a routed chunk. */
-function chunkPageFormat({ tiled, native }) {
-  return tiled ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
+function chunkPageFormat({ tiled, sleeve, native }) {
+  // Both tiled layouts put 6 pieces on a Letter sheet; they differ in how, not
+  // in the page.
+  return (tiled || sleeve) ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
 }
 
 /** Build one routed chunk into a PDF with the builder its branch calls for. */
-function buildChunkPdf({ chunk, suffix, tiled, native }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
+function buildChunkPdf({ chunk, suffix, tiled, sleeve, native }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
   const opts = { linePrefix, nameSuffix: suffix, seq, includeProduced, collectPages, onProgress };
+  if (sleeve) return buildSleeveGangsheet(chunk, opts);
   return tiled
     ? buildTiledGangsheet(chunk, opts)
-    : buildGangsheetForChunk(chunk, { ...opts, pageFormat: chunkPageFormat({ tiled, native }) });
+    : buildGangsheetForChunk(chunk, { ...opts, pageFormat: chunkPageFormat({ tiled, sleeve, native }) });
 }
 
 // Gang PDF page-format selector (shared, persisted per machine in localStorage).
