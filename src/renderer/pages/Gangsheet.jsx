@@ -2173,7 +2173,7 @@ function gangCategory(filename) {
 const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Khác';
 
 function ManageTab({ isAdmin, source = 'normal' }) {
-  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, page: 1 });
+  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, no_partner: false, page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
@@ -2272,6 +2272,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
       if (filters.line_id) params.line_id = filters.line_id;
       if (filters.page_format) params.page_format = filters.page_format;
       if (filters.unshipped) params.unshipped = 1;
+      if (filters.no_partner) params.no_partner = 1;
       const res = await api.get('/gangsheets', { params });
       setList(res.data);
       setSelectedIds(new Set()); // reset on every re-fetch
@@ -2279,7 +2280,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchList(); }, [filters.page, filters.page_format, filters.unshipped]);
+  useEffect(() => { fetchList(); }, [filters.page, filters.page_format, filters.unshipped, filters.no_partner]);
 
   // Category chips + filtered rows (client-side, on the current page).
   const catCounts = {};
@@ -2564,7 +2565,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     fetchList();
   };
   const clearFilters = () => {
-    setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, page: 1 });
+    setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, no_partner: false, page: 1 });
     setTimeout(fetchList, 0);
   };
 
@@ -2640,6 +2641,13 @@ function ManageTab({ isAdmin, source = 'normal' }) {
             onChange={e => setFilters(f => ({ ...f, unshipped: e.target.checked, page: 1 }))}
             className="accent-orange-500" />
           <span className="text-neutral-600">Còn đơn chưa ship</span>
+        </label>
+        {/* The pile still waiting to be handed to someone. */}
+        <label className="flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg cursor-pointer">
+          <input type="checkbox" checked={filters.no_partner}
+            onChange={e => setFilters(f => ({ ...f, no_partner: e.target.checked, page: 1 }))}
+            className="accent-orange-500" />
+          <span className="text-neutral-600">Chưa chia partner</span>
         </label>
         {isAdmin && (
           <button
