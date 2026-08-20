@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import api from '../services/api';
 import { notify } from '../components/Dialog';
 
@@ -147,11 +147,74 @@ function Stat({ label, value, tone }) {
  * now, and what the rate card says. A preview first — applying writes the
  * computed amounts onto the orders, and locked ones are never touched.
  */
+/**
+ * The arithmetic behind one order's amount, item by item: which rate-card key
+ * or accessory contributed what, the unit price, and the multiply by quantity.
+ * An amount nobody can check is an amount nobody can argue with.
+ */
+function Working({ lines, total }) {
+  if (!lines?.length) {
+    return <p className="text-xs text-neutral-400">Bảng giá chưa có giá cho sản phẩm của đơn này.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {lines.map((l, i) => (
+        <div key={i} className="text-xs">
+          <div className="font-medium text-neutral-700">
+            {l.product || '?'}{l.sku ? <span className="text-neutral-400 font-normal"> · {l.sku}</span> : null}
+          </div>
+          <div className="mt-1 pl-3 border-l-2 border-neutral-200 space-y-0.5">
+            {l.parts.length === 0 && <div className="text-neutral-400">bảng giá không có dòng nào cho variant này</div>}
+            {l.parts.map((p, j) => (
+              <div key={j} className="flex gap-2">
+                <span className={p.type === 'accessory' ? 'text-purple-600' : 'text-neutral-600'}>
+                  {p.type === 'accessory' ? 'Add-on: ' : ''}{p.label}
+                </span>
+                <span className="flex-1 border-b border-dotted border-neutral-300 translate-y-[-3px]" />
+                {/* On the order but absent from the card — an omission, not free work. */}
+                <span className={p.price == null ? 'text-amber-600' : 'text-neutral-700'}>
+                  {p.price == null ? 'chưa có giá' : fmt$(p.price)}
+                </span>
+              </div>
+            ))}
+            <div className="flex gap-2 pt-0.5 font-medium text-neutral-800">
+              <span>Đơn giá {fmt$(l.unit)} × {l.quantity}</span>
+              <span className="flex-1 border-b border-dotted border-neutral-300 translate-y-[-3px]" />
+              <span>{fmt$(l.total)}</span>
+            </div>
+          </div>
+        </div>
+      ))}
+      <div className="flex gap-2 text-xs font-semibold text-emerald-700 pt-1 border-t border-neutral-200">
+        <span>Tổng đơn</span>
+        <span className="flex-1" />
+        <span>{fmt$(total)}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Same working, flattened onto one CSV cell. */
+function workingText(lines) {
+  if (!lines?.length) return '';
+  return lines.map(l => {
+    const parts = l.parts.map(p => `${p.label} ${p.price == null ? '(chưa có giá)' : fmt$(p.price)}`).join(' + ');
+    return `${l.product || '?'}: ${parts} = ${fmt$(l.unit)} x${l.quantity} = ${fmt$(l.total)}`;
+  }).join(' | ');
+}
+
 function RevenueModal({ partner, onClose, onApplied }) {
   const [range, setRange] = useState({ date_from: '', date_to: '' });
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
+  const [open, setOpen] = useState(() => new Set());   // order_ids showing their working
+
+  const toggle = (id) => setOpen(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
 
   const load = async () => {
     setLoading(true);
@@ -170,14 +233,16 @@ function RevenueModal({ partner, onClose, onApplied }) {
   const apply = async () => {
     // Locked orders are skipped hub-side too; filtering here keeps the
     // confirmation honest about how many will actually change.
-    const ids = (data?.orders || []).filter(o => !o.locked && o.computed != null).map(o => o.order_id);
+    // `settled`, not `locked`: a locked order with no amount has nothing to
+    // protect, and skipping it would leave it blank forever.
+    const ids = (data?.orders || []).filter(o => !o.settled && o.computed != null).map(o => o.order_id);
     if (ids.length === 0) {
       notify('Không có đơn nào để tính.', { title: 'Tính tiền', kind: 'error' });
       return;
     }
     if (!confirm(
       `Ghi số tiền tính được vào ${ids.length} đơn của ${partner.user.name}?\n\n`
-      + 'Đơn đã chốt (partner đã đánh dấu in) được giữ nguyên.'
+      + 'Đơn đã chốt tiền (đã có số tiền + partner đã đánh dấu in) được giữ nguyên.'
     )) return;
 
     setApplying(true);
@@ -198,13 +263,14 @@ function RevenueModal({ partner, onClose, onApplied }) {
       const s = v == null ? '' : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ['system_id', 'ref_id', 'completed_time', 'items', 'qty', 'current', 'computed', 'diff', 'locked'];
+    const header = ['system_id', 'ref_id', 'completed_time', 'items', 'qty', 'current', 'computed', 'diff', 'locked', 'cach_tinh'];
     const lines = [header.join(',')];
     for (const r of rows) {
       lines.push([
         r.system_id, r.ref_id, r.completed_time,
         r.items.map(i => `${i.product || ''} x${i.quantity}`).join(' | '),
         r.qty, r.current ?? '', r.computed ?? '', r.diff ?? '', r.locked ? 'yes' : '',
+        workingText(r.breakdown),
       ].map(esc).join(','));
     }
     // BOM so Excel opens the Vietnamese product names as UTF-8.
@@ -265,6 +331,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-[#faf8f6]">
                 <tr className="text-neutral-500 text-xs border-b border-neutral-200">
+                  <th className="py-2 px-2 w-6"></th>
                   <th className="py-2 px-3 text-left">System ID</th>
                   <th className="py-2 px-3 text-left">Ship lúc</th>
                   <th className="py-2 px-3 text-left">Sản phẩm</th>
@@ -276,11 +343,19 @@ function RevenueModal({ partner, onClose, onApplied }) {
               </thead>
               <tbody>
                 {data.orders.map(o => (
-                  <tr key={o.order_id} className={`border-b border-neutral-100 ${o.locked ? 'bg-neutral-50' : ''}`}>
+                  <Fragment key={o.order_id}>
+                  <tr onClick={() => toggle(o.order_id)} title="Bấm để xem cách tính"
+                    className={`border-b border-neutral-100 cursor-pointer hover:bg-orange-50/60 ${o.settled ? 'bg-neutral-50' : ''}`}>
+                    <td className="py-1.5 px-2 text-neutral-400 text-[10px] select-none">
+                      {open.has(o.order_id) ? '▼' : '▶'}
+                    </td>
                     <td className="py-1.5 px-3 font-mono text-orange-500 text-xs">
                       {o.system_id}
                       {o.locked && (
-                        <span className="ml-1.5 text-[10px] text-neutral-500" title="Partner đã đánh dấu in — số tiền đã chốt">🔒</span>
+                        <span className={`ml-1.5 text-[10px] ${o.settled ? 'text-neutral-500' : 'text-neutral-300'}`}
+                          title={o.settled
+                            ? 'Partner đã đánh dấu in và số tiền đã chốt — không ghi đè'
+                            : 'Partner đã đánh dấu in nhưng chưa có số tiền — vẫn sẽ được tính'}>🔒</span>
                       )}
                     </td>
                     <td className="py-1.5 px-3 text-neutral-500 text-xs">{o.completed_time || '—'}</td>
@@ -297,6 +372,14 @@ function RevenueModal({ partner, onClose, onApplied }) {
                       {o.diff == null ? '—' : (o.diff > 0 ? `+${o.diff.toFixed(2)}` : o.diff.toFixed(2))}
                     </td>
                   </tr>
+                  {open.has(o.order_id) && (
+                    <tr className="border-b border-neutral-100 bg-[#faf8f6]">
+                      <td colSpan={8} className="px-6 py-3">
+                        <Working lines={o.breakdown} total={o.computed} />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -308,7 +391,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
             <span className="text-neutral-600">{t.orders} đơn · {t.qty} sản phẩm</span>
             <span className="text-neutral-600">Hiện tại: <b>{fmt$(t.current)}</b></span>
             <span className="text-emerald-700">Tính ra: <b>{fmt$(t.computed)}</b></span>
-            {t.locked > 0 && <span className="text-neutral-500">{t.locked} đơn đã chốt</span>}
+            {t.settled > 0 && <span className="text-neutral-500">{t.settled} đơn đã chốt tiền (giữ nguyên)</span>}
             {t.unpriced > 0 && <span className="text-amber-600">{t.unpriced} đơn chưa có tiền</span>}
           </div>
         )}
