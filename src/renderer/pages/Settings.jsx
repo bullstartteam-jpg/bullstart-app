@@ -4,6 +4,7 @@ import UploadButton from '../components/UploadButton';
 import { notify } from '../components/Dialog';
 import { setGangMarks } from '../services/gangsheetBuilder';
 import { getUiPrefs, setUiPrefs } from '../utils/uiPrefs';
+import PartnerPricesTab from './settings/PartnerPricesTab';
 
 export default function Settings() {
   const [tab, setTab] = useState('roles');
@@ -27,6 +28,7 @@ export default function Settings() {
   const tabs = [
     { id: 'roles', label: 'Roles & Permissions' },
     { id: 'tiers', label: 'Tiers' },
+    { id: 'partner-prices', label: 'Giá Partner' },
     { id: 'invoice', label: 'Invoice Payment' },
     { id: 'telegram', label: 'Telegram' },
     { id: 'vnpay', label: 'VNPay Merchant' },
@@ -57,6 +59,7 @@ export default function Settings() {
 
       {tab === 'roles' && <RolesTab roles={roles} setRoles={setRoles} modules={modules} />}
       {tab === 'tiers' && <TiersTab tiers={tiers} setTiers={setTiers} />}
+      {tab === 'partner-prices' && <PartnerPricesTab />}
       {tab === 'invoice' && <InvoicePaymentTab />}
       {tab === 'telegram' && <TelegramTab />}
       {tab === 'vnpay' && <VnpayMerchantTab />}

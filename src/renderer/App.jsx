@@ -4,6 +4,7 @@ import Layout from './components/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Reports from './pages/Reports';
+import PartnerDashboard from './pages/PartnerDashboard';
 import Orders from './pages/Orders';
 import OrderDetail from './pages/OrderDetail';
 import OrderCreate from './pages/OrderCreate';
@@ -62,6 +63,7 @@ export default function App() {
           <Route path="wallet" element={<Wallet />} />
           <Route path="users" element={<Users />} />
           <Route path="tiers" element={<Tiers />} />
+          <Route path="partner-dashboard" element={<PartnerDashboard />} />
           <Route path="settings" element={<Settings />} />
           <Route path="convert" element={<Convert />} />
           <Route path="convert-label" element={<ConvertLabel />} />

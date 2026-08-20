@@ -7,6 +7,7 @@ import { getUiPrefs } from '../utils/uiPrefs';
 const navItems = [
   { path: '/', label: 'Dashboard', icon: '◉', module: 'dashboard' },
   { path: '/reports', label: 'Reports', icon: '▥', module: 'dashboard' },
+  { path: '/partner-dashboard', label: 'Partner', icon: '🤝', requiresAdmin: true },
   { path: '/orders', label: 'Orders', icon: '◈', module: 'orders' },
   { path: '/orders-fpt', label: 'Order FPT', icon: '◈', module: 'orders' },
   { path: '/not-delivered', label: 'Chưa delivered', icon: '📦', module: 'orders' },
@@ -56,9 +57,12 @@ export default function Layout() {
     // Both gates must pass when both flags are set (e.g. Convert Label needs
     // staff + convert mode). Module permission only applies when neither
     // flag is set on the item.
+    // The hub gates /partner-report on admin, so support seeing the link
+    // would only earn them a 403.
+    if (item.requiresAdmin && user?.role?.slug !== 'admin') return false;
     if (item.requiresStaff && !isStaff) return false;
     if (item.requiresConvert && !user?.convert) return false;
-    if (item.requiresStaff || item.requiresConvert) return true;
+    if (item.requiresStaff || item.requiresConvert || item.requiresAdmin) return true;
     return hasPermission(item.module);
   });
 
