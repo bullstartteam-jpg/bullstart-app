@@ -148,43 +148,51 @@ function Stat({ label, value, tone }) {
  * computed amounts onto the orders, and locked ones are never touched.
  */
 /**
- * The arithmetic behind one order's amount, item by item: which rate-card key
- * or accessory contributed what, the unit price, and the multiply by quantity.
- * An amount nobody can check is an amount nobody can argue with.
+ * The arithmetic behind one order's amount, laid out the way the order itself
+ * is priced: per item base_cost + 2nd_fee x (faces - 1) + add-ons, all x SL,
+ * then the once-per-order shipping component. An amount nobody can check is an
+ * amount nobody can argue with.
  */
-function Working({ lines, total }) {
-  if (!lines?.length) {
+function Working({ breakdown, total }) {
+  const items = breakdown?.items || [];
+  const orderParts = breakdown?.order || [];
+
+  if (items.length === 0 && orderParts.length === 0) {
     return <p className="text-xs text-neutral-400">Bảng giá chưa có giá cho sản phẩm của đơn này.</p>;
   }
+
   return (
     <div className="space-y-3">
-      {lines.map((l, i) => (
+      {items.map((l, i) => (
         <div key={i} className="text-xs">
           <div className="font-medium text-neutral-700">
             {l.product || '?'}{l.sku ? <span className="text-neutral-400 font-normal"> · {l.sku}</span> : null}
           </div>
           <div className="mt-1 pl-3 border-l-2 border-neutral-200 space-y-0.5">
-            {l.parts.length === 0 && <div className="text-neutral-400">bảng giá không có dòng nào cho variant này</div>}
-            {l.parts.map((p, j) => (
-              <div key={j} className="flex gap-2">
-                <span className={p.type === 'accessory' ? 'text-purple-600' : 'text-neutral-600'}>
-                  {p.type === 'accessory' ? 'Add-on: ' : ''}{p.label}
-                </span>
-                <span className="flex-1 border-b border-dotted border-neutral-300 translate-y-[-3px]" />
-                {/* On the order but absent from the card — an omission, not free work. */}
-                <span className={p.price == null ? 'text-amber-600' : 'text-neutral-700'}>
-                  {p.price == null ? 'chưa có giá' : fmt$(p.price)}
-                </span>
-              </div>
-            ))}
+            {l.parts.length === 0 && (
+              <div className="text-neutral-400">bảng giá không có dòng nào cho variant này</div>
+            )}
+            {l.parts.map((part, j) => <Row key={j} part={part} amount={part.unit} />)}
             <div className="flex gap-2 pt-0.5 font-medium text-neutral-800">
-              <span>Đơn giá {fmt$(l.unit)} × {l.quantity}</span>
-              <span className="flex-1 border-b border-dotted border-neutral-300 translate-y-[-3px]" />
+              <span>Đơn giá {fmt$(l.unit)} × SL {l.quantity}</span>
+              <Dots />
               <span>{fmt$(l.total)}</span>
             </div>
           </div>
         </div>
       ))}
+
+      {orderParts.length > 0 && (
+        <div className="text-xs">
+          {/* Charged once for the whole order, not per item - which is why it
+              sits outside the item block rather than inside one. */}
+          <div className="font-medium text-neutral-700">Phí ship (tính 1 lần cho cả đơn)</div>
+          <div className="mt-1 pl-3 border-l-2 border-neutral-200 space-y-0.5">
+            {orderParts.map((part, i) => <Row key={i} part={part} amount={part.amount} />)}
+          </div>
+        </div>
+      )}
+
       <div className="flex gap-2 text-xs font-semibold text-emerald-700 pt-1 border-t border-neutral-200">
         <span>Tổng đơn</span>
         <span className="flex-1" />
@@ -194,13 +202,47 @@ function Working({ lines, total }) {
   );
 }
 
+const Dots = () => <span className="flex-1 border-b border-dotted border-neutral-300 translate-y-[-3px]" />;
+
+/** One component of the calculation: label, why, and how much. */
+function Row({ part, amount }) {
+  const isAddon = part.label.startsWith('Add-on');
+  // A rate the card has but this order does not owe (one-sided design, single
+  // item) is shown struck through at zero rather than hidden - otherwise the
+  // reader is left wondering why a rate they set went unused.
+  const unused = amount === 0 && part.note;
+
+  return (
+    <div className="flex gap-2">
+      <span className={isAddon ? 'text-purple-600' : 'text-neutral-600'}>
+        {part.label}
+        {part.note && <span className="ml-1.5 text-[10px] text-neutral-400">({part.note})</span>}
+      </span>
+      <Dots />
+      <span className={
+        amount == null ? 'text-amber-600' : unused ? 'text-neutral-400' : 'text-neutral-700'
+      }>
+        {amount == null ? 'chưa có giá' : fmt$(amount)}
+      </span>
+    </div>
+  );
+}
+
 /** Same working, flattened onto one CSV cell. */
-function workingText(lines) {
-  if (!lines?.length) return '';
-  return lines.map(l => {
-    const parts = l.parts.map(p => `${p.label} ${p.price == null ? '(chưa có giá)' : fmt$(p.price)}`).join(' + ');
-    return `${l.product || '?'}: ${parts} = ${fmt$(l.unit)} x${l.quantity} = ${fmt$(l.total)}`;
-  }).join(' | ');
+function workingText(breakdown) {
+  const items = breakdown?.items || [];
+  const orderParts = breakdown?.order || [];
+  const one = (label, note, amt) =>
+    `${label}${note ? ` (${note})` : ''} ${amt == null ? '(chưa có giá)' : fmt$(amt)}`;
+
+  const parts = items.map(l => {
+    const inner = l.parts.map(p => one(p.label, p.note, p.unit)).join(' + ');
+    return `${l.product || '?'}: ${inner} = ${fmt$(l.unit)} x${l.quantity} = ${fmt$(l.total)}`;
+  });
+  if (orderParts.length) {
+    parts.push(`Ship: ${orderParts.map(p => one(p.label, p.note, p.amount)).join(' + ')}`);
+  }
+  return parts.join(' | ');
 }
 
 function RevenueModal({ partner, onClose, onApplied }) {
@@ -375,7 +417,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
                   {open.has(o.order_id) && (
                     <tr className="border-b border-neutral-100 bg-[#faf8f6]">
                       <td colSpan={8} className="px-6 py-3">
-                        <Working lines={o.breakdown} total={o.computed} />
+                        <Working breakdown={o.breakdown} total={o.computed} />
                       </td>
                     </tr>
                   )}
