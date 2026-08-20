@@ -88,11 +88,17 @@ function PartnerCard({ p, onOpen }) {
         </button>
       </div>
 
-      <div className="grid grid-cols-4 gap-2 text-center">
+      <div className="grid grid-cols-3 gap-2 text-center">
         <Stat label="Hôm nay" value={p.shipped_today} />
         <Stat label={`${p.daily.length ? 'Trong kỳ' : 'Kỳ này'}`} value={p.shipped_window} />
         <Stat label="Tổng ship" value={p.shipped_total} />
-        <Stat label="Đã trả" value={fmt$(p.revenue_total)} tone="emerald" />
+      </div>
+
+      {/* Money owed on orders the seller has not settled is money going out
+          ahead of money coming in — worth seeing apart from the rest. */}
+      <div className="grid grid-cols-2 gap-2 text-center">
+        <Stat label={`Đơn đã paid · ${p.orders_paid} đơn`} value={fmt$(p.revenue_paid)} tone="emerald" />
+        <Stat label={`Đơn chưa paid · ${p.orders_unpaid} đơn`} value={fmt$(p.revenue_unpaid)} tone="amber" />
       </div>
 
       {(p.unpriced > 0 || p.undated > 0) && (
@@ -133,10 +139,15 @@ function PartnerCard({ p, onOpen }) {
   );
 }
 
+const STAT_TONES = {
+  emerald: 'text-emerald-600',
+  amber: 'text-amber-600',
+};
+
 function Stat({ label, value, tone }) {
   return (
     <div className="bg-[#faf8f6] rounded-lg py-2">
-      <div className={`text-lg font-bold ${tone === 'emerald' ? 'text-emerald-600' : 'text-neutral-800'}`}>{value}</div>
+      <div className={`text-lg font-bold ${STAT_TONES[tone] || 'text-neutral-800'}`}>{value}</div>
       <div className="text-[10px] text-neutral-500">{label}</div>
     </div>
   );
@@ -305,13 +316,14 @@ function RevenueModal({ partner, onClose, onApplied }) {
       const s = v == null ? '' : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ['system_id', 'ref_id', 'completed_time', 'items', 'qty', 'current', 'computed', 'diff', 'locked', 'cach_tinh'];
+    const header = ['system_id', 'ref_id', 'completed_time', 'items', 'qty', 'current', 'computed', 'diff', 'locked', 'paid', 'cach_tinh'];
     const lines = [header.join(',')];
     for (const r of rows) {
       lines.push([
         r.system_id, r.ref_id, r.completed_time,
         r.items.map(i => `${i.product || ''} x${i.quantity}`).join(' | '),
         r.qty, r.current ?? '', r.computed ?? '', r.diff ?? '', r.locked ? 'yes' : '',
+        r.paid ? 'paid' : 'chua paid',
         workingText(r.breakdown),
       ].map(esc).join(','));
     }
@@ -376,6 +388,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
                   <th className="py-2 px-2 w-6"></th>
                   <th className="py-2 px-3 text-left">System ID</th>
                   <th className="py-2 px-3 text-left">Ship lúc</th>
+                  <th className="py-2 px-3 text-left">Paid</th>
                   <th className="py-2 px-3 text-left">Sản phẩm</th>
                   <th className="py-2 px-3 text-right">SL</th>
                   <th className="py-2 px-3 text-right">Hiện tại</th>
@@ -401,6 +414,13 @@ function RevenueModal({ partner, onClose, onApplied }) {
                       )}
                     </td>
                     <td className="py-1.5 px-3 text-neutral-500 text-xs">{o.completed_time || '—'}</td>
+                    <td className="py-1.5 px-3 text-xs">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                        o.paid ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                      }`}>
+                        {o.paid ? 'paid' : 'chưa paid'}
+                      </span>
+                    </td>
                     <td className="py-1.5 px-3 text-neutral-700 text-xs">
                       {o.items.map(i => `${i.product || '?'} ×${i.quantity}`).join(', ')}
                     </td>
@@ -416,7 +436,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
                   </tr>
                   {open.has(o.order_id) && (
                     <tr className="border-b border-neutral-100 bg-[#faf8f6]">
-                      <td colSpan={8} className="px-6 py-3">
+                      <td colSpan={9} className="px-6 py-3">
                         <Working breakdown={o.breakdown} total={o.computed} />
                       </td>
                     </tr>
@@ -433,6 +453,8 @@ function RevenueModal({ partner, onClose, onApplied }) {
             <span className="text-neutral-600">{t.orders} đơn · {t.qty} sản phẩm</span>
             <span className="text-neutral-600">Hiện tại: <b>{fmt$(t.current)}</b></span>
             <span className="text-emerald-700">Tính ra: <b>{fmt$(t.computed)}</b></span>
+            <span className="text-emerald-700">đơn đã paid: <b>{fmt$(t.computed_paid)}</b></span>
+            <span className="text-amber-600">đơn chưa paid: <b>{fmt$(t.computed_unpaid)}</b> ({t.orders_unpaid} đơn)</span>
             {t.settled > 0 && <span className="text-neutral-500">{t.settled} đơn đã chốt tiền (giữ nguyên)</span>}
             {t.unpriced > 0 && <span className="text-amber-600">{t.unpriced} đơn chưa có tiền</span>}
           </div>
