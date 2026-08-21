@@ -16,6 +16,7 @@ export default function PartnerDashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [detailFor, setDetailFor] = useState(null);
+  const [payFor, setPayFor] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -57,18 +58,25 @@ export default function PartnerDashboard() {
         <p className="text-neutral-400 text-sm">Chưa có tài khoản role <b>partner</b> nào.</p>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {partners.map(p => <PartnerCard key={p.user.id} p={p} onOpen={() => setDetailFor(p)} />)}
+          {partners.map(p => (
+            <PartnerCard key={p.user.id} p={p}
+              onOpen={() => setDetailFor(p)}
+              onPay={() => setPayFor(p)} />
+          ))}
         </div>
       )}
 
       {detailFor && (
         <RevenueModal partner={detailFor} onClose={() => setDetailFor(null)} onApplied={load} />
       )}
+      {payFor && (
+        <PayoutModal partner={payFor} onClose={() => setPayFor(null)} onPaid={load} />
+      )}
     </div>
   );
 }
 
-function PartnerCard({ p, onOpen }) {
+function PartnerCard({ p, onOpen, onPay }) {
   const max = Math.max(1, ...p.daily.map(d => d.count));
 
   return (
@@ -82,10 +90,16 @@ function PartnerCard({ p, onOpen }) {
               : <span className="text-red-500">Chưa gán bảng giá — không tính tiền được</span>}
           </div>
         </div>
-        <button onClick={onOpen}
-          className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs rounded-lg shrink-0">
-          Tính tiền
-        </button>
+        <div className="flex gap-1.5 shrink-0">
+          <button onClick={onOpen}
+            className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs rounded-lg">
+            Tính tiền
+          </button>
+          <button onClick={onPay}
+            className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs rounded-lg">
+            Trả tiền
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-2 text-center">
@@ -99,6 +113,12 @@ function PartnerCard({ p, onOpen }) {
       <div className="grid grid-cols-2 gap-2 text-center">
         <Stat label={`Đơn đã paid · ${p.orders_paid} đơn`} value={fmt$(p.revenue_paid)} tone="emerald" />
         <Stat label={`Đơn chưa paid · ${p.orders_unpaid} đơn`} value={fmt$(p.revenue_unpaid)} tone="amber" />
+      </div>
+
+      {/* What we owe the partner, versus what we have already handed over. */}
+      <div className="grid grid-cols-2 gap-2 text-center">
+        <Stat label={`Còn nợ partner · ${p.owed_orders} đơn`} value={fmt$(p.owed)} tone="red" />
+        <Stat label="Đã trả partner" value={fmt$(p.paid_out)} />
       </div>
 
       {(p.unpriced > 0 || p.undated > 0) && (
@@ -142,6 +162,7 @@ function PartnerCard({ p, onOpen }) {
 const STAT_TONES = {
   emerald: 'text-emerald-600',
   amber: 'text-amber-600',
+  red: 'text-red-600',
 };
 
 function Stat({ label, value, tone }) {
@@ -149,6 +170,240 @@ function Stat({ label, value, tone }) {
     <div className="bg-[#faf8f6] rounded-lg py-2">
       <div className={`text-lg font-bold ${STAT_TONES[tone] || 'text-neutral-800'}`}>{value}</div>
       <div className="text-[10px] text-neutral-500">{label}</div>
+    </div>
+  );
+}
+
+/**
+ * Recording a payment to a partner, and the history of past ones.
+ *
+ * The amount comes from the orders being settled, not from a box the user
+ * types in — the same reason order totals are computed server-side. An
+ * explicit amount can still be given when the transfer was rounded or
+ * adjusted, and the hub keeps both figures so the difference stays visible.
+ */
+function PayoutModal({ partner, onClose, onPaid }) {
+  const [data, setData] = useState(null);        // { orders, total, count, unpriced }
+  const [history, setHistory] = useState([]);
+  const [picked, setPicked] = useState(null);    // null = every unpaid order
+  const [form, setForm] = useState({ method: 'bank_transfer', transaction_id: '', note: '', amount: '' });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [out, hist] = await Promise.all([
+        api.get(`/partner-payouts/outstanding/${partner.user.id}`),
+        api.get('/partner-payouts', { params: { user_id: partner.user.id, per_page: 20 } }),
+      ]);
+      setData(out.data);
+      setHistory(hist.data?.data || []);
+      setPicked(null);
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Không tải được công nợ', { title: 'Trả tiền', kind: 'error' });
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const orders = data?.orders || [];
+  const chosen = picked ?? new Set(orders.map(o => o.id));
+  const chosenTotal = orders
+    .filter(o => chosen.has(o.id))
+    .reduce((s, o) => s + Number(o.partner_revenue || 0), 0);
+
+  const toggle = (id) => setPicked(prev => {
+    const next = new Set(prev ?? orders.map(o => o.id));
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  const submit = async () => {
+    const ids = [...chosen];
+    if (ids.length === 0 && !form.amount) {
+      notify('Chọn ít nhất 1 đơn, hoặc nhập số tiền.', { title: 'Trả tiền', kind: 'error' });
+      return;
+    }
+    if (!confirm(
+      `Ghi nhận đã trả ${fmt$(form.amount || chosenTotal)} cho ${partner.user.name}?\n\n`
+      + `${ids.length} đơn sẽ được đánh dấu đã thanh toán.`
+    )) return;
+
+    setSaving(true);
+    try {
+      const res = await api.post('/partner-payouts', {
+        user_id: partner.user.id,
+        order_ids: ids,
+        amount: form.amount === '' ? null : Number(form.amount),
+        method: form.method || null,
+        transaction_id: form.transaction_id || null,
+        note: form.note || null,
+      });
+      notify(res.data?.message || 'Đã ghi nhận', { title: 'Trả tiền', kind: 'success' });
+      setForm(f => ({ ...f, transaction_id: '', note: '', amount: '' }));
+      await load();
+      onPaid?.();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Ghi nhận thất bại', { title: 'Trả tiền', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  const cancelPayout = async (row) => {
+    if (!confirm(
+      `Huỷ giao dịch #${row.id} (${fmt$(row.amount)})?\n\n`
+      + `${row.orders_count} đơn sẽ quay lại trạng thái chưa thanh toán.`
+    )) return;
+    try {
+      const res = await api.delete(`/partner-payouts/${row.id}`);
+      notify(res.data?.message || 'Đã huỷ', { title: 'Trả tiền', kind: 'success' });
+      await load();
+      onPaid?.();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Huỷ thất bại', { title: 'Trả tiền', kind: 'error' });
+    }
+  };
+
+  return (
+    <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
+      <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[92vw] max-w-4xl max-h-[88vh] flex flex-col overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-200 flex justify-between items-center">
+          <div>
+            <h3 className="text-sm font-semibold text-neutral-800">Trả tiền — {partner.user.name}</h3>
+            <div className="text-[11px] text-neutral-500">
+              Còn nợ <b className="text-red-600">{fmt$(data?.total)}</b> trên {data?.count ?? 0} đơn
+              {data?.unpriced > 0 && (
+                <span className="text-amber-600"> · {data.unpriced} đơn chưa tính tiền (chưa trả được)</span>
+              )}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800 text-xl leading-none">×</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <p className="p-6 text-center text-neutral-400 text-sm">Loading…</p>
+          ) : (
+            <div className="p-4 space-y-4">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-neutral-600">Đơn chưa thanh toán</span>
+                  <span className="text-xs text-neutral-500">
+                    Chọn {chosen.size}/{orders.length} · <b className="text-orange-600">{fmt$(chosenTotal)}</b>
+                  </span>
+                </div>
+                {orders.length === 0 ? (
+                  <p className="text-neutral-400 text-sm">Không còn đơn nào chưa trả.</p>
+                ) : (
+                  <div className="border border-neutral-200 rounded-lg overflow-hidden max-h-56 overflow-y-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-[#faf8f6] text-neutral-500 sticky top-0">
+                        <tr>
+                          <th className="px-2 py-1.5 w-8"></th>
+                          <th className="text-left px-2 py-1.5">System ID</th>
+                          <th className="text-left px-2 py-1.5">Ship lúc</th>
+                          <th className="text-right px-2 py-1.5">Partner nhận</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orders.map(o => (
+                          <tr key={o.id} className="border-t border-neutral-100">
+                            <td className="px-2 py-1.5">
+                              <input type="checkbox" checked={chosen.has(o.id)}
+                                onChange={() => toggle(o.id)} className="accent-orange-500" />
+                            </td>
+                            <td className="px-2 py-1.5 font-mono text-orange-600">{o.system_id}</td>
+                            <td className="px-2 py-1.5 text-neutral-500">
+                              {o.completed_time ? new Date(o.completed_time).toLocaleDateString() : '—'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right font-medium">{fmt$(o.partner_revenue)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 border-t border-neutral-100 pt-3">
+                <div>
+                  <label className="text-xs text-neutral-500 block">Hình thức</label>
+                  <select value={form.method} onChange={e => setForm(f => ({ ...f, method: e.target.value }))}
+                    className="mt-1 w-full px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+                    <option value="bank_transfer">Chuyển khoản</option>
+                    <option value="cash">Tiền mặt</option>
+                    <option value="momo">Momo</option>
+                    <option value="paypal">PayPal</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-neutral-500 block">Mã giao dịch</label>
+                  <input value={form.transaction_id} onChange={e => setForm(f => ({ ...f, transaction_id: e.target.value }))}
+                    placeholder="FT2608..." className="mt-1 w-full px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                </div>
+                <div>
+                  {/* Blank means "exactly what the chosen orders add up to" —
+                      fill this only when the transfer differed. */}
+                  <label className="text-xs text-neutral-500 block">Số tiền (nếu khác)</label>
+                  <input type="number" step="0.01" min="0" value={form.amount}
+                    onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+                    placeholder={chosenTotal.toFixed(2)}
+                    className="mt-1 w-full px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm text-right font-mono" />
+                </div>
+                <div>
+                  <label className="text-xs text-neutral-500 block">Ghi chú</label>
+                  <input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))}
+                    placeholder="Kỳ 1–15/08" className="mt-1 w-full px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+                </div>
+              </div>
+
+              {history.length > 0 && (
+                <div className="border-t border-neutral-100 pt-3">
+                  <div className="text-xs font-semibold text-neutral-600 mb-2">Lịch sử giao dịch</div>
+                  <table className="w-full text-xs">
+                    <thead className="bg-[#faf8f6] text-neutral-500">
+                      <tr>
+                        <th className="text-left px-2 py-1.5">Ngày</th>
+                        <th className="text-right px-2 py-1.5">Số tiền</th>
+                        <th className="text-left px-2 py-1.5">Hình thức</th>
+                        <th className="text-left px-2 py-1.5">Mã GD</th>
+                        <th className="text-right px-2 py-1.5">Đơn</th>
+                        <th className="text-right px-2 py-1.5">Còn nợ sau</th>
+                        <th className="px-2 py-1.5"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {history.map(row => (
+                        <tr key={row.id} className="border-t border-neutral-100">
+                          <td className="px-2 py-1.5 text-neutral-500">{new Date(row.created_at).toLocaleDateString()}</td>
+                          <td className="px-2 py-1.5 text-right font-medium text-emerald-700">{fmt$(row.amount)}</td>
+                          <td className="px-2 py-1.5 text-neutral-600">{row.method || '—'}</td>
+                          <td className="px-2 py-1.5 font-mono text-neutral-500">{row.transaction_id || '—'}</td>
+                          <td className="px-2 py-1.5 text-right text-neutral-600">{row.orders_count}</td>
+                          <td className="px-2 py-1.5 text-right text-neutral-500">{fmt$(row.balance_after)}</td>
+                          <td className="px-2 py-1.5 text-right">
+                            <button onClick={() => cancelPayout(row)}
+                              className="text-red-500 hover:text-red-700" title="Huỷ giao dịch, trả đơn về chưa thanh toán">
+                              Huỷ
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="px-4 py-3 border-t border-neutral-200 flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Đóng</button>
+          <button onClick={submit} disabled={saving || loading}
+            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">
+            {saving ? 'Đang ghi…' : `Ghi nhận đã trả ${fmt$(form.amount || chosenTotal)}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
