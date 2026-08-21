@@ -117,7 +117,7 @@ function PartnerCard({ p, onOpen, onPay }) {
 
       {/* What we owe the partner, versus what we have already handed over. */}
       <div className="grid grid-cols-2 gap-2 text-center">
-        <Stat label={`Còn nợ partner · ${p.owed_orders} đơn`} value={fmt$(p.owed)} tone="red" />
+        <Stat label="Còn nợ partner" value={fmt$(p.owed)} tone="red" />
         <Stat label="Đã trả partner" value={fmt$(p.paid_out)} />
       </div>
 
@@ -177,70 +177,51 @@ function Stat({ label, value, tone }) {
 /**
  * Recording a payment to a partner, and the history of past ones.
  *
- * The amount comes from the orders being settled, not from a box the user
- * types in — the same reason order totals are computed server-side. An
- * explicit amount can still be given when the transfer was rounded or
- * adjusted, and the hub keeps both figures so the difference stays visible.
+ * A payout is just an amount — what is still owed is everything the partner
+ * earned minus everything paid, so a rounded transfer or a part payment
+ * records as easily as one that matches the orders exactly.
  */
 function PayoutModal({ partner, onClose, onPaid }) {
-  const [data, setData] = useState(null);        // { orders, total, count, unpriced }
+  const [sum, setSum] = useState(null);          // { earned, paid, owed, orders, unpriced }
   const [history, setHistory] = useState([]);
-  const [picked, setPicked] = useState(null);    // null = every unpaid order
-  const [form, setForm] = useState({ method: 'bank_transfer', transaction_id: '', note: '', amount: '' });
+  const [form, setForm] = useState({ amount: '', method: 'bank_transfer', transaction_id: '', note: '' });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [out, hist] = await Promise.all([
-        api.get(`/partner-payouts/outstanding/${partner.user.id}`),
+      const [s1, h] = await Promise.all([
+        api.get(`/partner-payouts/summary/${partner.user.id}`),
         api.get('/partner-payouts', { params: { user_id: partner.user.id, per_page: 20 } }),
       ]);
-      setData(out.data);
-      setHistory(hist.data?.data || []);
-      setPicked(null);
+      setSum(s1.data);
+      setHistory(h.data?.data || []);
     } catch (err) {
       notify(err?.response?.data?.message || 'Không tải được công nợ', { title: 'Trả tiền', kind: 'error' });
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
 
-  const orders = data?.orders || [];
-  const chosen = picked ?? new Set(orders.map(o => o.id));
-  const chosenTotal = orders
-    .filter(o => chosen.has(o.id))
-    .reduce((s, o) => s + Number(o.partner_revenue || 0), 0);
-
-  const toggle = (id) => setPicked(prev => {
-    const next = new Set(prev ?? orders.map(o => o.id));
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
-
   const submit = async () => {
-    const ids = [...chosen];
-    if (ids.length === 0 && !form.amount) {
-      notify('Chọn ít nhất 1 đơn, hoặc nhập số tiền.', { title: 'Trả tiền', kind: 'error' });
+    const amount = Number(form.amount);
+    if (!(amount > 0)) {
+      notify('Nhập số tiền đã trả.', { title: 'Trả tiền', kind: 'error' });
       return;
     }
-    if (!confirm(
-      `Ghi nhận đã trả ${fmt$(form.amount || chosenTotal)} cho ${partner.user.name}?\n\n`
-      + `${ids.length} đơn sẽ được đánh dấu đã thanh toán.`
-    )) return;
+    if (!confirm(`Ghi nhận đã trả ${fmt$(amount)} cho ${partner.user.name}?`)) return;
 
     setSaving(true);
     try {
       const res = await api.post('/partner-payouts', {
         user_id: partner.user.id,
-        order_ids: ids,
-        amount: form.amount === '' ? null : Number(form.amount),
+        amount,
         method: form.method || null,
         transaction_id: form.transaction_id || null,
         note: form.note || null,
       });
       notify(res.data?.message || 'Đã ghi nhận', { title: 'Trả tiền', kind: 'success' });
-      setForm(f => ({ ...f, transaction_id: '', note: '', amount: '' }));
+      setForm({ amount: '', method: form.method, transaction_id: '', note: '' });
       await load();
       onPaid?.();
     } catch (err) {
@@ -249,10 +230,7 @@ function PayoutModal({ partner, onClose, onPaid }) {
   };
 
   const cancelPayout = async (row) => {
-    if (!confirm(
-      `Huỷ giao dịch #${row.id} (${fmt$(row.amount)})?\n\n`
-      + `${row.orders_count} đơn sẽ quay lại trạng thái chưa thanh toán.`
-    )) return;
+    if (!confirm(`Huỷ giao dịch ${fmt$(row.amount)} ngày ${new Date(row.created_at).toLocaleDateString()}?`)) return;
     try {
       const res = await api.delete(`/partner-payouts/${row.id}`);
       notify(res.data?.message || 'Đã huỷ', { title: 'Trả tiền', kind: 'success' });
@@ -265,17 +243,9 @@ function PayoutModal({ partner, onClose, onPaid }) {
 
   return (
     <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
-      <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[92vw] max-w-4xl max-h-[88vh] flex flex-col overflow-hidden">
+      <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[92vw] max-w-3xl max-h-[88vh] flex flex-col overflow-hidden">
         <div className="px-4 py-3 border-b border-neutral-200 flex justify-between items-center">
-          <div>
-            <h3 className="text-sm font-semibold text-neutral-800">Trả tiền — {partner.user.name}</h3>
-            <div className="text-[11px] text-neutral-500">
-              Còn nợ <b className="text-red-600">{fmt$(data?.total)}</b> trên {data?.count ?? 0} đơn
-              {data?.unpriced > 0 && (
-                <span className="text-amber-600"> · {data.unpriced} đơn chưa tính tiền (chưa trả được)</span>
-              )}
-            </div>
-          </div>
+          <h3 className="text-sm font-semibold text-neutral-800">Trả tiền — {partner.user.name}</h3>
           <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800 text-xl leading-none">×</button>
         </div>
 
@@ -284,47 +254,27 @@ function PayoutModal({ partner, onClose, onPaid }) {
             <p className="p-6 text-center text-neutral-400 text-sm">Loading…</p>
           ) : (
             <div className="p-4 space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-neutral-600">Đơn chưa thanh toán</span>
-                  <span className="text-xs text-neutral-500">
-                    Chọn {chosen.size}/{orders.length} · <b className="text-orange-600">{fmt$(chosenTotal)}</b>
-                  </span>
-                </div>
-                {orders.length === 0 ? (
-                  <p className="text-neutral-400 text-sm">Không còn đơn nào chưa trả.</p>
-                ) : (
-                  <div className="border border-neutral-200 rounded-lg overflow-hidden max-h-56 overflow-y-auto">
-                    <table className="w-full text-xs">
-                      <thead className="bg-[#faf8f6] text-neutral-500 sticky top-0">
-                        <tr>
-                          <th className="px-2 py-1.5 w-8"></th>
-                          <th className="text-left px-2 py-1.5">System ID</th>
-                          <th className="text-left px-2 py-1.5">Ship lúc</th>
-                          <th className="text-right px-2 py-1.5">Partner nhận</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {orders.map(o => (
-                          <tr key={o.id} className="border-t border-neutral-100">
-                            <td className="px-2 py-1.5">
-                              <input type="checkbox" checked={chosen.has(o.id)}
-                                onChange={() => toggle(o.id)} className="accent-orange-500" />
-                            </td>
-                            <td className="px-2 py-1.5 font-mono text-orange-600">{o.system_id}</td>
-                            <td className="px-2 py-1.5 text-neutral-500">
-                              {o.completed_time ? new Date(o.completed_time).toLocaleDateString() : '—'}
-                            </td>
-                            <td className="px-2 py-1.5 text-right font-medium">{fmt$(o.partner_revenue)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <Stat label={`Đã tính · ${sum?.orders ?? 0} đơn`} value={fmt$(sum?.earned)} />
+                <Stat label="Đã trả" value={fmt$(sum?.paid)} tone="emerald" />
+                <Stat label="Còn nợ" value={fmt$(sum?.owed)} tone="red" />
               </div>
 
+              {sum?.unpriced > 0 && (
+                <p className="text-[11px] text-amber-600">
+                  {sum.unpriced} đơn đã ship nhưng chưa tính tiền — chưa nằm trong "Đã tính",
+                  bấm <b>Tính tiền</b> trước khi chốt công nợ.
+                </p>
+              )}
+
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 border-t border-neutral-100 pt-3">
+                <div>
+                  <label className="text-xs text-neutral-500 block">Số tiền đã trả</label>
+                  <input type="number" step="0.01" min="0" value={form.amount} autoFocus
+                    onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+                    placeholder={Number(sum?.owed || 0).toFixed(2)}
+                    className="mt-1 w-full px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm text-right font-mono" />
+                </div>
                 <div>
                   <label className="text-xs text-neutral-500 block">Hình thức</label>
                   <select value={form.method} onChange={e => setForm(f => ({ ...f, method: e.target.value }))}
@@ -338,16 +288,7 @@ function PayoutModal({ partner, onClose, onPaid }) {
                 <div>
                   <label className="text-xs text-neutral-500 block">Mã giao dịch</label>
                   <input value={form.transaction_id} onChange={e => setForm(f => ({ ...f, transaction_id: e.target.value }))}
-                    placeholder="FT2608..." className="mt-1 w-full px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
-                </div>
-                <div>
-                  {/* Blank means "exactly what the chosen orders add up to" —
-                      fill this only when the transfer differed. */}
-                  <label className="text-xs text-neutral-500 block">Số tiền (nếu khác)</label>
-                  <input type="number" step="0.01" min="0" value={form.amount}
-                    onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
-                    placeholder={chosenTotal.toFixed(2)}
-                    className="mt-1 w-full px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm text-right font-mono" />
+                    placeholder="FT2608…" className="mt-1 w-full px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
                 </div>
                 <div>
                   <label className="text-xs text-neutral-500 block">Ghi chú</label>
@@ -356,9 +297,11 @@ function PayoutModal({ partner, onClose, onPaid }) {
                 </div>
               </div>
 
-              {history.length > 0 && (
-                <div className="border-t border-neutral-100 pt-3">
-                  <div className="text-xs font-semibold text-neutral-600 mb-2">Lịch sử giao dịch</div>
+              <div className="border-t border-neutral-100 pt-3">
+                <div className="text-xs font-semibold text-neutral-600 mb-2">Lịch sử giao dịch</div>
+                {history.length === 0 ? (
+                  <p className="text-neutral-400 text-sm">Chưa có giao dịch nào.</p>
+                ) : (
                   <table className="w-full text-xs">
                     <thead className="bg-[#faf8f6] text-neutral-500">
                       <tr>
@@ -366,8 +309,9 @@ function PayoutModal({ partner, onClose, onPaid }) {
                         <th className="text-right px-2 py-1.5">Số tiền</th>
                         <th className="text-left px-2 py-1.5">Hình thức</th>
                         <th className="text-left px-2 py-1.5">Mã GD</th>
-                        <th className="text-right px-2 py-1.5">Đơn</th>
+                        <th className="text-left px-2 py-1.5">Ghi chú</th>
                         <th className="text-right px-2 py-1.5">Còn nợ sau</th>
+                        <th className="text-left px-2 py-1.5">Người ghi</th>
                         <th className="px-2 py-1.5"></th>
                       </tr>
                     </thead>
@@ -376,13 +320,14 @@ function PayoutModal({ partner, onClose, onPaid }) {
                         <tr key={row.id} className="border-t border-neutral-100">
                           <td className="px-2 py-1.5 text-neutral-500">{new Date(row.created_at).toLocaleDateString()}</td>
                           <td className="px-2 py-1.5 text-right font-medium text-emerald-700">{fmt$(row.amount)}</td>
-                          <td className="px-2 py-1.5 text-neutral-600">{row.method || '—'}</td>
+                          <td className="px-2 py-1.5 text-neutral-600">{METHOD_LABELS[row.method] || row.method || '—'}</td>
                           <td className="px-2 py-1.5 font-mono text-neutral-500">{row.transaction_id || '—'}</td>
-                          <td className="px-2 py-1.5 text-right text-neutral-600">{row.orders_count}</td>
+                          <td className="px-2 py-1.5 text-neutral-500">{row.note || '—'}</td>
                           <td className="px-2 py-1.5 text-right text-neutral-500">{fmt$(row.balance_after)}</td>
+                          <td className="px-2 py-1.5 text-neutral-400">{row.creator?.name || '—'}</td>
                           <td className="px-2 py-1.5 text-right">
                             <button onClick={() => cancelPayout(row)}
-                              className="text-red-500 hover:text-red-700" title="Huỷ giao dịch, trả đơn về chưa thanh toán">
+                              className="text-red-500 hover:text-red-700" title="Huỷ giao dịch — số tiền quay lại phần còn nợ">
                               Huỷ
                             </button>
                           </td>
@@ -390,23 +335,30 @@ function PayoutModal({ partner, onClose, onPaid }) {
                       ))}
                     </tbody>
                   </table>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           )}
         </div>
 
         <div className="px-4 py-3 border-t border-neutral-200 flex justify-end gap-2">
           <button onClick={onClose} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Đóng</button>
-          <button onClick={submit} disabled={saving || loading}
+          <button onClick={submit} disabled={saving || loading || !(Number(form.amount) > 0)}
             className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">
-            {saving ? 'Đang ghi…' : `Ghi nhận đã trả ${fmt$(form.amount || chosenTotal)}`}
+            {saving ? 'Đang ghi…' : 'Ghi nhận đã trả'}
           </button>
         </div>
       </div>
     </div>
   );
 }
+
+const METHOD_LABELS = {
+  bank_transfer: 'Chuyển khoản',
+  cash: 'Tiền mặt',
+  momo: 'Momo',
+  paypal: 'PayPal',
+};
 
 /**
  * The working behind a partner's pay: every shipped order, what it is worth
