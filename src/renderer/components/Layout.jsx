@@ -8,6 +8,7 @@ const navItems = [
   { path: '/', label: 'Dashboard', icon: '◉', module: 'dashboard' },
   { path: '/reports', label: 'Reports', icon: '▥', module: 'dashboard' },
   { path: '/partner-dashboard', label: 'Partner', icon: '🤝', requiresAdmin: true },
+  { path: '/partner-payouts', label: 'Partner Payout', icon: '💸', requiresAdmin: true },
   { path: '/orders', label: 'Orders', icon: '◈', module: 'orders' },
   { path: '/orders-fpt', label: 'Order FPT', icon: '◈', module: 'orders' },
   { path: '/not-delivered', label: 'Chưa delivered', icon: '📦', module: 'orders' },
