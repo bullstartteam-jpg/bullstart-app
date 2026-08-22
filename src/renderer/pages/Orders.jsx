@@ -121,7 +121,7 @@ function TicketDot({ order }) {
 
 const ORDERS_FILTER_DEFAULTS = {
   status: '', tracking_status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', system_ids: '', tracking_id: '',
-  user_id: '', date_from: '', date_to: '', ship_type: '',
+  user_id: '', partner_id: '', date_from: '', date_to: '', ship_type: '',
   product_id: '', line_id: '', product_variant_id: '', sku: '', color: '', size: '', paper_type: '',
   material_id: '', accessory_id: '', accessory_code: '',
   page: 1, per_page: 20,
@@ -146,6 +146,8 @@ function buildOrderFilterParams(filters, { includePagination = false, orderIds, 
   if (filters.system_ids) params.system_ids = filters.system_ids;
   if (filters.tracking_id) params.tracking_id = filters.tracking_id;
   if (filters.user_id) params.user_id = filters.user_id;
+  // 'none' is a value, not an absence — it asks for orders with no partner.
+  if (filters.partner_id) params.partner_id = filters.partner_id;
   if (filters.date_from) params.date_from = filters.date_from;
   if (filters.date_to) params.date_to = filters.date_to;
   for (const k of PRODUCT_FILTER_KEYS) {
@@ -238,6 +240,7 @@ export default function Orders({ source = 'normal' }) {
   const [payAllSummary, setPayAllSummary] = useState(null);
   const [payAllLoading, setPayAllLoading] = useState(false);
   const [adminUsers, setAdminUsers] = useState([]);
+  const [partnerUsers, setPartnerUsers] = useState([]);
 
   // Recalc-by-filter modal state (recompute prices, show diff, refund overpaid)
   const [showRecalc, setShowRecalc] = useState(false);
@@ -260,6 +263,9 @@ export default function Orders({ source = 'normal' }) {
   useEffect(() => {
     if (isAdmin) {
       api.get('/users', { params: { per_page: 100 } }).then(res => setAdminUsers(res.data.data || []));
+      // Same endpoint the gangsheet screens use, so the partner list here is
+      // the one people already recognise from assigning gangs.
+      api.get('/gangsheets/partner-users').then(res => setPartnerUsers(res.data || [])).catch(() => {});
     }
     if (isSeller) refreshUnpaidBanner();
     api.get('/products', { params: { status: 1, per_page: 100 } })
@@ -326,7 +332,7 @@ export default function Orders({ source = 'normal' }) {
     // guaranteed if the route keys are ever dropped.
     source,
     filters.page, filters.status, filters.tracking_status, filters.paid, filters.ship_type,
-    filters.user_id, filters.ref_ids, filters.system_ids, filters.date_from, filters.date_to, filters.per_page,
+    filters.user_id, filters.partner_id, filters.ref_ids, filters.system_ids, filters.date_from, filters.date_to, filters.per_page,
     filters.product_id, filters.line_id, filters.product_variant_id, filters.sku,
     filters.color, filters.size, filters.paper_type, filters.material_id, filters.accessory_id, filters.accessory_code,
   ]);
@@ -1314,6 +1320,19 @@ export default function Orders({ source = 'normal' }) {
           <option value="seller_ship">seller_ship</option>
           <option value="stamp">stamp</option>
         </select>
+
+        {partnerUsers.length > 0 && (
+          <select
+            value={filters.partner_id || ''}
+            onChange={e => setFilters(f => ({ ...f, partner_id: e.target.value, page: 1 }))}
+            className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none"
+            title="Lọc theo partner đang in đơn"
+          >
+            <option value="">All Partner</option>
+            <option value="none">— chưa chia partner —</option>
+            {partnerUsers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        )}
 
         <select
           value={filters.tracking_status || ''}
