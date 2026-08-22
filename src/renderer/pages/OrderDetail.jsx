@@ -556,7 +556,13 @@ export default function OrderDetail() {
                         : <span className="text-neutral-300 text-xs">-</span>}
                     </td>
                   )}
-                  <td className="py-2 text-center text-neutral-700">{qty}</td>
+                  <td className="py-2 text-center text-neutral-700">
+                    <ItemQuantityCell
+                      item={item}
+                      canEdit={hasRole('admin') && order.status !== 7}
+                      onSaved={fetchOrder}
+                    />
+                  </td>
                   <td className="py-2 text-right text-neutral-800 font-medium">${item.price}</td>
                   <td className="py-2 text-right text-neutral-800 font-medium">${subtotal.toFixed(2)}</td>
                 </tr>
@@ -737,6 +743,80 @@ function ItemTypeCell({ item, canEdit, orderTypes, onSaved }) {
 // Change the product variant of an existing order item. Staff/owner, only
 // while the order isn't shipped/cancelled. On save the hub re-prices the item
 // + recomputes order totals (PUT /order-items/{id}/variant).
+/**
+ * Quantity, editable by admin.
+ *
+ * Kept behind an explicit save rather than an onChange: the number drives
+ * print_cost, the addition_fee inside shipping and the partner's share, so a
+ * stray keystroke should not move money. Whatever the hub reports about the
+ * resulting balance is shown, because a paid order that quietly falls short is
+ * how an unpaid balance goes unnoticed.
+ */
+function ItemQuantityCell({ item, canEdit, onSaved }) {
+  const current = item.quantity ?? 1;
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(current));
+  const [saving, setSaving] = useState(false);
+
+  if (!canEdit) return <span>{current}</span>;
+
+  if (!editing) {
+    return (
+      <button onClick={() => { setValue(String(current)); setEditing(true); }}
+        className="px-2 py-0.5 rounded hover:bg-orange-100 text-neutral-700 hover:text-orange-700"
+        title="Sửa số lượng">
+        {current} <span className="text-[10px] text-neutral-400">✎</span>
+      </button>
+    );
+  }
+
+  const save = async () => {
+    const qty = Number(value);
+    if (!Number.isInteger(qty) || qty < 1) {
+      notify('Số lượng phải là số nguyên ≥ 1.', { title: 'Số lượng', kind: 'error' });
+      return;
+    }
+    if (qty === current) { setEditing(false); return; }
+    if (!confirm(
+      `Đổi số lượng ${current} → ${qty}?\n\n`
+      + 'Giá in, phí ship và tiền partner của đơn sẽ được tính lại.'
+    )) return;
+
+    setSaving(true);
+    try {
+      const res = await api.put(`/order-items/${item.id}/quantity`, { quantity: qty });
+      notify(res.data?.message || 'Đã đổi số lượng', {
+        title: 'Số lượng',
+        kind: Math.abs(res.data?.balance_delta || 0) > 0.005 ? 'info' : 'success',
+      });
+      setEditing(false);
+      onSaved?.();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Đổi số lượng thất bại', { title: 'Số lượng', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="flex items-center gap-1 justify-center">
+      <input
+        type="number" min="1" step="1" value={value} autoFocus disabled={saving}
+        onChange={e => setValue(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') save();
+          if (e.key === 'Escape') setEditing(false);
+        }}
+        className="w-16 px-1.5 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-sm text-center"
+      />
+      <button onClick={save} disabled={saving}
+        className="px-1.5 py-1 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white rounded text-xs">
+        {saving ? '…' : '✓'}
+      </button>
+      <button onClick={() => setEditing(false)} disabled={saving}
+        className="px-1.5 py-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-600 rounded text-xs">×</button>
+    </div>
+  );
+}
+
 function ItemVariantCell({ item, canEdit, products, onOpen, onSaved }) {
   const [editing, setEditing] = useState(false);
   const [productId, setProductId] = useState('');
