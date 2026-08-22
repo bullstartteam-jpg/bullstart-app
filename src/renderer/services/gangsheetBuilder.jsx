@@ -670,6 +670,7 @@ const COPIES = 2;           // prints per design: 1 original + 1 copy
 // then centred on the page with whatever is left over — the gaps are the spec,
 // the margins are the slack.
 const GAP_Y_LEFT = 50;      // between the 4 landscape cards
+const GAP_Y_PAIR = 100;     // extra gap between copy A and design B (between the two pairs)
 const GAP_X_COLS = 100;     // landscape card's right edge → portrait card's left edge
 const GAP_Y_RIGHT = 50;     // blank between the 2 portrait cards (band not counted)
 
@@ -708,13 +709,19 @@ export async function buildTiledGangsheet(orders, {
   // Fixed gaps, each column centred vertically on whatever slack is left.
   const leftRows = LEFT_DESIGNS * COPIES;             // 4
   const rightRows = RIGHT_DESIGNS * COPIES;           // 2
-  const leftBlockH = leftRows * cardHpx + (leftRows - 1) * gapYLeft;
+  // Gap between copy A ↔ design B is GAP_Y_PAIR; all other left gaps are gapYLeft.
+  const leftBlockH = leftRows * cardHpx + (leftRows - 2) * gapYLeft + GAP_Y_PAIR;
   const leftTop = Math.max(0, Math.round((PAGE_H - leftBlockH) / 2));
   const rightCellH = bandReservePx + cardWpx;         // band on top + rotated card
   const rightBlockH = rightRows * rightCellH + (rightRows - 1) * gapYRight;
   const rightTop = Math.max(0, Math.round((PAGE_H - rightBlockH) / 2));
-  // Slot → card top-left. Left slots run 0..3 top-down, right slots 0..1.
-  const leftSlotY = (i) => leftTop + i * (cardHpx + gapYLeft);
+  // Slot → card top-left. Left slots: 0=designA, 1=copyA, 2=designB, 3=copyB.
+  // The gap after slot 1 (between the two pairs) uses GAP_Y_PAIR instead of gapYLeft.
+  const leftSlotY = (i) => {
+    let y = leftTop;
+    for (let s = 0; s < i; s++) y += cardHpx + (s === 1 ? GAP_Y_PAIR : gapYLeft);
+    return y;
+  };
   const rightSlotY = (i) => rightTop + i * (rightCellH + gapYRight) + bandReservePx;
 
   const total = records.length;
