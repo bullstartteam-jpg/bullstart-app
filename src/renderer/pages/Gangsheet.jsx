@@ -14,7 +14,7 @@ import { notify } from '../components/Dialog';
 // fulfill_status (order.status) options relevant to ganging (exclude shipped).
 const STATUS_OPTIONS = [
   [0, 'new_order'], [1, 'producing'], [2, 'wrongsize'],
-  [3, 'fixed'], [4, 'reprint'], [5, 'onhold'], [7, 'cancelled'],
+  [3, 'fixed'], [4, 'reprint'], [5, 'onhold'], [7, 'cancelled'], [8, 'resend'],
 ];
 
 // `source` picks the order channel: 'normal' (Gangsheet menu) or 'fpt'

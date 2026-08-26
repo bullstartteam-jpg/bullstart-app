@@ -213,3 +213,58 @@ export function CreateTicketModal({ orderId, systemId, onClose, onCreated }) {
     </Shell>
   );
 }
+
+/** List all tickets for one order. Click a ticket to open its thread. */
+export function OrderTicketsModal({ orderId, systemId, onClose, onChanged }) {
+  const [tickets, setTickets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [threadId, setThreadId] = useState(null);
+
+  const load = async () => {
+    try {
+      const res = await api.get('/tickets', { params: { order_id: orderId } });
+      setTickets(res.data.data || res.data);
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Không tải được ticket', { title: 'Tickets', kind: 'error' });
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, [orderId]);
+
+  if (threadId) {
+    return <TicketThreadModal id={threadId} onClose={() => setThreadId(null)} onChanged={() => { load(); onChanged?.(); }} />;
+  }
+
+  return (
+    <Shell
+      title="Tickets"
+      sub={<div className="text-xs text-neutral-500 mt-0.5">Đơn <span className="font-mono text-orange-500">{systemId || `#${orderId}`}</span></div>}
+      onClose={onClose}
+    >
+      {loading ? (
+        <p className="text-neutral-400 text-sm">Loading…</p>
+      ) : tickets.length === 0 ? (
+        <p className="text-neutral-400 text-sm">Chưa có ticket nào.</p>
+      ) : (
+        <div className="space-y-2">
+          {tickets.map(t => (
+            <button key={t.id} onClick={() => setThreadId(t.id)}
+              className="w-full text-left border border-neutral-200 rounded-lg p-3 hover:bg-orange-50/50 transition-colors">
+              <div className="flex justify-between items-center gap-2">
+                <span className="text-sm font-medium text-neutral-800 truncate">{t.subject}</span>
+                <TicketStatusPill status={t.status} />
+              </div>
+              <div className="flex items-center gap-2 mt-1 text-xs text-neutral-500">
+                <span>{TICKET_PLATFORM[t.platform]}</span>
+                <span>·</span>
+                <span>{t.creator?.name || '—'}</span>
+                <span>·</span>
+                <span>{fmtTime(t.created_at)}</span>
+                {t.items_count > 0 && <><span>·</span><span>{t.items_count} replies</span></>}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </Shell>
+  );
+}

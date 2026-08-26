@@ -10,7 +10,7 @@ import UploadButton from '../components/UploadButton';
 import ResendModal from '../components/ResendModal';
 import { getOrderFailures, syncOrders, recheckOrder, fetchOrdersStatus, URL_FAILURES_EVENT } from '../services/urlFailureCache';
 
-const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
+const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled', 'resend'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
 
 // Small red marker shown next to an image URL whose background validation failed.
@@ -107,6 +107,7 @@ export default function OrderDetail() {
       const a = o.address || {};
       setForm({
         status: o.status,
+        ref_id: o.ref_id || '',
         note: o.note || '',
         shipping_label: o.shipping_label || '',
         tracking_id: o.tracking_id || '',
@@ -251,7 +252,12 @@ export default function OrderDetail() {
       <div className="flex justify-between items-center mb-6">
         <div>
           <button onClick={() => navigate('/orders')} className="text-neutral-400 hover:text-neutral-700 text-sm mb-2">&larr; Back to orders</button>
-          <h2 className="text-xl font-bold text-neutral-800">Order {order.system_id}</h2>
+          <h2 className="text-xl font-bold text-neutral-800 inline-flex items-center gap-2">
+            Order {order.system_id}
+            {order.resend_of_order_id && (
+              <span className="inline-block px-2 py-0.5 rounded bg-cyan-100 text-cyan-700 text-xs font-semibold uppercase tracking-wide">resend</span>
+            )}
+          </h2>
           {order.ref_id && <p className="text-xs text-neutral-500 mt-1">Ref: <span className="font-mono">{order.ref_id}</span></p>}
           {!hasRole('seller') && (() => {
             const base = getApiUrl().replace(/\/api\/?$/, '');
@@ -308,6 +314,10 @@ export default function OrderDetail() {
                       : null
                   ))}
                 </select>
+              </div>
+              <div>
+                <label className="text-xs text-neutral-500">Ref ID</label>
+                <input value={form.ref_id} onChange={e => setForm(f => ({ ...f, ref_id: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" placeholder="External reference ID" />
               </div>
               {/* Ship type — staff only. Switching to stamp recomputes
                   shipping cost from item qty and clears label/tracking. */}

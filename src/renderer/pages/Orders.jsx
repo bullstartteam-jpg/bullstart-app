@@ -5,7 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { notify, askConfirm } from '../components/Dialog';
 import { buildInvoicePdf } from '../services/invoicePdf';
 import { PreviewModal } from '../components/Preview';
-import { CreateTicketModal } from '../components/TicketModals';
+import { CreateTicketModal, TicketThreadModal } from '../components/TicketModals';
 import { driveThumb, isPreviewable } from '../utils/drive';
 import {
   subscribeFetchTrackingJob, startFetchTrackingJob, stopFetchTrackingJob,
@@ -87,7 +87,7 @@ function OrderThumb({ url, label, onOpen }) {
   );
 }
 
-const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
+const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled', 'resend'];
 const SELLER_STATUS_OPTIONS = [5, 7]; // onhold, cancelled
 
 const PRODUCT_FILTER_KEYS = [
@@ -103,19 +103,28 @@ const PRODUCT_FILTER_KEYS = [
  * scoped to what this user may see (Ticket::scopeVisibleTo), so the badge can
  * never hint at a thread the viewer is not allowed to open.
  */
-function TicketDot({ order }) {
-  const total = order.tickets_count ?? 0;
-  if (!total) return null;
-  const open = order.open_tickets_count ?? 0;
-  const cls = open > 0 ? 'bg-red-500' : 'bg-emerald-500';
-  const title = open > 0 ? `${open}/${total} ticket đang mở` : `${total} ticket đã xong`;
+const TICKET_STATUS_STYLE = {
+  1: 'bg-blue-100 text-blue-700',    // open
+  2: 'bg-emerald-100 text-emerald-700', // done
+  3: 'bg-red-100 text-red-700',      // new message
+};
+
+function TicketList({ order, onOpenThread }) {
+  const tickets = order.tickets || [];
+  if (!tickets.length) return null;
   return (
-    <span
-      title={title}
-      className={`inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full ${cls} text-white text-[10px] leading-none`}
-    >
-      {total > 1 ? total : '💬'}
-    </span>
+    <div className="flex flex-col gap-0.5">
+      {tickets.map(t => (
+        <button
+          key={t.id}
+          onClick={() => onOpenThread(t.id)}
+          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium leading-tight hover:opacity-70 ${TICKET_STATUS_STYLE[t.status] || TICKET_STATUS_STYLE[1]}`}
+          title={t.subject}
+        >
+          #{t.id}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -181,6 +190,7 @@ const STATUS_COLORS = {
   5: 'bg-gray-100 text-gray-600',
   6: 'bg-emerald-100 text-emerald-600',
   7: 'bg-rose-100 text-rose-600',
+  8: 'bg-cyan-100 text-cyan-600',
 };
 
 // `source` picks the order channel this screen works on: 'normal' (the Orders
@@ -214,6 +224,8 @@ export default function Orders({ source = 'normal' }) {
   const [systemIdsInput, setSystemIdsInput] = useState('');
   // Order the "create ticket" popup is open for; null = closed.
   const [ticketFor, setTicketFor] = useState(null);
+  // Ticket thread popup — opened by clicking a #id in the ticket list.
+  const [openThreadId, setOpenThreadId] = useState(null);
   const [selected, setSelected] = useState([]);
   const [previewUrl, setPreviewUrl] = useState(null);
 
@@ -1686,6 +1698,9 @@ export default function Orders({ source = 'normal' }) {
                 <td className="p-3 text-orange-500 font-mono text-xs">
                   <span className="inline-flex items-center gap-1">
                     {order.system_id}
+                    {order.resend_of_order_id && (
+                      <span className="inline-block px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-700 text-[10px] font-semibold uppercase tracking-wide" title={`Resend của đơn #${order.resend_of_order_id}`}>resend</span>
+                    )}
                     {order.production && (
                       <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-green-500 text-white text-[10px] leading-none" title="Đã tạo gangsheet (production)">✓</span>
                     )}
@@ -1760,7 +1775,7 @@ export default function Orders({ source = 'normal' }) {
                 )}
                 <td className="p-3" onClick={e => e.stopPropagation()}>
                   <div className="flex items-center gap-1.5">
-                    <TicketDot order={order} />
+                    <TicketList order={order} onOpenThread={setOpenThreadId} />
                     <button
                       onClick={() => setTicketFor(order)}
                       className="text-neutral-300 hover:text-blue-600 text-xs leading-none"
@@ -2196,6 +2211,15 @@ export default function Orders({ source = 'normal' }) {
           systemId={ticketFor.system_id}
           onClose={() => setTicketFor(null)}
           onCreated={fetchOrders}
+        />
+      )}
+
+      {/* View a ticket thread directly from the order list */}
+      {openThreadId && (
+        <TicketThreadModal
+          id={openThreadId}
+          onClose={() => setOpenThreadId(null)}
+          onChanged={fetchOrders}
         />
       )}
 
