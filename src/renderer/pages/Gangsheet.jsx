@@ -1834,6 +1834,9 @@ function FindTab({ source = 'normal' }) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
   const [results, setResults] = useState([]);
+  // Resend orders auto-loaded on mount.
+  const [resendOrders, setResendOrders] = useState([]);
+  const [resendLoading, setResendLoading] = useState(true);
   // Same routing inputs as Compose: the order_type → convert layout map and
   // the classification dimensions (shared per-machine setting), so a re-gang
   // lands on the same sheets the first run would have produced.
@@ -1847,10 +1850,30 @@ function FindTab({ source = 'normal' }) {
     return next;
   });
 
+  const fetchResend = async () => {
+    setResendLoading(true);
+    try {
+      let page = 1, lastPage = 1;
+      const all = [];
+      do {
+        const res = await api.get('/gangsheets/pending-orders', {
+          params: { per_page: 200, page, source, statuses: [8] },
+        });
+        all.push(...(res.data.data || []));
+        lastPage = res.data.last_page || 1;
+        page++;
+      } while (page <= lastPage);
+      setResendOrders(all);
+      // Auto-select all resend orders.
+      setSelectedIds(new Set(all.map(o => o.id)));
+    } catch { /* silent */ } finally { setResendLoading(false); }
+  };
+
   useEffect(() => {
     api.get('/settings/convert-layouts')
       .then(res => setLayoutMap(res.data?.map || {}))
       .catch(() => {});
+    fetchResend();
   }, []);
 
   const parseIds = (raw) => Array.from(new Set(
@@ -1877,8 +1900,8 @@ function FindTab({ source = 'normal' }) {
     return next;
   });
   const toggleAll = () => {
-    if (selectedIds.size === orders.length) setSelectedIds(new Set());
-    else setSelectedIds(new Set(orders.map(o => o.id)));
+    if (selectedIds.size === allOrders.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(allOrders.map(o => o.id)));
   };
 
   const countQrMetas = (order) => {
@@ -1900,7 +1923,7 @@ function FindTab({ source = 'normal' }) {
   };
 
   const handleGenerate = async () => {
-    const selected = orders.filter(o => selectedIds.has(o.id));
+    const selected = allOrders.filter(o => selectedIds.has(o.id));
     if (selected.length === 0) { alert('Select at least 1 order'); return; }
     // Same routing as Compose — card skin → tiled Letter grouped by chip,
     // keep-native 5x5 → native size, rest → buckets. includeProduced=true so
@@ -1982,8 +2005,41 @@ function FindTab({ source = 'normal' }) {
     }
   };
 
+  // Unified list used by handleGenerate: resend orders + any manual-found orders.
+  const allOrders = [...resendOrders, ...orders.filter(o => !resendOrders.find(r => r.id === o.id))];
+
   return (
     <div className="space-y-4">
+
+      {/* Resend orders auto section */}
+      <div className="bg-white rounded-xl border border-cyan-200 p-4 shadow-sm space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-cyan-700">Đơn Resend ({resendLoading ? '…' : resendOrders.length})</h3>
+            <p className="text-xs text-neutral-500">Tự động load đơn status=resend chưa gang. Tích chọn rồi bấm Re-gang.</p>
+          </div>
+          <button onClick={fetchResend} disabled={resendLoading}
+            className="px-3 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 text-xs rounded-lg disabled:opacity-50">
+            {resendLoading ? 'Loading…' : 'Reload'}
+          </button>
+        </div>
+        {!resendLoading && resendOrders.length === 0 && (
+          <p className="text-xs text-neutral-400">Không có đơn resend nào.</p>
+        )}
+        {resendOrders.length > 0 && (
+          <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">
+            {resendOrders.map(o => (
+              <label key={o.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-cyan-50 px-2 py-1 rounded">
+                <input type="checkbox" checked={selectedIds.has(o.id)}
+                  onChange={() => toggle(o.id)} className="accent-orange-500" />
+                <span className="font-mono text-orange-500">{o.system_id}</span>
+                <span className="text-neutral-500">{(o.items || []).map(it => it.product_variant?.product?.name).filter(Boolean).join(', ')}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
         <div>
           <h3 className="text-sm font-semibold text-neutral-700">Find by system IDs</h3>
@@ -2017,11 +2073,11 @@ function FindTab({ source = 'normal' }) {
         )}
       </div>
 
-      {/* Found orders */}
-      {orders.length > 0 && (
+      {/* Found orders + resend orders combined */}
+      {allOrders.length > 0 && (
         <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
           <div className="flex justify-between items-end gap-3">
-            <h3 className="text-sm font-semibold text-neutral-700">Found orders ({orders.length})</h3>
+            <h3 className="text-sm font-semibold text-neutral-700">Orders ({allOrders.length})</h3>
             <div className="flex gap-2 items-end">
               <div>
                 <label className="text-xs text-neutral-500 block">Orders / batch</label>
@@ -2056,7 +2112,7 @@ function FindTab({ source = 'normal' }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-neutral-500 text-xs border-b border-neutral-200">
-                <th className="py-2 text-left w-8"><input type="checkbox" onChange={toggleAll} checked={selectedIds.size === orders.length && orders.length > 0} className="accent-orange-500" /></th>
+                <th className="py-2 text-left w-8"><input type="checkbox" onChange={toggleAll} checked={selectedIds.size === allOrders.length && allOrders.length > 0} className="accent-orange-500" /></th>
                 <th className="py-2 text-left">System ID</th>
                 <th className="py-2 text-left">Ref</th>
                 <th className="py-2 text-left">Line</th>
@@ -2065,12 +2121,16 @@ function FindTab({ source = 'normal' }) {
               </tr>
             </thead>
             <tbody>
-              {orders.map(o => {
+              {allOrders.map(o => {
                 const li = o.items?.[0]?.product_variant?.product?.line_id;
+                const isResend = !!o.resend_of_order_id;
                 return (
-                  <tr key={o.id} className="border-b border-neutral-100 hover:bg-orange-50/40">
+                  <tr key={o.id} className={`border-b border-neutral-100 hover:bg-orange-50/40 ${isResend ? 'bg-cyan-50/40' : ''}`}>
                     <td className="py-1.5"><input type="checkbox" checked={selectedIds.has(o.id)} onChange={() => toggle(o.id)} className="accent-orange-500" /></td>
-                    <td className="py-1.5 font-mono text-orange-500 text-xs">{o.system_id}</td>
+                    <td className="py-1.5 font-mono text-orange-500 text-xs">
+                      {o.system_id}
+                      {isResend && <span className="ml-1 px-1 py-0.5 rounded bg-cyan-100 text-cyan-700 text-[10px] font-semibold">resend</span>}
+                    </td>
                     <td className="py-1.5 text-xs text-neutral-600">{o.ref_id || '-'}</td>
                     <td className="py-1.5 text-xs text-neutral-600 font-mono">{li || '-'}</td>
                     <td className="py-1.5 text-right text-neutral-700">{countQrMetas(o)}</td>
