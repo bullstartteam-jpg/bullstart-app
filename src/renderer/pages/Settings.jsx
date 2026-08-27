@@ -149,7 +149,7 @@ function GangsheetAutomationTab() {
                     className="text-red-500 hover:text-red-600 text-xs">× xoá</button>
                 </div>
                 <div className="flex flex-wrap gap-1">
-                  {[[0,'new_order'],[1,'producing'],[2,'wrongsize'],[3,'fixed'],[4,'reprint'],[5,'onhold'],[7,'cancelled']].map(([s,label]) => {
+                  {[[0,'new_order'],[1,'producing'],[2,'wrongsize'],[3,'fixed'],[4,'reprint'],[5,'onhold'],[7,'cancelled'],[8,'resend']].map(([s,label]) => {
                     const on = (r.statuses || []).includes(s);
                     return (
                       <button key={s} type="button"
