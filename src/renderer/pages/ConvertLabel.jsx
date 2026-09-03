@@ -277,31 +277,28 @@ function ImportShippingLabels() {
     setResult(null);
   };
 
-  const handleImport = async () => {
+  const doImport = async ({ withConvert }) => {
     if (!rows.length || busy) return;
     setBusy(true);
     setResult(null);
     setProgress('Đang cập nhật shipping label…');
     try {
-      // 1. Update shipping_label on the server (also clears convert_label).
-      const res = await api.post('/orders/import-shipping-labels', { rows });
+      const res = await api.post('/orders/import-shipping-labels', {
+        rows,
+        keep_convert_label: !withConvert,   // true = don't clear convert_label
+      });
       const { updated, not_found } = res.data;
-      setResult({ updated, not_found });
+      setResult({ updated, not_found, withConvert });
 
-      // 2. Auto convert label for each updated order.
-      if (updated.length) {
+      if (withConvert && updated.length) {
         for (const o of updated) {
           setProgress(`Convert label: ${o.system_id}…`);
-          try {
-            await manualConvertLabelById(o.system_id);
-          } catch {
-            // errors already logged to activity log — continue with next
-          }
+          try { await manualConvertLabelById(o.system_id); } catch { /* logged in activity */ }
         }
       }
 
       notify(
-        `Đã update ${updated.length} đơn, không tìm thấy ${not_found.length} ref_id.`,
+        `Đã update ${updated.length} đơn${withConvert ? ' & convert' : ''}, không tìm thấy ${not_found.length} ref_id.`,
         { title: 'Import Shipping Labels', kind: updated.length ? 'success' : 'error' }
       );
     } catch (err) {
@@ -311,6 +308,9 @@ function ImportShippingLabels() {
       setProgress('');
     }
   };
+
+  const handleImport     = () => doImport({ withConvert: true });
+  const handleImportOnly = () => doImport({ withConvert: false });
 
   return (
     <div className="bg-white rounded-xl border border-neutral-200 shadow-sm mb-6 p-4 space-y-3">
@@ -353,10 +353,14 @@ function ImportShippingLabels() {
             </table>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <button onClick={handleImportOnly} disabled={busy}
+              className="px-4 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+              {busy ? 'Đang xử lý…' : `Chỉ update label (${rows.length})`}
+            </button>
             <button onClick={handleImport} disabled={busy}
               className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
-              {busy ? 'Đang xử lý…' : `Import & Convert (${rows.length} đơn)`}
+              {busy ? 'Đang xử lý…' : `Update & Convert (${rows.length})`}
             </button>
             {!busy && <button onClick={() => { setRows([]); setResult(null); setParseError(''); }}
               className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Xoá</button>}
@@ -369,7 +373,7 @@ function ImportShippingLabels() {
         <div className="space-y-1.5">
           {result.updated.length > 0 && (
             <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-700">
-              Đã update &amp; convert <b>{result.updated.length}</b> đơn:{' '}
+              Đã update {result.withConvert ? '& convert ' : ''}<b>{result.updated.length}</b> đơn:{' '}
               {result.updated.map(o => o.system_id).join(', ')}
             </div>
           )}
