@@ -126,11 +126,13 @@ function PriceEditor({ listId, onSaved }) {
     const v = {};
     for (const variant of res.data.variants || []) {
       for (const k of variant.keys) {
-        v[`v:${variant.variant_id}:${k.key}`] = k.partner_price == null ? '' : String(k.partner_price);
+        v[`v:${variant.variant_id}:${k.key}:pub`]  = k.partner_price         == null ? '' : String(k.partner_price);
+        v[`v:${variant.variant_id}:${k.key}:priv`] = k.partner_price_private == null ? '' : String(k.partner_price_private);
       }
     }
     for (const a of res.data.accessories || []) {
-      v[`a:${a.accessory_price_id}`] = a.partner_price == null ? '' : String(a.partner_price);
+      v[`a:${a.accessory_price_id}:pub`]  = a.partner_price         == null ? '' : String(a.partner_price);
+      v[`a:${a.accessory_price_id}:priv`] = a.partner_price_private == null ? '' : String(a.partner_price_private);
     }
     setVals(v);
     setSelected(new Set((res.data.list?.partners || []).map(p => p.id)));
@@ -145,18 +147,32 @@ function PriceEditor({ listId, onSaved }) {
   const save = async () => {
     setSaving(true);
     try {
-      const variants = [];
-      const accessories = [];
+      // Collect pub+priv per (variantId, key) pair, then emit one row each.
+      const variantMap = {};
+      const accessoryMap = {};
       for (const [k, raw] of Object.entries(vals)) {
         const price = raw.trim() === '' ? null : Number(raw);
         if (price !== null && Number.isNaN(price)) continue;
         if (k.startsWith('v:')) {
-          const [, variantId, ...rest] = k.split(':');
-          variants.push({ product_variant_id: Number(variantId), key: rest.join(':'), price });
+          const parts = k.split(':');           // ['v', variantId, ...keyParts, tier]
+          const tier = parts[parts.length - 1]; // 'pub' or 'priv'
+          const variantId = parts[1];
+          const key = parts.slice(2, -1).join(':');
+          const mapKey = `${variantId}|${key}`;
+          if (!variantMap[mapKey]) variantMap[mapKey] = { product_variant_id: Number(variantId), key };
+          if (tier === 'pub')  variantMap[mapKey].price         = price;
+          if (tier === 'priv') variantMap[mapKey].price_private = price;
         } else {
-          accessories.push({ accessory_price_id: Number(k.slice(2)), price });
+          const parts = k.split(':');           // ['a', id, tier]
+          const tier = parts[parts.length - 1];
+          const id = parts[1];
+          if (!accessoryMap[id]) accessoryMap[id] = { accessory_price_id: Number(id) };
+          if (tier === 'pub')  accessoryMap[id].price         = price;
+          if (tier === 'priv') accessoryMap[id].price_private = price;
         }
       }
+      const variants    = Object.values(variantMap);
+      const accessories = Object.values(accessoryMap);
       await api.put(`/partner-price-lists/${listId}/prices`, { variants, accessories });
       await api.put(`/partner-price-lists/${listId}/partners`, { user_ids: [...selected] });
       notify('Đã lưu bảng giá', { title: 'Bảng giá partner', kind: 'success' });
@@ -176,9 +192,9 @@ function PriceEditor({ listId, onSaved }) {
     return n;
   });
 
-  // Sum of the priced keys — what one unit of this variant pays the partner.
+  // Sum of the priced keys — what one unit pays, shown for public tier.
   const variantTotal = (variant) => variant.keys.reduce((s, k) => {
-    const raw = vals[`v:${variant.variant_id}:${k.key}`];
+    const raw = vals[`v:${variant.variant_id}:${k.key}:pub`];
     const n = raw?.trim() === '' ? 0 : Number(raw);
     return s + (Number.isNaN(n) ? 0 : n);
   }, 0);
@@ -219,7 +235,8 @@ function PriceEditor({ listId, onSaved }) {
                 <tr className="text-neutral-500 border-b border-neutral-100">
                   <th className="py-1.5 px-3 text-left">Key</th>
                   <th className="py-1.5 px-3 text-left">Giá seller</th>
-                  <th className="py-1.5 px-3 text-right w-32">Giá partner</th>
+                  <th className="py-1.5 px-3 text-right w-32">Partner (Public)</th>
+                  <th className="py-1.5 px-3 text-right w-32">Partner (Private)</th>
                 </tr>
               </thead>
               <tbody>
@@ -232,10 +249,19 @@ function PriceEditor({ listId, onSaved }) {
                     <td className="py-1.5 px-3 text-right">
                       <input
                         type="text" inputMode="decimal"
-                        value={vals[`v:${v.variant_id}:${k.key}`] ?? ''}
-                        onChange={e => set(`v:${v.variant_id}:${k.key}`, e.target.value)}
+                        value={vals[`v:${v.variant_id}:${k.key}:pub`] ?? ''}
+                        onChange={e => set(`v:${v.variant_id}:${k.key}:pub`, e.target.value)}
                         placeholder="—"
                         className="w-24 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-right"
+                      />
+                    </td>
+                    <td className="py-1.5 px-3 text-right">
+                      <input
+                        type="text" inputMode="decimal"
+                        value={vals[`v:${v.variant_id}:${k.key}:priv`] ?? ''}
+                        onChange={e => set(`v:${v.variant_id}:${k.key}:priv`, e.target.value)}
+                        placeholder="—"
+                        className="w-24 px-2 py-1 bg-[#faf8f6] border border-purple-200 rounded text-right"
                       />
                     </td>
                   </tr>

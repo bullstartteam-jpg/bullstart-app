@@ -129,7 +129,7 @@ function TicketList({ order, onOpenThread }) {
 }
 
 const ORDERS_FILTER_DEFAULTS = {
-  status: '', tracking_status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', system_ids: '', tracking_id: '',
+  status: '', exclude_status: '', tracking_status: '', exclude_tracking_status: '', paid: '', ref_id: '', ref_ids: '', system_id: '', system_ids: '', tracking_id: '',
   user_id: '', partner_id: '', date_from: '', date_to: '', ship_type: '',
   product_id: '', line_id: '', product_variant_id: '', sku: '', color: '', size: '', paper_type: '',
   material_id: '', accessory_id: '', accessory_code: '',
@@ -146,7 +146,9 @@ function buildOrderFilterParams(filters, { includePagination = false, orderIds, 
     params.per_page = filters.per_page || 20;
   }
   if (filters.status !== '') params.status = filters.status;
+  if (filters.exclude_status !== '') params.exclude_status = filters.exclude_status;
   if (filters.tracking_status) params.tracking_status = filters.tracking_status;
+  if (filters.exclude_tracking_status) params.exclude_tracking_status = filters.exclude_tracking_status;
   if (filters.paid) params.paid = filters.paid;
   if (filters.ship_type) params.ship_type = filters.ship_type;
   if (filters.ref_id) params.ref_id = filters.ref_id;
@@ -343,7 +345,7 @@ export default function Orders({ source = 'normal' }) {
     // `source` too: the two channels share this component, so a remount is not
     // guaranteed if the route keys are ever dropped.
     source,
-    filters.page, filters.status, filters.tracking_status, filters.paid, filters.ship_type,
+    filters.page, filters.status, filters.exclude_status, filters.tracking_status, filters.exclude_tracking_status, filters.paid, filters.ship_type,
     filters.user_id, filters.partner_id, filters.ref_ids, filters.system_ids, filters.date_from, filters.date_to, filters.per_page,
     filters.product_id, filters.line_id, filters.product_variant_id, filters.sku,
     filters.color, filters.size, filters.paper_type, filters.material_id, filters.accessory_id, filters.accessory_code,
@@ -1311,6 +1313,16 @@ export default function Orders({ source = 'normal' }) {
         </select>
 
         <select
+          value={filters.exclude_status}
+          onChange={e => setFilters(f => ({ ...f, exclude_status: e.target.value, page: 1 }))}
+          className="px-3 py-1.5 bg-white border border-red-200 rounded-lg text-red-700 text-sm focus:outline-none"
+          title="Loại trừ order status"
+        >
+          <option value="">Loại trừ status...</option>
+          {STATUS_MAP.map((s, i) => <option key={i} value={i}>Trừ: {s}</option>)}
+        </select>
+
+        <select
           value={filters.paid}
           onChange={e => setFilters(f => ({ ...f, paid: e.target.value, page: 1 }))}
           className="px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none"
@@ -1354,6 +1366,16 @@ export default function Orders({ source = 'normal' }) {
         >
           <option value="">All Tracking</option>
           {TRACKING_STATUSES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+
+        <select
+          value={filters.exclude_tracking_status || ''}
+          onChange={e => setFilters(f => ({ ...f, exclude_tracking_status: e.target.value, page: 1 }))}
+          className="px-3 py-1.5 bg-white border border-red-200 rounded-lg text-red-700 text-sm focus:outline-none"
+          title="Loại trừ tracking status"
+        >
+          <option value="">Loại trừ tracking...</option>
+          {TRACKING_STATUSES.map(t => <option key={t.value} value={t.value}>Trừ: {t.label}</option>)}
         </select>
 
         {isStaff && (

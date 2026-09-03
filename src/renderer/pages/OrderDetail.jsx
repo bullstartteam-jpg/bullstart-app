@@ -92,7 +92,9 @@ export default function OrderDetail() {
       );
       fetchOrder();
     } catch (err) {
-      notify(err.response?.data?.message || 'Mua label thất bại', { title: 'Buy label failed', kind: 'error' });
+      const d = err.response?.data;
+      const detail = d?.detail ? (' — ' + JSON.stringify(d.detail)) : '';
+      notify((d?.message || 'Mua label thất bại') + detail, { title: 'Buy label failed', kind: 'error' });
     } finally { setBuyingLabel(false); }
   };
 

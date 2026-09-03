@@ -464,11 +464,18 @@ function workingText(breakdown) {
 }
 
 function RevenueModal({ partner, onClose, onApplied }) {
-  const [range, setRange] = useState({ date_from: '', date_to: '' });
+  const [range, setRange] = useState({ date_from: '', date_to: '', product_id: '', system_id: '' });
+  const [products, setProducts] = useState([]);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
   const [open, setOpen] = useState(() => new Set());   // order_ids showing their working
+
+  useEffect(() => {
+    api.get('/products', { params: { status: 1, per_page: 100 } })
+      .then(res => setProducts(res.data.data || []))
+      .catch(() => {});
+  }, []);
 
   const toggle = (id) => setOpen(prev => {
     const next = new Set(prev);
@@ -482,6 +489,8 @@ function RevenueModal({ partner, onClose, onApplied }) {
       const params = {};
       if (range.date_from) params.date_from = range.date_from;
       if (range.date_to) params.date_to = range.date_to;
+      if (range.product_id) params.product_id = range.product_id;
+      if (range.system_id) params.system_id = range.system_id;
       const res = await api.get(`/partner-report/${partner.user.id}/orders`, { params });
       setData(res.data);
     } catch (err) {
@@ -571,6 +580,22 @@ function RevenueModal({ partner, onClose, onApplied }) {
             <input type="date" value={range.date_to}
               onChange={e => setRange(r => ({ ...r, date_to: e.target.value }))}
               className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
+          </div>
+          <div>
+            <label className="text-xs text-neutral-500 block">Sản phẩm</label>
+            <select value={range.product_id}
+              onChange={e => setRange(r => ({ ...r, product_id: e.target.value }))}
+              className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+              <option value="">Tất cả SP</option>
+              {products.map(p => <option key={p.id} value={p.id}>{p.line_id ? `[${p.line_id}] ` : ''}{p.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-neutral-500 block">System ID</label>
+            <input value={range.system_id}
+              onChange={e => setRange(r => ({ ...r, system_id: e.target.value }))}
+              placeholder="BS-..."
+              className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm w-32" />
           </div>
           <button onClick={load} className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Xem</button>
           <button onClick={exportCsv} disabled={!data?.orders?.length}

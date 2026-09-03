@@ -67,6 +67,13 @@ function createWindow() {
     mainWindow.show();
   });
 
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.meta && input.shift && input.key === 'I') {
+      mainWindow.webContents.toggleDevTools();
+      event.preventDefault();
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
