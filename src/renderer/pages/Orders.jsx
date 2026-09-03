@@ -479,6 +479,13 @@ export default function Orders({ source = 'normal' }) {
   const [envBusy, setEnvBusy] = useState(false);
   const [envResult, setEnvResult] = useState(null);
 
+  // Import shipping labels from CSV — update shipping_label by ref_id.
+  const [showImportLabel, setShowImportLabel] = useState(false);
+  const [labelRows, setLabelRows] = useState([]);
+  const [labelParseErr, setLabelParseErr] = useState('');
+  const [labelBusy, setLabelBusy] = useState(false);
+  const [labelResult, setLabelResult] = useState(null);
+
   const parseEnvelopeCsv = (text) => {
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length);
     if (lines.length === 0) return { rows: [], error: 'Empty CSV' };
@@ -527,6 +534,58 @@ export default function Orders({ source = 'normal' }) {
     } finally {
       setEnvBusy(false);
     }
+  };
+
+  const parseLabelCsvRow = (line) => {
+    const cells = []; let cur = ''; let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') { inQ = !inQ; continue; }
+      if (c === ',' && !inQ) { cells.push(cur); cur = ''; continue; }
+      cur += c;
+    }
+    cells.push(cur);
+    return cells.map(c => c.trim());
+  };
+
+  const handleLabelFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    e.target.value = '';
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (!lines.length) { setLabelParseErr('File trống'); setLabelRows([]); return; }
+    const header = parseLabelCsvRow(lines[0]).map(h => h.toLowerCase());
+    const refIdx   = header.indexOf('ref_id');
+    const labelIdx = header.indexOf('shipping_label');
+    if (refIdx < 0)   { setLabelParseErr('Không tìm thấy cột ref_id'); setLabelRows([]); return; }
+    if (labelIdx < 0) { setLabelParseErr('Không tìm thấy cột shipping_label'); setLabelRows([]); return; }
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseLabelCsvRow(lines[i]);
+      const ref = cols[refIdx] || '';
+      if (!ref) continue;
+      rows.push({ ref_id: ref, shipping_label: cols[labelIdx] || '' });
+    }
+    if (!rows.length) { setLabelParseErr('Không có dòng dữ liệu hợp lệ'); setLabelRows([]); return; }
+    setLabelParseErr('');
+    setLabelRows(rows);
+    setLabelResult(null);
+  };
+
+  const submitImportLabel = async () => {
+    if (!labelRows.length || labelBusy) return;
+    setLabelBusy(true);
+    setLabelResult(null);
+    try {
+      const res = await api.post('/orders/import-shipping-labels', { rows: labelRows, keep_convert_label: true });
+      setLabelResult(res.data);
+      notify(`Đã update ${res.data.updated_count} đơn, không tìm ${res.data.not_found_count} ref_id.`,
+        { title: 'Import Shipping Labels', kind: res.data.updated_count ? 'success' : 'error' });
+      fetchOrders();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Lỗi import', { title: 'Import Shipping Labels', kind: 'error' });
+    } finally { setLabelBusy(false); }
   };
 
   const handleBulkReconvertLabel = async () => {
@@ -1470,6 +1529,11 @@ export default function Orders({ source = 'normal' }) {
                 Import Envelopes
               </button>
             )}
+            {isStaff && (
+              <button onClick={() => { setShowImportLabel(true); setLabelRows([]); setLabelParseErr(''); setLabelResult(null); }} className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded-lg" title="Update shipping_label by ref_id từ CSV">
+                Import Labels
+              </button>
+            )}
             {isAdmin && (
               <button
                 onClick={handleBulkMergeDuplicates}
@@ -2281,6 +2345,81 @@ export default function Orders({ source = 'normal' }) {
       )}
 
       {/* Import envelopes modal — CSV (ref_id, accessory_code) → bulk update */}
+      {showImportLabel && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => !labelBusy && setShowImportLabel(false)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-3 border-b border-neutral-200 flex justify-between items-center">
+              <h3 className="font-bold text-neutral-800">Import Shipping Labels</h3>
+              <button onClick={() => !labelBusy && setShowImportLabel(false)} className="text-neutral-400 hover:text-neutral-700">×</button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-neutral-600 bg-[#faf8f6] rounded-lg p-3 border border-neutral-200">
+                CSV có cột <code className="bg-white px-1 rounded">ref_id</code> và <code className="bg-white px-1 rounded">shipping_label</code>.
+                Hệ thống tìm order theo <code className="bg-white px-1 rounded">ref_id</code> và update <code className="bg-white px-1 rounded">shipping_label</code>.
+              </p>
+
+              <div className="flex items-center gap-3">
+                <label className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-sm rounded-lg cursor-pointer">
+                  Chọn CSV…
+                  <input type="file" accept=".csv,.txt" onChange={handleLabelFileUpload} className="hidden" />
+                </label>
+                {labelParseErr && <span className="text-red-500 text-xs">{labelParseErr}</span>}
+                {labelRows.length > 0 && <span className="text-xs text-neutral-500">{labelRows.length} dòng</span>}
+              </div>
+
+              {labelRows.length > 0 && (
+                <div className="border border-neutral-200 rounded-lg overflow-hidden max-h-52 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-[#faf8f6] text-neutral-500 sticky top-0">
+                      <tr>
+                        <th className="py-1.5 px-3 text-left w-8">#</th>
+                        <th className="py-1.5 px-3 text-left">ref_id</th>
+                        <th className="py-1.5 px-3 text-left">shipping_label</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                      {labelRows.map((r, i) => (
+                        <tr key={i}>
+                          <td className="py-1 px-3 text-neutral-400">{i + 1}</td>
+                          <td className="py-1 px-3 font-mono text-orange-600 truncate max-w-[180px]">{r.ref_id}</td>
+                          <td className="py-1 px-3 text-neutral-600 truncate max-w-[280px]">{r.shipping_label || <span className="text-neutral-300">—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {labelResult && (
+                <div className="space-y-2">
+                  {labelResult.updated_count > 0 && (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-700">
+                      Đã update <b>{labelResult.updated_count}</b> đơn:{' '}
+                      {labelResult.updated.map(o => o.system_id).join(', ')}
+                    </div>
+                  )}
+                  {labelResult.not_found_count > 0 && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">
+                      Không tìm thấy <b>{labelResult.not_found_count}</b> ref_id:{' '}
+                      {labelResult.not_found.join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setShowImportLabel(false)} disabled={labelBusy}
+                  className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg disabled:opacity-50">Đóng</button>
+                <button onClick={submitImportLabel} disabled={labelBusy || !labelRows.length}
+                  className="px-4 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-sm rounded-lg disabled:opacity-50">
+                  {labelBusy ? 'Đang update…' : `Update ${labelRows.length} đơn`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showImportEnv && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => !envBusy && setShowImportEnv(false)}>
           <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
