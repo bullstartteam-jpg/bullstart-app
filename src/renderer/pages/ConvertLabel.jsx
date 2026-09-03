@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   subscribeLabelConverter,
   startLabelConverter,
@@ -9,6 +9,8 @@ import {
   manualConvertLabelById,
 } from '../services/converter';
 import { useAuth } from '../contexts/AuthContext';
+import api from '../services/api';
+import { notify } from '../components/Dialog';
 
 // Admin/support-only page that drives the convert_label job, independent of
 // the QR job on /convert. Each page has its own auto on/off persisted in
@@ -115,6 +117,9 @@ export default function ConvertLabel() {
         <Stat label="Last poll" value={fmt(s.lastTickAt)} hint={s.nextTickAt ? `Next ~${fmt(s.nextTickAt)}` : '—'} tone="text-neutral-700" />
       </div>
 
+      {/* Import CSV — update shipping_label + auto convert label */}
+      <ImportShippingLabels />
+
       {/* Manual convert by ID/system_id — bypasses new_order status check */}
       <div className="bg-white rounded-xl border border-neutral-200 shadow-sm mb-6 p-4">
         <div className="flex items-start gap-3">
@@ -212,6 +217,170 @@ function Stat({ label, value, hint, tone }) {
       <div className="text-xs text-neutral-500">{label}</div>
       <div className={`text-xl font-bold ${tone || 'text-neutral-800'}`}>{value}</div>
       {hint && <div className="text-[11px] text-neutral-400 mt-0.5">{hint}</div>}
+    </div>
+  );
+}
+
+// Parse a CSV text and return [{ref_id, shipping_label}] rows.
+// Handles quoted fields (e.g. accessory_code may have "SMC,HLG").
+function parseCsvRow(line) {
+  const cells = [];
+  let cur = '';
+  let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { inQ = !inQ; continue; }
+    if (c === ',' && !inQ) { cells.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  cells.push(cur);
+  return cells.map(c => c.trim());
+}
+
+function parseShippingLabelCsv(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return { rows: [], error: 'File trống' };
+  const header = parseCsvRow(lines[0]).map(h => h.toLowerCase());
+  const refIdx   = header.indexOf('ref_id');
+  const labelIdx = header.indexOf('shipping_label');
+  if (refIdx < 0)   return { rows: [], error: 'Không tìm thấy cột ref_id' };
+  if (labelIdx < 0) return { rows: [], error: 'Không tìm thấy cột shipping_label' };
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCsvRow(lines[i]);
+    const ref   = cols[refIdx]   || '';
+    const label = cols[labelIdx] || '';
+    if (!ref) continue;
+    rows.push({ ref_id: ref, shipping_label: label });
+  }
+  if (!rows.length) return { rows: [], error: 'Không có dòng dữ liệu hợp lệ' };
+  return { rows };
+}
+
+function ImportShippingLabels() {
+  const [rows, setRows]         = useState([]);       // parsed preview
+  const [parseError, setParseError] = useState('');
+  const [busy, setBusy]         = useState(false);
+  const [progress, setProgress] = useState('');       // current converting system_id
+  const [result, setResult]     = useState(null);     // {updated, not_found}
+  const fileRef = useRef();
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    e.target.value = '';
+    const parsed = parseShippingLabelCsv(text);
+    if (parsed.error) { setParseError(parsed.error); setRows([]); return; }
+    setParseError('');
+    setRows(parsed.rows);
+    setResult(null);
+  };
+
+  const handleImport = async () => {
+    if (!rows.length || busy) return;
+    setBusy(true);
+    setResult(null);
+    setProgress('Đang cập nhật shipping label…');
+    try {
+      // 1. Update shipping_label on the server (also clears convert_label).
+      const res = await api.post('/orders/import-shipping-labels', { rows });
+      const { updated, not_found } = res.data;
+      setResult({ updated, not_found });
+
+      // 2. Auto convert label for each updated order.
+      if (updated.length) {
+        for (const o of updated) {
+          setProgress(`Convert label: ${o.system_id}…`);
+          try {
+            await manualConvertLabelById(o.system_id);
+          } catch {
+            // errors already logged to activity log — continue with next
+          }
+        }
+      }
+
+      notify(
+        `Đã update ${updated.length} đơn, không tìm thấy ${not_found.length} ref_id.`,
+        { title: 'Import Shipping Labels', kind: updated.length ? 'success' : 'error' }
+      );
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Lỗi import', { title: 'Import Shipping Labels', kind: 'error' });
+    } finally {
+      setBusy(false);
+      setProgress('');
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-neutral-200 shadow-sm mb-6 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold text-neutral-600 uppercase tracking-wider">Import CSV — Update Shipping Label &amp; Convert</div>
+          <p className="text-xs text-neutral-500 mt-0.5">
+            Chọn file CSV có cột <code className="bg-neutral-100 px-1 rounded">ref_id</code> và <code className="bg-neutral-100 px-1 rounded">shipping_label</code>.
+            Hệ thống sẽ update label rồi tự động convert từng đơn.
+          </p>
+        </div>
+        <label className="shrink-0 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg cursor-pointer">
+          Chọn CSV…
+          <input ref={fileRef} type="file" accept=".csv,.txt" onChange={handleFile} className="hidden" />
+        </label>
+      </div>
+
+      {parseError && <p className="text-red-500 text-xs">{parseError}</p>}
+
+      {rows.length > 0 && (
+        <>
+          <div className="border border-neutral-200 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-[#faf8f6] text-neutral-500">
+                <tr>
+                  <th className="py-1.5 px-3 text-left w-8">#</th>
+                  <th className="py-1.5 px-3 text-left">ref_id</th>
+                  <th className="py-1.5 px-3 text-left">shipping_label</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} className="border-t border-neutral-100">
+                    <td className="py-1 px-3 text-neutral-400">{i + 1}</td>
+                    <td className="py-1 px-3 font-mono text-orange-600 truncate max-w-[160px]">{r.ref_id}</td>
+                    <td className="py-1 px-3 text-neutral-600 truncate max-w-[260px]">{r.shipping_label || <span className="text-neutral-300">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button onClick={handleImport} disabled={busy}
+              className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+              {busy ? 'Đang xử lý…' : `Import & Convert (${rows.length} đơn)`}
+            </button>
+            {!busy && <button onClick={() => { setRows([]); setResult(null); setParseError(''); }}
+              className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Xoá</button>}
+            {busy && progress && <span className="text-xs text-neutral-500 truncate">{progress}</span>}
+          </div>
+        </>
+      )}
+
+      {result && (
+        <div className="space-y-1.5">
+          {result.updated.length > 0 && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-700">
+              Đã update &amp; convert <b>{result.updated.length}</b> đơn:{' '}
+              {result.updated.map(o => o.system_id).join(', ')}
+            </div>
+          )}
+          {result.not_found.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">
+              Không tìm thấy <b>{result.not_found.length}</b> ref_id:{' '}
+              {result.not_found.join(', ')}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
