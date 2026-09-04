@@ -351,7 +351,10 @@ export default function OrderDetail() {
                         <span className="ml-1 text-[10px] text-neutral-400">(không đổi shipping cost)</span>
                       )}
                     </label>
-                    <input value={form.shipping_label} onChange={e => setForm(f => ({ ...f, shipping_label: e.target.value }))} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                    <div className="flex items-center gap-2 mt-1">
+                      <input value={form.shipping_label} onChange={e => setForm(f => ({ ...f, shipping_label: e.target.value }))} className="flex-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                      <UploadButton folder="labels" accept="image/*,application/pdf" title="Upload file label lên B2" onUrl={url => setForm(f => ({ ...f, shipping_label: url }))} />
+                    </div>
                   </div>
                   <div>
                     <label className="text-xs text-neutral-500">Tracking ID</label>
