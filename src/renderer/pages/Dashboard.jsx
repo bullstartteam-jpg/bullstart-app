@@ -209,6 +209,7 @@ function TrackingNotRun({ data, onChecked }) {
   const [showKey, setShowKey] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [keyBusy, setKeyBusy] = useState(false);
+  const [testResult, setTestResult] = useState(null);  // {ok, message, carriers?}
 
   const allIds = useMemo(
     () => days.flatMap(d => d.sellers.flatMap(s => s.orders.map(o => o.id))),
@@ -230,6 +231,20 @@ function TrackingNotRun({ data, onChecked }) {
 
   const loadKey = () => api.get('/tracking/shipengine-key').then(res => setKeyInfo(res.data)).catch(() => setKeyInfo(null));
   useEffect(() => { loadKey(); }, []);
+
+  const testKey = async () => {
+    if (keyBusy) return;
+    setKeyBusy(true);
+    setTestResult(null);
+    try {
+      const res = await api.get('/tracking/shipengine-key/test');
+      setTestResult(res.data);
+    } catch (err) {
+      setTestResult({ ok: false, message: err?.response?.data?.message || 'Lỗi kết nối' });
+    } finally {
+      setKeyBusy(false);
+    }
+  };
 
   const saveKey = async () => {
     if (keyBusy) return;
@@ -328,23 +343,39 @@ function TrackingNotRun({ data, onChecked }) {
       </div>
 
       {showKey && (
-        <div className="mb-3 flex items-end gap-2 bg-neutral-50 border border-neutral-200 rounded-lg p-3">
-          <div className="flex-1">
-            <label className="text-xs text-neutral-500 block mb-1">
-              ShipEngine API key {keyInfo?.has_key && <span className="text-emerald-600">(đang có{keyInfo.from_app ? '' : ' — từ server .env'})</span>}
-            </label>
-            <input
-              type="password"
-              value={keyInput}
-              onChange={e => setKeyInput(e.target.value)}
-              placeholder={keyInfo?.has_key ? 'Nhập key mới để thay (để trống = xoá, dùng .env)' : 'bk47…'}
-              className="w-full px-3 py-2 bg-white border border-neutral-200 rounded-lg text-sm font-mono"
-            />
+        <>
+          <div className="mb-2 flex items-end gap-2 bg-neutral-50 border border-neutral-200 rounded-lg p-3">
+            <div className="flex-1">
+              <label className="text-xs text-neutral-500 block mb-1">
+                ShipEngine API key {keyInfo?.has_key && <span className="text-emerald-600">(đang có{keyInfo.from_app ? '' : ' — từ server .env'})</span>}
+              </label>
+              <input
+                type="password"
+                value={keyInput}
+                onChange={e => setKeyInput(e.target.value)}
+                placeholder={keyInfo?.has_key ? 'Nhập key mới để thay (để trống = xoá, dùng .env)' : 'bk47…'}
+                className="w-full px-3 py-2 bg-white border border-neutral-200 rounded-lg text-sm font-mono"
+              />
+            </div>
+            <button onClick={testKey} disabled={keyBusy || !keyInfo?.has_key} title="Gọi thử ShipEngine API để kiểm tra key còn dùng được không"
+              className="px-3 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white text-xs rounded-lg">
+              {keyBusy ? '…' : 'Kiểm tra'}
+            </button>
+            <button onClick={saveKey} disabled={keyBusy} className="px-3 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs rounded-lg">
+              {keyBusy ? 'Đang lưu…' : 'Lưu'}
+            </button>
           </div>
-          <button onClick={saveKey} disabled={keyBusy} className="px-3 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs rounded-lg">
-            {keyBusy ? 'Đang lưu…' : 'Lưu'}
-          </button>
-        </div>
+          {testResult && (
+            <div className={`mb-3 px-3 py-2 rounded-lg text-xs ${testResult.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+              {testResult.ok ? '✓ ' : '✗ '}{testResult.message}
+              {testResult.ok && testResult.carriers?.length > 0 && (
+                <span className="ml-2 text-neutral-500">
+                  ({testResult.carriers.map(c => c.friendly_name || c.carrier_code).join(', ')})
+                </span>
+              )}
+            </div>
+          )}
+        </>
       )}
       <div className="space-y-4">
         {days.map(d => {
