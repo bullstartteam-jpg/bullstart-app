@@ -209,7 +209,8 @@ function TrackingNotRun({ data, onChecked }) {
   const [showKey, setShowKey] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [keyBusy, setKeyBusy] = useState(false);
-  const [testResult, setTestResult] = useState(null);  // {ok, message, carriers?}
+  const [testResult, setTestResult] = useState(null);       // {ok, message, carriers?}
+  const [checkResult, setCheckResult] = useState(null);     // {ok, message, system_id, tracking_id, status}
 
   const allIds = useMemo(
     () => days.flatMap(d => d.sellers.flatMap(s => s.orders.map(o => o.id))),
@@ -241,6 +242,20 @@ function TrackingNotRun({ data, onChecked }) {
       setTestResult(res.data);
     } catch (err) {
       setTestResult({ ok: false, message: err?.response?.data?.message || 'Lỗi kết nối' });
+    } finally {
+      setKeyBusy(false);
+    }
+  };
+
+  const testCheck = async () => {
+    if (keyBusy) return;
+    setKeyBusy(true);
+    setCheckResult(null);
+    try {
+      const res = await api.get('/tracking/test-check');
+      setCheckResult(res.data);
+    } catch (err) {
+      setCheckResult({ ok: false, message: err?.response?.data?.message || 'Lỗi kết nối' });
     } finally {
       setKeyBusy(false);
     }
@@ -357,21 +372,31 @@ function TrackingNotRun({ data, onChecked }) {
                 className="w-full px-3 py-2 bg-white border border-neutral-200 rounded-lg text-sm font-mono"
               />
             </div>
-            <button onClick={testKey} disabled={keyBusy || !keyInfo?.has_key} title="Gọi thử ShipEngine API để kiểm tra key còn dùng được không"
+            <button onClick={testKey} disabled={keyBusy || !keyInfo?.has_key} title="Kiểm tra API key còn hợp lệ không (gọi /v1/carriers)"
               className="px-3 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white text-xs rounded-lg">
-              {keyBusy ? '…' : 'Kiểm tra'}
+              {keyBusy ? '…' : 'Test key'}
+            </button>
+            <button onClick={testCheck} disabled={keyBusy || !keyInfo?.has_key} title="Check tracking thật: lấy 1 đơn có tracking_id → gọi ShipEngine → xem kết quả"
+              className="px-3 py-2 bg-violet-500 hover:bg-violet-600 disabled:opacity-50 text-white text-xs rounded-lg">
+              {keyBusy ? '…' : 'Test tracking'}
             </button>
             <button onClick={saveKey} disabled={keyBusy} className="px-3 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs rounded-lg">
               {keyBusy ? 'Đang lưu…' : 'Lưu'}
             </button>
           </div>
           {testResult && (
-            <div className={`mb-3 px-3 py-2 rounded-lg text-xs ${testResult.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
-              {testResult.ok ? '✓ ' : '✗ '}{testResult.message}
+            <div className={`mb-2 px-3 py-2 rounded-lg text-xs ${testResult.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+              <span className="font-medium">Test key: </span>{testResult.ok ? '✓ ' : '✗ '}{testResult.message}
               {testResult.ok && testResult.carriers?.length > 0 && (
-                <span className="ml-2 text-neutral-500">
-                  ({testResult.carriers.map(c => c.friendly_name || c.carrier_code).join(', ')})
-                </span>
+                <span className="ml-2 text-neutral-500">({testResult.carriers.map(c => c.friendly_name || c.carrier_code).join(', ')})</span>
+              )}
+            </div>
+          )}
+          {checkResult && (
+            <div className={`mb-3 px-3 py-2 rounded-lg text-xs ${checkResult.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+              <span className="font-medium">Test tracking: </span>{checkResult.ok ? '✓ ' : '✗ '}{checkResult.message}
+              {checkResult.ok && checkResult.tracking_id && (
+                <span className="ml-2 font-mono text-neutral-500">{checkResult.tracking_id}</span>
               )}
             </div>
           )}
