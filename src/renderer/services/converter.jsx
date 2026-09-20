@@ -312,51 +312,59 @@ function barcodeRegionDarkness(img) {
 // ---------------- Auto Fetch-Tracking job ----------------
 // Fills tracking_id for orders that have a shipping_label but no tracking yet —
 // same work as the manual "Fetch Tracking" queue on Orders, but auto on a timer
-// (app-side, no server cron). Calls the carrier via the Electron main process
-// then saves the number to the hub.
+// (app-side, no server cron). The hub scans the label via labelscan
+// (label.laviglobal.us) and saves tracking_id in one call — see
+// OrderController::fetchTrackingOne / CarrierTrackingService.
+
+// Orders per labelscan /scan/batch call — same size as the manual queue on
+// Orders, for the same reason (fewer round-trips, one slow label doesn't
+// stall too many others).
+const FETCH_TRACKING_BATCH_SIZE = 5;
 
 const fetchTrackingJob = createJob({
   name: 'fetch-tracking',
   storageKey: 'fetch_tracking_auto',
   pollMs: 120_000,     // every 2 minutes
   async runOnce({ state, pushLog, emit }) {
-    if (!window.electronAPI?.fetchTracking) {
-      pushLog('error', null, null, 'Cần app desktop (Electron) để fetch tracking.');
-      return;
-    }
     const res = await api.get('/orders/pending-tracking', { params: { limit: 200 } });
-    const items = res.data?.data || [];
+    const items = (res.data?.data || []).filter(i => i.shipping_label);
     state.pending = items.map(i => ({ system_id: i.system_id, id: i.id }));
     state.pendingCount = items.length;
     emit();
 
     let consecutiveFails = 0;
-    for (const item of items) {
+    for (let i = 0; i < items.length; i += FETCH_TRACKING_BATCH_SIZE) {
       if (state.paused || !state.enabled) break;
-      if (!item.shipping_label) continue;
+      const batch = items.slice(i, i + FETCH_TRACKING_BATCH_SIZE);
       try {
-        const result = await window.electronAPI.fetchTracking(item.shipping_label);
-        const tk = result?.tracking_id;
-        if (!tk) {
-          pushLog('error', item.system_id, 'tracking', 'No tracking in carrier response');
-          state.errorTotal += 1;
-        } else {
-          await api.post(`/orders/${item.id}/save-tracking`, { tracking_id: tk });
-          state.processedTotal += 1;
-          pushLog('ok', item.system_id, 'tracking', `tracking = ${tk}${result.carrier ? ` (${result.carrier})` : ''}`);
-          consecutiveFails = 0;
+        const fres = await api.post('/orders/fetch-tracking-batch', { order_ids: batch.map(b => b.id) });
+        const results = fres.data?.results || [];
+        let batchFailed = true;
+        for (const r of results) {
+          const item = batch.find(b => b.id === r.order_id);
+          const sid = r.system_id || item?.system_id || r.order_id;
+          if (r.ok) {
+            batchFailed = false;
+            state.processedTotal += 1;
+            pushLog('ok', sid, 'tracking', `tracking = ${r.tracking_id}${r.carrier ? ` (${r.carrier})` : ''}`);
+            state.pending = state.pending.filter(p => p.id !== r.order_id);
+          } else {
+            state.errorTotal += 1;
+            pushLog('error', sid, 'tracking', r.message || 'Error');
+          }
         }
-        state.pending = state.pending.filter(p => p.id !== item.id);
+        consecutiveFails = batchFailed ? consecutiveFails + 1 : 0;
         state.pendingCount = state.pending.length;
       } catch (err) {
-        state.errorTotal += 1;
+        state.errorTotal += batch.length;
         consecutiveFails += 1;
-        pushLog('error', item.system_id, 'tracking', err?.response?.data?.message || err?.message || String(err));
-        // Carrier hiccup → stop this tick after several in a row; retry next tick.
-        if (consecutiveFails >= 5) {
-          pushLog('error', null, null, 'Dừng tick: 5 lỗi liên tiếp (thử lại lần sau).');
-          break;
-        }
+        pushLog('error', null, 'tracking', err?.response?.data?.message || err?.message || String(err));
+      }
+      // A run of fully-failed batches means a real outage (config/network) —
+      // stop this tick and retry next one, same threshold as before.
+      if (consecutiveFails >= 5) {
+        pushLog('error', null, null, 'Dừng tick: 5 batch lỗi liên tiếp (thử lại lần sau).');
+        break;
       }
       emit();
       // Carrier-friendly spacing between calls.

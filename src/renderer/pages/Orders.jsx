@@ -629,6 +629,17 @@ export default function Orders({ source = 'normal' }) {
 
   const [showTracking, setShowTracking] = useState(false);
   const [trackingQueue, setTrackingQueue] = useState([]);   // [{id, system_id, shipping_label}]
+  // Optional override: paste specific system_ids to test the fetch instead of
+  // the default "every order missing tracking" queue — handy for trying a new
+  // carrier/API against a handful of known orders before running it on all.
+  const [trackingSidInput, setTrackingSidInput] = useState('');
+  // labelscan (label.laviglobal.us) key — entered & stored on the hub
+  // (app_settings), same convention as the ShipEngine key on Dashboard.
+  const [labelscanKeyInfo, setLabelscanKeyInfo] = useState(null); // {has_key, base_url, username}
+  const [showLabelscanKey, setShowLabelscanKey] = useState(false);
+  const [labelscanForm, setLabelscanForm] = useState({ base_url: '', username: '', password: '' });
+  const [labelscanKeyBusy, setLabelscanKeyBusy] = useState(false);
+  const [labelscanTestResult, setLabelscanTestResult] = useState(null); // {ok, message}
   const [trackingDone, setTrackingDone] = useState(0);
   const [trackingErrors, setTrackingErrors] = useState(0);
   const [trackingPaused, setTrackingPaused] = useState(false);
@@ -863,13 +874,26 @@ export default function Orders({ source = 'normal' }) {
     }
   };
 
+  const loadLabelscanKey = () => api.get('/tracking/labelscan-key')
+    .then(res => {
+      setLabelscanKeyInfo(res.data);
+      // Pre-fill base_url/username with what's actually saved — only the
+      // password field stays blank (secret, never sent back). Editing
+      // username without retyping base_url must not blank it out.
+      setLabelscanForm(f => ({ ...f, base_url: res.data.base_url || '', username: res.data.username || '' }));
+    })
+    .catch(() => setLabelscanKeyInfo(null));
+
   const openTrackingModal = async () => {
     setShowTracking(true);
     setTrackingDone(0);
     setTrackingErrors(0);
     setTrackingLog([]);
     setTrackingPaused(false);
+    setTrackingSidInput('');
+    setLabelscanTestResult(null);
     trackingCancelRef.current = false;
+    loadLabelscanKey();
     try {
       const res = await api.get('/orders/pending-tracking', { params: { limit: 500 } });
       setTrackingQueue(res.data.data || []);
@@ -878,6 +902,68 @@ export default function Orders({ source = 'normal' }) {
       setShowTracking(false);
     }
   };
+
+  const testLabelscanKey = async () => {
+    if (labelscanKeyBusy) return;
+    setLabelscanKeyBusy(true);
+    setLabelscanTestResult(null);
+    try {
+      const res = await api.get('/tracking/labelscan-key/test');
+      setLabelscanTestResult(res.data);
+    } catch (err) {
+      setLabelscanTestResult({ ok: false, message: err?.response?.data?.message || 'Lỗi kết nối' });
+    } finally {
+      setLabelscanKeyBusy(false);
+    }
+  };
+
+  const saveLabelscanKey = async () => {
+    if (labelscanKeyBusy) return;
+    setLabelscanKeyBusy(true);
+    try {
+      await api.put('/tracking/labelscan-key', labelscanForm);
+      setLabelscanForm({ base_url: '', username: '', password: '' });
+      await loadLabelscanKey();
+      notify('Đã lưu labelscan key', { title: 'Labelscan', kind: 'success' });
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Lưu key thất bại', { title: 'Labelscan', kind: 'error' });
+    } finally {
+      setLabelscanKeyBusy(false);
+    }
+  };
+
+  // Replace the queue with a specific list of system_ids (exact match, same
+  // paste-a-list convention as the ref_ids/system_ids search modals) — for
+  // testing a fetch against known orders before running it on the full queue.
+  const loadTrackingQueueFromSids = async () => {
+    const ids = trackingSidInput.split(/[\s,]+/).filter(Boolean);
+    if (ids.length === 0) return;
+    try {
+      const res = await api.get('/orders', { params: { system_ids: trackingSidInput, per_page: 500 } });
+      const found = res.data.data || [];
+      const withLabel = found
+        .filter(o => o.shipping_label)
+        .map(o => ({ id: o.id, system_id: o.system_id, shipping_label: o.shipping_label }));
+      setTrackingQueue(withLabel);
+      setTrackingDone(0);
+      setTrackingErrors(0);
+      setTrackingLog([]);
+      if (withLabel.length < ids.length) {
+        notify(
+          `Tìm thấy ${found.length}/${ids.length} system_id · ${withLabel.length} đơn có shipping_label.`,
+          { title: 'Load list', kind: 'warning' }
+        );
+      }
+    } catch (err) {
+      notify(err.response?.data?.message || 'Load list failed', { title: 'Load list', kind: 'error' });
+    }
+  };
+
+  // How many orders go into one labelscan /scan/batch call. 5 is a good
+  // balance: meaningfully fewer round-trips than 1-at-a-time, well under
+  // labelscan's own 100-per-batch cap, and a single slow label in the batch
+  // doesn't stall too many others behind it.
+  const TRACKING_BATCH_SIZE = 5;
 
   const startTrackingQueue = async () => {
     if (trackingRunning || trackingQueue.length === 0) return;
@@ -899,36 +985,36 @@ export default function Orders({ source = 'normal' }) {
       }
       if (trackingCancelRef.current) break;
 
-      const item = q.shift();
+      const batch = q.slice(0, TRACKING_BATCH_SIZE);
+      q = q.slice(TRACKING_BATCH_SIZE);
       setTrackingQueue([...q]);
-      pushTrackingLog({ kind: 'info', sid: item.system_id, msg: 'Fetching…' });
+      batch.forEach(item => pushTrackingLog({ kind: 'info', sid: item.system_id, msg: 'Fetching…' }));
+
       let hadError = false;
       try {
-        // 1. Call carrier directly from Electron main (bypasses Laravel + CORS).
-        const result = await window.electronAPI.fetchTracking(item.shipping_label);
-        const tk = result?.tracking_id;
-        if (!tk) {
-          pushTrackingLog({ kind: 'warn', sid: item.system_id, msg: 'No tracking in carrier response' });
-          setTrackingErrors(e => e + 1);
-        } else {
-          // 2. Save to backend.
-          await api.post(`/orders/${item.id}/save-tracking`, { tracking_id: tk });
-          const carrier = result.carrier ? ` (${result.carrier})` : '';
-          pushTrackingLog({ kind: 'ok', sid: item.system_id, msg: `tracking = ${tk}${carrier}` });
-          setTrackingDone(d => d + 1);
+        // One labelscan call for the whole batch; per-order failures land in
+        // each result row (`ok: false`) without failing the others.
+        const res = await api.post('/orders/fetch-tracking-batch', { order_ids: batch.map(i => i.id) });
+        const results = res.data?.results || [];
+        for (const r of results) {
+          const item = batch.find(i => i.id === r.order_id);
+          const sid = r.system_id || item?.system_id || r.order_id;
+          if (r.ok) {
+            const carrier = r.carrier ? ` (${r.carrier})` : '';
+            pushTrackingLog({ kind: 'ok', sid, msg: `tracking = ${r.tracking_id}${carrier}` });
+            setTrackingDone(d => d + 1);
+          } else {
+            pushTrackingLog({ kind: 'warn', sid, msg: r.message || 'Error' });
+            setTrackingErrors(e => e + 1);
+            hadError = true;
+          }
         }
       } catch (err) {
-        const upstreamStatus = err.upstreamStatus;
-        const upstreamBody = err.upstreamBody;
-        const upstreamMsg = typeof upstreamBody === 'string'
-          ? upstreamBody.slice(0, 200)
-          : (upstreamBody?.error ? String(upstreamBody.error).slice(0, 200) : '');
-        const baseMsg = err.response?.data?.message || err.message || 'Error';
-        const msg = upstreamStatus
-          ? `Carrier ${upstreamStatus}${upstreamMsg ? ' — ' + upstreamMsg : ''}`
-          : baseMsg;
-        pushTrackingLog({ kind: 'error', sid: item.system_id, msg });
-        setTrackingErrors(e => e + 1);
+        // Whole batch call failed (config/network) — every order in it counts
+        // as an error so Pending/Done/Errors stay accurate.
+        const msg = err.response?.data?.message || err.message || 'Error';
+        batch.forEach(item => pushTrackingLog({ kind: 'error', sid: item.system_id, msg }));
+        setTrackingErrors(e => e + batch.length);
         hadError = true;
       }
 
@@ -2192,7 +2278,85 @@ export default function Orders({ source = 'normal' }) {
       {showTracking && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => !trackingRunning && setShowTracking(false)}>
           <div className="bg-white rounded-xl shadow-2xl w-[640px] max-w-[95%] p-5" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-neutral-800 mb-3">Fetch Tracking — Queue</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-base font-semibold text-neutral-800">Fetch Tracking — Queue</h3>
+              {!trackingRunning && (
+                <button
+                  onClick={() => setShowLabelscanKey(v => !v)}
+                  className={`text-xs ${labelscanKeyInfo && !labelscanKeyInfo.has_key ? 'text-red-500' : 'text-neutral-500'} hover:text-neutral-700`}
+                  title="Cấu hình labelscan API (label.laviglobal.us) — lưu trên server"
+                >
+                  ⚙ {labelscanKeyInfo ? (labelscanKeyInfo.has_key ? `Key: ${labelscanKeyInfo.username}` : 'Chưa có key') : 'Key'}
+                </button>
+              )}
+            </div>
+
+            {showLabelscanKey && !trackingRunning && (
+              <div className="mb-3 bg-neutral-50 border border-neutral-200 rounded-lg p-3 space-y-2">
+                <div className="grid grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    value={labelscanForm.base_url}
+                    onChange={e => setLabelscanForm(f => ({ ...f, base_url: e.target.value }))}
+                    placeholder={labelscanKeyInfo?.base_url || 'https://label.laviglobal.us'}
+                    className="px-2 py-1.5 bg-white border border-neutral-200 rounded text-xs font-mono"
+                  />
+                  <input
+                    type="text"
+                    value={labelscanForm.username}
+                    onChange={e => setLabelscanForm(f => ({ ...f, username: e.target.value }))}
+                    placeholder={labelscanKeyInfo?.username || 'username'}
+                    className="px-2 py-1.5 bg-white border border-neutral-200 rounded text-xs font-mono"
+                  />
+                  <input
+                    type="password"
+                    value={labelscanForm.password}
+                    onChange={e => setLabelscanForm(f => ({ ...f, password: e.target.value }))}
+                    placeholder={labelscanKeyInfo?.has_key ? '•••••• (để trống = giữ nguyên)' : 'password'}
+                    className="px-2 py-1.5 bg-white border border-neutral-200 rounded text-xs font-mono"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={testLabelscanKey} disabled={labelscanKeyBusy || !labelscanKeyInfo?.has_key}
+                    className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white text-xs rounded-lg">
+                    {labelscanKeyBusy ? '…' : 'Test key'}
+                  </button>
+                  <button onClick={saveLabelscanKey} disabled={labelscanKeyBusy}
+                    className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs rounded-lg">
+                    {labelscanKeyBusy ? 'Đang lưu…' : 'Lưu'}
+                  </button>
+                </div>
+                {labelscanTestResult && (
+                  <div className={`px-2 py-1.5 rounded text-xs ${labelscanTestResult.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+                    {labelscanTestResult.ok ? '✓ ' : '✗ '}{labelscanTestResult.message}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!trackingRunning && (
+              <div className="mb-3">
+                <label className="text-xs text-neutral-500 block mb-1">
+                  Test theo list system_id (tuỳ chọn) — bỏ trống để dùng danh sách mặc định (đơn chưa có tracking)
+                </label>
+                <div className="flex gap-2 items-start">
+                  <textarea
+                    value={trackingSidInput}
+                    onChange={e => setTrackingSidInput(e.target.value)}
+                    placeholder="CCS6812&#10;CCS6811, CCS6810&#10;..."
+                    rows={2}
+                    className="flex-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-xs font-mono"
+                  />
+                  <button
+                    onClick={loadTrackingQueueFromSids}
+                    disabled={!trackingSidInput.trim()}
+                    className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 disabled:opacity-40 text-neutral-700 text-xs rounded-lg"
+                  >
+                    Load list
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-4 gap-3 text-sm mb-3">
               <div className="bg-neutral-50 rounded-lg p-2 text-center">
