@@ -519,6 +519,7 @@ export default function OrderDetail() {
                       item={item}
                       canEdit={canEditVariant}
                       products={products}
+                      hasAccessory={accList.length > 0}
                       onOpen={ensureProducts}
                       onSaved={fetchOrder}
                     />
@@ -832,8 +833,11 @@ function ItemQuantityCell({ item, canEdit, onSaved }) {
   );
 }
 
-function ItemVariantCell({ item, canEdit, products, onOpen, onSaved }) {
+function ItemVariantCell({ item, canEdit, products, hasAccessory, onOpen, onSaved }) {
   const [editing, setEditing] = useState(false);
+  // Dropping the product entirely (item becomes addon-only) — a distinct
+  // sub-mode of "editing" that skips the product/variant pickers below.
+  const [removing, setRemoving] = useState(false);
   const [productId, setProductId] = useState('');
   const [variantId, setVariantId] = useState('');
   const [preview, setPreview] = useState(null);   // { item_price, total_cost, old_* }
@@ -845,10 +849,31 @@ function ItemVariantCell({ item, canEdit, products, onOpen, onSaved }) {
 
   const startEdit = () => {
     onOpen?.();
+    setRemoving(false);
     setProductId(String(current?.product_id ?? current?.product?.id ?? ''));
     setVariantId(String(current?.id ?? ''));
     setPreview(null);
     setEditing(true);
+  };
+
+  // Preview + confirm removing this item's product — only reachable when the
+  // item already carries an accessory (server rejects an item with neither).
+  const startRemove = async () => {
+    onOpen?.();
+    setEditing(true);
+    setRemoving(true);
+    setPreview(null);
+    setPreviewing(true);
+    try {
+      const res = await api.get(`/order-items/${item.id}/variant-preview`);
+      setPreview(res.data);
+    } catch (err) {
+      notify(err.response?.data?.message || 'Không tính được giá', { title: 'Variant preview', kind: 'error' });
+      setEditing(false);
+      setRemoving(false);
+    } finally {
+      setPreviewing(false);
+    }
   };
 
   const product = (products || []).find(p => String(p.id) === String(productId));
@@ -871,6 +896,23 @@ function ItemVariantCell({ item, canEdit, products, onOpen, onSaved }) {
   };
 
   const save = async () => {
+    if (removing) {
+      setSaving(true);
+      try {
+        const res = await api.put(`/order-items/${item.id}/variant`, {});
+        const o = res.data?.order;
+        await notify(`Đã gỡ product${o ? ` · total $${o.total_cost}` : ''}`, { title: 'Variant', kind: 'success' });
+        setEditing(false);
+        setRemoving(false);
+        onSaved?.();
+      } catch (err) {
+        const errs = err.response?.data?.errors;
+        notify(err.response?.data?.message || (errs ? Object.values(errs).flat().join('\n') : 'Error'), { title: 'Gỡ product thất bại', kind: 'error' });
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     if (!variantId || String(variantId) === String(current?.id)) { setEditing(false); return; }
     setSaving(true);
     try {
@@ -891,7 +933,32 @@ function ItemVariantCell({ item, canEdit, products, onOpen, onSaved }) {
     return (
       <div>
         <div className="text-neutral-800">{label}</div>
-        {canEdit && <button onClick={startEdit} className="mt-1 text-[11px] text-orange-600 hover:text-orange-700">Đổi variant</button>}
+        {canEdit && (
+          <div className="mt-1 flex gap-2">
+            <button onClick={startEdit} className="text-[11px] text-orange-600 hover:text-orange-700">Đổi variant</button>
+            {current && hasAccessory && (
+              <button onClick={startRemove} className="text-[11px] text-red-500 hover:text-red-600" title="Gỡ product khỏi item, chỉ giữ lại addon">Gỡ product</button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (removing) {
+    return (
+      <div className="space-y-1">
+        <div className="text-[11px] text-neutral-600">Gỡ product khỏi item này — chỉ giữ lại addon.</div>
+        {previewing && <div className="text-[11px] text-neutral-400">Đang tính giá…</div>}
+        {preview && (
+          <div className="text-[11px] bg-amber-50 border border-amber-200 rounded p-1.5 leading-relaxed">
+            <div>Giá item: <span className="line-through text-neutral-400">${preview.old_item_price}</span> → <b>${preview.item_price}</b></div>
+            <div>Total đơn: <span className="line-through text-neutral-400">${preview.old_total_cost}</span> → <b className="text-emerald-700">${preview.total_cost}</b></div>
+          </div>
+        )}
+        <div className="flex gap-1">
+          <button onClick={save} disabled={saving || !preview} className="px-2 py-1 bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white text-[11px] rounded">{saving ? '…' : 'Xác nhận gỡ'}</button>
+          <button onClick={() => { setEditing(false); setRemoving(false); }} className="px-2 py-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-600 text-[11px] rounded">Huỷ</button>
+        </div>
       </div>
     );
   }

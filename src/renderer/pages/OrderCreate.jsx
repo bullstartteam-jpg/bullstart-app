@@ -32,6 +32,10 @@ export default function OrderCreate({ source = 'normal' }) {
   const blankItem = () => ({
     product_variant_id: '',
     material_id: '',
+    // When true, this item ships with NO product — only its addon(s).
+    // product_variant_id is kept in state (still used to browse that
+    // product's addon catalog) but sent as null on submit.
+    addon_only: false,
     // Multi-accessory: list of { accessory_id, accessory_item_id } rows. Each
     // row picks an accessory group + a tier-scoped style/price for it.
     accessories: [],
@@ -181,9 +185,10 @@ export default function OrderCreate({ source = 'normal' }) {
           .map(a => Number(a.accessory_item_id))
           .filter(Boolean);
         return {
-          product_variant_id: it.product_variant_id,
-
-          material_id: it.material_id || null,
+          // addon_only items ship with no product — the variant picked above
+          // only served to browse its addon catalog.
+          product_variant_id: it.addon_only ? null : (it.product_variant_id || null),
+          material_id: it.addon_only ? null : (it.material_id || null),
           // accessory_ids[] is the new multi-accessory payload; the server
           // also still accepts accessory_item_id for the primary one.
           accessory_ids: accessoryIds,
@@ -214,6 +219,15 @@ export default function OrderCreate({ source = 'normal' }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    for (let i = 0; i < form.items.length; i++) {
+      const it = form.items[i];
+      const hasProduct = !it.addon_only && !!it.product_variant_id;
+      const hasAccessory = (it.accessories || []).some(a => a.accessory_item_id);
+      if (!hasProduct && !hasAccessory) {
+        notify(`Item #${i + 1}: cần chọn product, hoặc tick "Chỉ addon" và chọn ít nhất 1 add-on.`, { title: 'Thiếu thông tin', kind: 'error' });
+        return;
+      }
+    }
     setLoading(true);
     try {
       let res;
@@ -462,14 +476,24 @@ export default function OrderCreate({ source = 'normal' }) {
 
               return (
                 <div key={i} className="border border-neutral-100 rounded-lg p-3 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id={`addon-only-${i}`}
+                      checked={!!item.addon_only}
+                      onChange={e => updateItem(i, { addon_only: e.target.checked })}
+                    />
+                    <label htmlFor={`addon-only-${i}`} className="text-xs text-neutral-500">
+                      Chỉ addon (không tính product — cần chọn sản phẩm bên dưới chỉ để xem danh sách add-on)
+                    </label>
+                  </div>
                   <div className="grid grid-cols-5 gap-3 items-end">
                     <div>
-                      <label className="text-xs text-neutral-500">Product Variant</label>
+                      <label className="text-xs text-neutral-500">Product Variant{item.addon_only ? ' (chỉ để chọn add-on)' : ''}</label>
                       <select
                         value={item.product_variant_id}
                         onChange={e => updateItem(i, { product_variant_id: e.target.value, accessories: [], material_id: defaultMaterialId(e.target.value) })}
                         className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm"
-                        required
                       >
                         <option value="">Select...</option>
                         {allVariants.map(v => (
@@ -526,7 +550,7 @@ export default function OrderCreate({ source = 'normal' }) {
                   </div>
 
                   {/* Material (chất liệu) — default auto-picked when variant chosen */}
-                  {materialsOfVariant(item.product_variant_id).length > 0 && (
+                  {!item.addon_only && materialsOfVariant(item.product_variant_id).length > 0 && (
                     <div>
                       <label className="text-xs text-neutral-500">Material (chất liệu)</label>
                       <select
