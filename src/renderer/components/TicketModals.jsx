@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import api from '../services/api';
 import { notify } from './Dialog';
 
@@ -17,6 +17,119 @@ export function TicketStatusPill({ status }) {
 }
 
 export const fmtTime = (t) => (t ? new Date(t).toLocaleString() : '—');
+
+// ── Attachments ─────────────────────────────────────────────────────────────
+// Images / videos are uploaded to B2 through the hub (POST /uploads/file) as
+// soon as they are picked or pasted; the message itself only carries
+// [{url, type, name}]. The hub caps an upload at 50MB and a message at 10 files.
+const MAX_UPLOAD_MB = 50;
+const MAX_ATTACHMENTS = 10;
+const kindOf = (file) =>
+  file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : null;
+
+async function uploadAttachment(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('folder', 'tickets');
+  const res = await api.post('/uploads/file', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+  return { url: res.data.url, type: kindOf(file), name: file.name };
+}
+
+function useAttachments() {
+  const [items, setItems] = useState([]); // { key, name, type, preview, url?, uploading }
+
+  const addFiles = (fileList) => {
+    const files = Array.from(fileList || []);
+    const room = MAX_ATTACHMENTS - items.length;
+    if (files.length > room) notify(`Tối đa ${MAX_ATTACHMENTS} file mỗi tin`, { kind: 'error' });
+    for (const file of files.slice(0, Math.max(0, room))) {
+      const type = kindOf(file);
+      if (!type) { notify(`${file.name}: chỉ nhận ảnh hoặc video`, { kind: 'error' }); continue; }
+      if (file.size > MAX_UPLOAD_MB * 1024 * 1024) { notify(`${file.name}: tối đa ${MAX_UPLOAD_MB}MB`, { kind: 'error' }); continue; }
+      const key = `${Date.now()}-${Math.random()}`;
+      setItems(list => [...list, { key, name: file.name, type, preview: URL.createObjectURL(file), uploading: true }]);
+      uploadAttachment(file)
+        .then(a => setItems(list => list.map(i => (i.key === key ? { ...i, ...a, uploading: false } : i))))
+        .catch(err => {
+          notify(err?.response?.data?.message || `Upload ${file.name} thất bại`, { kind: 'error' });
+          setItems(list => list.filter(i => i.key !== key));
+        });
+    }
+  };
+
+  const remove = (key) => setItems(list => {
+    const gone = list.find(i => i.key === key);
+    if (gone) URL.revokeObjectURL(gone.preview);
+    return list.filter(i => i.key !== key);
+  });
+  const reset = () => setItems(list => { list.forEach(i => URL.revokeObjectURL(i.preview)); return []; });
+
+  // Paste a screenshot straight into the text box. Text pastes pass through.
+  const onPaste = (e) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  };
+
+  return {
+    items, addFiles, remove, reset, onPaste,
+    uploading: items.some(i => i.uploading),
+    payload: items.filter(i => i.url).map(({ url, type, name }) => ({ url, type, name })),
+  };
+}
+
+function AttachmentPicker({ att }) {
+  const inputRef = useRef(null);
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {att.items.map(i => (
+        <div key={i.key} title={i.name} className="relative w-16 h-16 rounded-lg overflow-hidden border border-neutral-200 bg-neutral-100">
+          {i.type === 'image'
+            ? <img src={i.preview} alt="" className="w-full h-full object-cover" />
+            : <video src={i.preview} muted className="w-full h-full object-cover" />}
+          {i.type === 'video' && !i.uploading && (
+            <span className="absolute inset-0 flex items-center justify-center text-white text-lg drop-shadow pointer-events-none">▶</span>
+          )}
+          {i.uploading && (
+            <div className="absolute inset-0 bg-white/70 flex items-center justify-center text-[10px] text-neutral-600">Đang tải…</div>
+          )}
+          <button type="button" onClick={() => att.remove(i.key)}
+            className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/60 hover:bg-black/80 text-white text-[10px] leading-none">×</button>
+        </div>
+      ))}
+      <button type="button" onClick={() => inputRef.current?.click()} disabled={att.items.length >= MAX_ATTACHMENTS}
+        className="px-2.5 py-1.5 bg-neutral-100 hover:bg-neutral-200 disabled:opacity-40 text-neutral-700 text-xs rounded-lg">
+        📎 Ảnh / Video
+      </button>
+      <input ref={inputRef} type="file" accept="image/*,video/*" multiple hidden
+        onChange={e => { att.addFiles(e.target.files); e.target.value = ''; }} />
+    </div>
+  );
+}
+
+function MessageAttachments({ list }) {
+  const [preview, setPreview] = useState(null);
+  if (!list?.length) return null;
+  return (
+    <>
+      <div className="flex flex-wrap gap-2 mt-2">
+        {list.map((a, idx) => (a.type === 'video' ? (
+          <video key={idx} src={a.url} controls preload="metadata"
+            className="w-72 max-w-full max-h-60 rounded-lg border border-neutral-200 bg-black" />
+        ) : (
+          <button key={idx} type="button" onClick={() => setPreview(a.url)} title={a.name || ''}>
+            <img src={a.url} alt={a.name || ''} loading="lazy"
+              className="w-24 h-24 object-cover rounded-lg border border-neutral-200 hover:opacity-90" />
+          </button>
+        )))}
+      </div>
+      {preview && (
+        <div onClick={() => setPreview(null)} className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-6 cursor-zoom-out">
+          <img src={preview} alt="" className="max-w-full max-h-full object-contain rounded" />
+        </div>
+      )}
+    </>
+  );
+}
 
 function Shell({ title, sub, onClose, children, footer, wide = false }) {
   return (
@@ -42,6 +155,7 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
   const [ticket, setTicket] = useState(null);
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
+  const att = useAttachments();
 
   const load = async () => {
     try {
@@ -54,12 +168,14 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
   };
   useEffect(() => { load(); }, [id]);
 
+  const canSend = (reply.trim() || att.payload.length > 0) && !att.uploading;
   const send = async () => {
-    if (!reply.trim()) return;
+    if (!canSend) return;
     setBusy(true);
     try {
-      await api.post(`/tickets/${id}/reply`, { content: reply.trim() });
+      await api.post(`/tickets/${id}/reply`, { content: reply.trim() || null, attachments: att.payload });
       setReply('');
+      att.reset();
       await load();
       onChanged?.();
     } catch (err) {
@@ -82,7 +198,7 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
   // Opening message is tickets.content; ticket_items holds only the replies.
   // Stitched into one list so the reader never sees that split.
   const thread = ticket
-    ? [{ id: 'root', content: ticket.content, sender: ticket.creator, created_at: ticket.created_at }, ...(ticket.items || [])]
+    ? [{ id: 'root', content: ticket.content, attachments: ticket.attachments, sender: ticket.creator, created_at: ticket.created_at }, ...(ticket.items || [])]
     : [];
 
   return (
@@ -101,8 +217,9 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
       onClose={onClose}
       footer={ticket && (
         <div className="border-t border-neutral-200 p-3 space-y-2">
-          <textarea value={reply} onChange={e => setReply(e.target.value)} rows={3} placeholder="Trả lời…"
+          <textarea value={reply} onChange={e => setReply(e.target.value)} onPaste={att.onPaste} rows={3} placeholder="Trả lời…"
             className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm resize-y" />
+          <AttachmentPicker att={att} />
           <div className="flex justify-between gap-2">
             <button onClick={toggleSolved} disabled={busy}
               className={`px-3 py-1.5 text-sm rounded-lg disabled:opacity-40 ${
@@ -112,7 +229,7 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
               }`}>
               {ticket.status === 2 ? 'Mở lại' : 'Đánh dấu xong'}
             </button>
-            <button onClick={send} disabled={busy || !reply.trim()}
+            <button onClick={send} disabled={busy || !canSend}
               className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white text-sm rounded-lg">
               {busy ? 'Đang gửi…' : 'Gửi'}
             </button>
@@ -130,7 +247,8 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
                 <span className="font-medium text-neutral-700 truncate">{m.sender?.name || '—'}</span>
                 <span className="shrink-0">{fmtTime(m.created_at)}</span>
               </div>
-              <div className="text-sm text-neutral-800 whitespace-pre-wrap break-words">{m.content}</div>
+              {m.content && <div className="text-sm text-neutral-800 whitespace-pre-wrap break-words">{m.content}</div>}
+              <MessageAttachments list={m.attachments} />
             </div>
           ))}
           {ticket.status === 2 && (
@@ -158,15 +276,18 @@ export function CreateTicketModal({ orderId, systemId, onClose, onCreated }) {
   const [content, setContent] = useState('');
   const [platform, setPlatform] = useState(1);
   const [busy, setBusy] = useState(false);
+  const att = useAttachments();
 
+  const canCreate = subject.trim() && (content.trim() || att.payload.length > 0) && !att.uploading;
   const submit = async () => {
-    if (!subject.trim() || !content.trim()) return;
+    if (!canCreate) return;
     setBusy(true);
     try {
       const res = await api.post('/tickets', {
         order_id: orderId,
         subject: subject.trim(),
-        content: content.trim(),
+        content: content.trim() || null,
+        attachments: att.payload,
         platform,
       });
       notify('Đã tạo ticket', { title: 'Tickets', kind: 'success' });
@@ -185,7 +306,7 @@ export function CreateTicketModal({ orderId, systemId, onClose, onCreated }) {
       footer={
         <div className="border-t border-neutral-200 p-3 flex justify-end gap-2">
           <button onClick={onClose} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Huỷ</button>
-          <button onClick={submit} disabled={busy || !subject.trim() || !content.trim()}
+          <button onClick={submit} disabled={busy || !canCreate}
             className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white text-sm rounded-lg">
             {busy ? 'Đang tạo…' : 'Tạo ticket'}
           </button>
@@ -207,8 +328,9 @@ export function CreateTicketModal({ orderId, systemId, onClose, onCreated }) {
       </div>
       <div>
         <label className="text-xs text-neutral-500 block">Nội dung</label>
-        <textarea value={content} onChange={e => setContent(e.target.value)} rows={6}
+        <textarea value={content} onChange={e => setContent(e.target.value)} onPaste={att.onPaste} rows={6}
           className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm resize-y" />
+        <AttachmentPicker att={att} />
       </div>
     </Shell>
   );

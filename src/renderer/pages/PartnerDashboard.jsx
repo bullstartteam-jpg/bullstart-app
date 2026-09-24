@@ -532,13 +532,13 @@ function RevenueModal({ partner, onClose, onApplied }) {
       const s = v == null ? '' : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ['system_id', 'ref_id', 'completed_time', 'items', 'qty', 'current', 'computed', 'diff', 'locked', 'paid', 'cach_tinh'];
+    const header = ['system_id', 'ref_id', 'completed_time', 'items', 'qty', 'order_total', 'current', 'computed', 'diff', 'locked', 'paid', 'cach_tinh'];
     const lines = [header.join(',')];
     for (const r of rows) {
       lines.push([
         r.system_id, r.ref_id, r.completed_time,
         r.items.map(i => `${i.product || ''} x${i.quantity}`).join(' | '),
-        r.qty, r.current ?? '', r.computed ?? '', r.diff ?? '', r.locked ? 'yes' : '',
+        r.qty, r.order_total ?? '', r.current ?? '', r.computed ?? '', r.diff ?? '', r.locked ? 'yes' : '',
         r.paid ? 'paid' : 'chua paid',
         workingText(r.breakdown),
       ].map(esc).join(','));
@@ -623,6 +623,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
                   <th className="py-2 px-3 text-left">Paid</th>
                   <th className="py-2 px-3 text-left">Sản phẩm</th>
                   <th className="py-2 px-3 text-right">SL</th>
+                  <th className="py-2 px-3 text-right">Giá đơn thật</th>
                   <th className="py-2 px-3 text-right">Hiện tại</th>
                   <th className="py-2 px-3 text-right">Tính ra</th>
                   <th className="py-2 px-3 text-right">Chênh</th>
@@ -657,6 +658,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
                       {o.items.map(i => `${i.product || '?'} ×${i.quantity}`).join(', ')}
                     </td>
                     <td className="py-1.5 px-3 text-right text-neutral-600">{o.qty}</td>
+                    <td className="py-1.5 px-3 text-right text-neutral-500">{fmt$(o.order_total)}</td>
                     <td className="py-1.5 px-3 text-right text-neutral-600">{fmt$(o.current)}</td>
                     <td className="py-1.5 px-3 text-right font-medium text-neutral-800">{fmt$(o.computed)}</td>
                     <td className={`py-1.5 px-3 text-right text-xs ${
@@ -668,7 +670,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
                   </tr>
                   {open.has(o.order_id) && (
                     <tr className="border-b border-neutral-100 bg-[#faf8f6]">
-                      <td colSpan={9} className="px-6 py-3">
+                      <td colSpan={10} className="px-6 py-3">
                         <Working breakdown={o.breakdown} total={o.computed} />
                       </td>
                     </tr>
@@ -683,6 +685,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
         {t && (
           <div className="px-4 py-3 border-t border-neutral-200 flex flex-wrap gap-4 text-sm">
             <span className="text-neutral-600">{t.orders} đơn · {t.qty} sản phẩm</span>
+            <span className="text-neutral-600">Giá đơn thật: <b>{fmt$(t.order_total)}</b></span>
             <span className="text-neutral-600">Hiện tại: <b>{fmt$(t.current)}</b></span>
             <span className="text-emerald-700">Tính ra: <b>{fmt$(t.computed)}</b></span>
             <span className="text-emerald-700">đơn đã paid: <b>{fmt$(t.computed_paid)}</b></span>

@@ -2241,6 +2241,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
   // changes so a hidden selection can't survive a page flip.
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [clearingOld, setClearingOld] = useState(false);
   const [reconvertingId, setReconvertingId] = useState(null);
   const [bulkReconverting, setBulkReconverting] = useState(false);
   const [partnerModal, setPartnerModal] = useState(null);   // gang being assigned to partners
@@ -2589,6 +2590,22 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     }
   };
 
+  // Delete every gang of this channel created more than 7 days ago — not just
+  // the visible page. Orders/metas keep their production flag, as bulk delete.
+  const handleClearOld = async () => {
+    if (!confirm('Xoá toàn bộ gang tạo quá 1 tuần?\n(Orders/metas remain marked as production.)')) return;
+    setClearingOld(true);
+    try {
+      const res = await api.post('/gangsheets/clear-old', { days: 7, source });
+      alert(res.data.message || `Deleted ${res.data.count}`);
+      fetchList();
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Clear failed');
+    } finally {
+      setClearingOld(false);
+    }
+  };
+
   // Same as the per-row Reconvert, over every selected gang at once. Orders are
   // de-duplicated: a re-ganged order can sit in two gangs, and sending its id
   // twice would delete its _qr metas, then "delete" nothing on the second pass
@@ -2757,6 +2774,17 @@ function ManageTab({ isAdmin, source = 'normal' }) {
             className="px-3 py-1.5 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white text-sm rounded-lg"
           >
             {bulkDeleting ? 'Deleting…' : `Delete selected (${selectedIds.size})`}
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={handleClearOld}
+            disabled={clearingOld}
+            className="px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:opacity-40 text-white text-sm rounded-lg"
+            title="Xoá mọi gang được tạo quá 7 ngày (theo kênh hiện tại)"
+          >
+            {clearingOld ? 'Clearing…' : 'Clear gang > 1 tuần'}
           </button>
         )}
         <span className="text-xs text-neutral-500 ml-auto">
