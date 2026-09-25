@@ -57,6 +57,8 @@ export default function PartnerDashboard() {
       {partners.length === 0 ? (
         <p className="text-neutral-400 text-sm">Chưa có tài khoản role <b>partner</b> nào.</p>
       ) : (
+        <>
+        <ShippingChart partners={partners} />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {partners.map(p => (
             <PartnerCard key={p.user.id} p={p}
@@ -64,6 +66,7 @@ export default function PartnerDashboard() {
               onPay={() => setPayFor(p)} />
           ))}
         </div>
+        </>
       )}
 
       {detailFor && (
@@ -73,6 +76,76 @@ export default function PartnerDashboard() {
         <PayoutModal partner={payFor} onClose={() => setPayFor(null)} onPaid={load} />
       )}
     </div>
+  );
+}
+
+/**
+ * Orders shipped in the window, per partner: carrier-delivered vs still on the
+ * way. The hub counts "delivered" from order_trackings, so an order whose
+ * tracking has not been checked yet shows as in transit.
+ */
+function ShippingChart({ partners }) {
+  const rows = partners.map(p => ({
+    id: p.user.id,
+    name: p.user.name,
+    delivered: p.delivered_window ?? 0,
+    inTransit: p.in_transit_window ?? 0,
+  }));
+  const max = Math.max(1, ...rows.map(r => r.delivered + r.inTransit));
+  const sum = rows.reduce((a, r) => ({ d: a.d + r.delivered, t: a.t + r.inTransit }), { d: 0, t: 0 });
+  const pct = (d, t) => (d + t ? Math.round((d / (d + t)) * 100) : 0);
+
+  return (
+    <div className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-sm font-semibold text-neutral-800">Đang ship vs Đã giao</div>
+          <div className="text-[11px] text-neutral-500">Đơn ship trong kỳ, theo trạng thái tracking</div>
+        </div>
+        <div className="flex items-center gap-4 text-xs">
+          <Legend cls="bg-amber-400" label={`Đang ship · ${sum.t}`} />
+          <Legend cls="bg-emerald-500" label={`Đã giao · ${sum.d}`} />
+          <span className="text-neutral-500">{pct(sum.d, sum.t)}% đã giao</span>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {rows.map(r => {
+          const total = r.delivered + r.inTransit;
+          return (
+            <div key={r.id} className="flex items-center gap-3">
+              <div className="w-32 shrink-0 text-xs text-neutral-700 truncate" title={r.name}>{r.name}</div>
+              <div className="flex-1 h-5 bg-neutral-100 rounded overflow-hidden">
+                <div className="h-full flex" style={{ width: `${(total / max) * 100}%` }}>
+                  {r.inTransit > 0 && (
+                    <div className="h-full bg-amber-400 flex items-center justify-center text-[10px] text-white font-medium"
+                      style={{ width: `${(r.inTransit / total) * 100}%` }} title={`Đang ship: ${r.inTransit}`}>
+                      {r.inTransit}
+                    </div>
+                  )}
+                  {r.delivered > 0 && (
+                    <div className="h-full bg-emerald-500 flex items-center justify-center text-[10px] text-white font-medium"
+                      style={{ width: `${(r.delivered / total) * 100}%` }} title={`Đã giao: ${r.delivered}`}>
+                      {r.delivered}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="w-24 shrink-0 text-right text-[11px] text-neutral-500">
+                {total ? `${total} đơn · ${pct(r.delivered, r.inTransit)}%` : '—'}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Legend({ cls, label }) {
+  return (
+    <span className="flex items-center gap-1.5 text-neutral-600">
+      <span className={`w-2.5 h-2.5 rounded-sm ${cls}`} />{label}
+    </span>
   );
 }
 
@@ -106,6 +179,11 @@ function PartnerCard({ p, onOpen, onPay }) {
         <Stat label="Hôm nay" value={p.shipped_today} />
         <Stat label={`${p.daily.length ? 'Trong kỳ' : 'Kỳ này'}`} value={p.shipped_window} />
         <Stat label="Tổng ship" value={p.shipped_total} />
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-center">
+        <Stat label="Đang ship (trong kỳ)" value={p.in_transit_window ?? 0} tone="amber" />
+        <Stat label="Đã giao (trong kỳ)" value={p.delivered_window ?? 0} tone="emerald" />
       </div>
 
       {/* Money owed on orders the seller has not settled is money going out
@@ -146,10 +224,14 @@ function PartnerCard({ p, onOpen, onPay }) {
         <div className="flex items-end gap-1 h-20 pt-2">
           {p.daily.map(d => (
             <div key={d.date} className="flex-1 flex flex-col items-center justify-end group"
-              title={`${d.date}: ${d.count} đơn · ${fmt$(d.revenue)}`}>
+              title={`${d.date}: ${d.count} đơn · đang ship ${d.in_transit ?? 0} · đã giao ${d.delivered ?? 0} · ${fmt$(d.revenue)}`}>
               <div className="text-[9px] text-neutral-500 mb-0.5">{d.count}</div>
-              <div className="w-full bg-orange-400 group-hover:bg-orange-500 rounded-t transition"
-                style={{ height: `${Math.max(4, (d.count / max) * 100)}%` }} />
+              {/* Stacked: in transit on top, delivered at the base. */}
+              <div className="w-full flex flex-col rounded-t overflow-hidden group-hover:opacity-90 transition"
+                style={{ height: `${Math.max(4, (d.count / max) * 100)}%` }}>
+                <div className="bg-amber-400" style={{ flexGrow: d.in_transit ?? d.count }} />
+                <div className="bg-emerald-500" style={{ flexGrow: d.delivered ?? 0 }} />
+              </div>
               <div className="text-[9px] text-neutral-400 mt-0.5">{shortDay(d.date)}</div>
             </div>
           ))}
