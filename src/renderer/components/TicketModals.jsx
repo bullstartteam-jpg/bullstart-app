@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '../services/api';
-import { notify } from './Dialog';
+import { notify, askConfirm } from './Dialog';
 
 // Shared by the Tickets page and the order list. Staff read every thread; the
 // API scopes sellers and partners for themselves, so nothing here filters.
@@ -195,6 +195,21 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
     } finally { setBusy(false); }
   };
 
+  // Replies only — the opening message is the ticket itself. Staff may delete
+  // anyone's reply (the API still checks); status is left as it was.
+  const deleteItem = async (itemId) => {
+    const ok = await askConfirm('Xoá tin nhắn này? Không thể hoàn tác.', { title: 'Xoá tin nhắn', okText: 'Xoá', cancelText: 'Huỷ' });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.delete(`/tickets/${id}/items/${itemId}`);
+      await load();
+      onChanged?.();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Xoá thất bại', { title: 'Tickets', kind: 'error' });
+    } finally { setBusy(false); }
+  };
+
   // Opening message is tickets.content; ticket_items holds only the replies.
   // Stitched into one list so the reader never sees that split.
   const thread = ticket
@@ -245,7 +260,13 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
             <div key={m.id} className="border border-neutral-200 rounded-lg p-3">
               <div className="flex justify-between items-center text-xs text-neutral-500 mb-1 gap-2">
                 <span className="font-medium text-neutral-700 truncate">{m.sender?.name || '—'}</span>
-                <span className="shrink-0">{fmtTime(m.created_at)}</span>
+                <span className="shrink-0 flex items-center gap-2">
+                  {fmtTime(m.created_at)}
+                  {m.id !== 'root' && (
+                    <button onClick={() => deleteItem(m.id)} disabled={busy} title="Xoá tin nhắn"
+                      className="text-neutral-400 hover:text-red-600 disabled:opacity-40">🗑</button>
+                  )}
+                </span>
               </div>
               {m.content && <div className="text-sm text-neutral-800 whitespace-pre-wrap break-words">{m.content}</div>}
               <MessageAttachments list={m.attachments} />
