@@ -229,6 +229,10 @@ export default function ProductDetail() {
         )}
       </div>
 
+      {hasRole('admin') && tiers.length > 1 && (
+        <CopyTierPrices productId={id} tiers={tiers} onDone={fetchProduct} />
+      )}
+
       {/* Variants */}
       <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm">
         <div className="flex justify-between items-center mb-3">
@@ -459,6 +463,60 @@ function VariantPriceSummary({ prices }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// Copy every price of this product (all variant keys + all add-on styles) from
+// one tier onto another — e.g. seed a seller's own tier from Public, then edit
+// only what differs. Overwrites the target tier's matching prices.
+function CopyTierPrices({ productId, tiers, onDone }) {
+  const [fromId, setFromId] = useState('');
+  const [toId, setToId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const tierName = (tid) => tiers.find(t => String(t.id) === String(tid))?.name || `#${tid}`;
+
+  const handleCopy = async () => {
+    if (!fromId || !toId) return alert('Chọn tier nguồn và tier đích');
+    if (fromId === toId) return alert('Tier nguồn và tier đích phải khác nhau');
+    if (!confirm(`Copy toàn bộ giá của product này từ tier "${tierName(fromId)}" sang "${tierName(toId)}"?\n\nGiá variant + add-on đang có ở "${tierName(toId)}" sẽ bị GHI ĐÈ.`)) return;
+    setBusy(true);
+    try {
+      const res = await api.post(`/products/${productId}/copy-tier-prices`, { from_tier_id: Number(fromId), to_tier_id: Number(toId) });
+      alert(res.data.message);
+      onDone?.();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Copy giá thất bại');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-neutral-200 p-4 mb-6 shadow-sm">
+      <h3 className="text-sm font-semibold text-neutral-600 mb-1">Copy giá giữa tier</h3>
+      <p className="text-xs text-neutral-500 mb-3">Copy tất cả giá variant + add-on của product này từ một tier sang tier khác (ghi đè giá đang có ở tier đích).</p>
+      <div className="flex flex-wrap items-end gap-2">
+        <div>
+          <label className="text-xs text-neutral-500 block">Từ tier</label>
+          <select value={fromId} onChange={e => setFromId(e.target.value)} className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+            <option value="">— chọn —</option>
+            {tiers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </div>
+        <span className="pb-2 text-neutral-400">→</span>
+        <div>
+          <label className="text-xs text-neutral-500 block">Sang tier</label>
+          <select value={toId} onChange={e => setToId(e.target.value)} className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+            <option value="">— chọn —</option>
+            {tiers.filter(t => String(t.id) !== String(fromId)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </div>
+        <button onClick={handleCopy} disabled={busy || !fromId || !toId}
+          className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">
+          {busy ? 'Đang copy…' : 'Copy giá'}
+        </button>
+      </div>
     </div>
   );
 }
