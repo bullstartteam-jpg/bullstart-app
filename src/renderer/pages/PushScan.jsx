@@ -15,6 +15,18 @@ const ML_STATUS = {
   2: { label: 'Đã gửi', cls: 'bg-emerald-100 text-emerald-700' },
 };
 
+// Delivery-tracking status → badge colors (same as Orders).
+const TRACKING_COLOR = {
+  delivered: 'bg-emerald-100 text-emerald-700',
+  in_transit: 'bg-blue-100 text-blue-700',
+  out_for_delivery: 'bg-cyan-100 text-cyan-700',
+  accepted: 'bg-neutral-100 text-neutral-600',
+  pre_shipment: 'bg-neutral-100 text-neutral-500',
+  delivery_attempted: 'bg-orange-100 text-orange-700',
+  exception: 'bg-red-100 text-red-700',
+  unknown: 'bg-neutral-100 text-neutral-500',
+};
+
 const Pill = ({ s }) => <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${s?.cls || ''}`}>{s?.label || '?'}</span>;
 
 /**
@@ -156,7 +168,23 @@ function PushOrders() {
                 <td className="p-2 font-mono text-xs text-orange-600">{r.order?.system_id}</td>
                 <td className="p-2 text-xs">{r.order?.ref_id || '—'}</td>
                 <td className="p-2 text-xs">{r.order?.user?.name || '—'}</td>
-                <td className="p-2 font-mono text-xs">{r.order?.tracking_id || '—'}</td>
+                <td className="p-2 text-xs">
+                  <div className="font-mono">{r.order?.tracking_id || '—'}</div>
+                  {r.order?.tracking?.status ? (
+                    <span
+                      className={`inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold ${TRACKING_COLOR[r.order.tracking.status] || TRACKING_COLOR.unknown}`}
+                      title={[
+                        r.order.tracking.status_description,
+                        r.order.tracking.last_event_at && `Event: ${new Date(r.order.tracking.last_event_at).toLocaleString()}`,
+                        r.order.tracking.checked_at && `Quét lúc: ${new Date(r.order.tracking.checked_at).toLocaleString()}`,
+                      ].filter(Boolean).join('\n')}
+                    >
+                      {r.order.tracking.status.replace(/_/g, ' ')}
+                    </span>
+                  ) : r.order?.tracking_id ? (
+                    <span className="inline-block mt-0.5 text-[10px] text-neutral-400">chưa quét</span>
+                  ) : null}
+                </td>
                 <td className="p-2 text-xs">
                   {r.order?.shipping_label
                     ? <a href={r.order.shipping_label} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Xem</a>
