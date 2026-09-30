@@ -28,6 +28,14 @@ export function askConfirm(message, { title = 'Confirm', okText = 'OK', cancelTe
   });
 }
 
+// Pick one of several actions. Resolves to the chosen `value`, or null when
+// cancelled / dismissed. choices: [{ value, label, className? }].
+export function askChoice(message, { title = 'Choose', choices = [], cancelText = 'Cancel' } = {}) {
+  return new Promise((resolve) => {
+    push({ id: ++_seq, type: 'choice', title, choices, cancelText, message, resolve });
+  });
+}
+
 export function DialogHost() {
   const [queue, setQueue] = useState([]);
   useEffect(() => {
@@ -46,10 +54,30 @@ export function DialogHost() {
   const accent = top.kind === 'error' ? 'text-red-600' : top.kind === 'success' ? 'text-green-600' : 'text-neutral-800';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => top.type === 'confirm' ? close(false) : close(true)}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => top.type === 'confirm' ? close(false) : top.type === 'choice' ? close(null) : close(true)}>
       <div className="bg-white rounded-xl shadow-2xl w-[420px] max-w-[90%] p-5" onClick={e => e.stopPropagation()}>
         <h3 className={`text-base font-semibold mb-2 ${accent}`}>{top.title}</h3>
         <div className="text-sm text-neutral-700 whitespace-pre-line mb-4">{top.message}</div>
+        {top.type === 'choice' ? (
+          <div className="flex justify-end gap-2">
+            <button
+              autoFocus
+              onClick={() => close(null)}
+              className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg"
+            >
+              {top.cancelText}
+            </button>
+            {top.choices.map(c => (
+              <button
+                key={String(c.value)}
+                onClick={() => close(c.value)}
+                className={`px-4 py-1.5 text-white text-sm rounded-lg ${c.className || 'bg-orange-500 hover:bg-orange-600'}`}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        ) : (
         <div className="flex justify-end gap-2">
           {top.type === 'confirm' && (
             <button
@@ -67,6 +95,7 @@ export function DialogHost() {
             {top.type === 'confirm' ? top.okText : 'OK'}
           </button>
         </div>
+        )}
       </div>
     </div>
   );

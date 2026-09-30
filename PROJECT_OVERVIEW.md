@@ -202,6 +202,30 @@ Cấu hình `electron-builder`:
 - Build resources (icon): `build-resources/icon.png`
 - Publish provider: GitHub release của `bullstartteam-jpg/bullstart-app`
 
+### Restart app sau khi sửa code (máy local, macOS)
+
+Build lại renderer rồi mở app từ `build/` — không cần cổng 3000 (máy dev đang có project khác chiếm cổng này nên `npm run dev` không chạy được):
+
+Một lệnh, chạy từ thư mục nào cũng được (tắt app → build renderer vào `build/` → mở lại, log ở `/tmp/bullstart-app.log`):
+
+```bash
+cd /Users/huynhthanhphong/Documents/bullstart/bullstart-app && pkill -f "bullstart-app/node_modules/electron/dist/Electron.app"; npx --no-install webpack --config webpack.renderer.config.js --mode development && (nohup npx --no-install electron . > /tmp/bullstart-app.log 2>&1 &)
+```
+
+> Chỉ chạy `npx webpack` là **chưa đủ** — nó chỉ build ra `build/`; app phải được mở lại bằng `npx electron .` (hoặc ⌘R trong cửa sổ app dev đang mở). App BullStart cài trong `/Applications` là bản release, không đọc `build/` nên không bao giờ thấy code local.
+>
+> Phải chạy **trong `bullstart-app`**. Chạy ở thư mục khác thì `npx` sẽ tải webpack tạm và cài `webpack-cli` vào sai chỗ — `--no-install` chặn việc đó, báo lỗi thay vì tự cài.
+
+Restart hub local (API Laravel ở `../hub`, MySQL 8.4 local cổng 3307):
+
+```bash
+cd /Users/huynhthanhphong/Documents/bullstart/hub && pkill -f "artisan serve"; (nohup php artisan serve --host=127.0.0.1 --port=8000 > storage/logs/serve.log 2>&1 &)
+```
+
+Lưu ý:
+- Mặc định app gọi **production** (`https://bullstart.us/api`). Muốn dùng hub local: Settings → API URL = `http://127.0.0.1:8000/api` (phải là `127.0.0.1`, URL `http://localhost:8000/api` bị app tự xoá khi khởi động).
+- Các job auto (Convert QR / Convert Label / …) nhớ trạng thái bật trong localStorage và tự chạy lại khi mở app — chúng xử lý đơn thật nếu app đang trỏ production.
+
 ---
 
 ## 9. Các điểm thiết kế đáng chú ý

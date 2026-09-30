@@ -37,6 +37,7 @@ export async function buildPushScanLabelPdf({ rows, name, onProgress }) {
         const pages = await pdf.copyPages(src, src.getPageIndices());
         pages.forEach(p => pdf.addPage(p));
       } else {
+        if (!isPng(bytes) && !isJpg(bytes)) throw new Error('label không phải PDF/PNG/JPEG');
         const image = isPng(bytes) ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes);
         const page = pdf.addPage([LABEL_W_PT, LABEL_H_PT]);
         const { width: iw, height: ih } = image.scale(1);
@@ -50,7 +51,12 @@ export async function buildPushScanLabelPdf({ rows, name, onProgress }) {
       }
       included.push(row.id);
     } catch (err) {
-      const reason = err?.response?.status ? `HTTP ${err.response.status}` : (err?.message || 'load failed');
+      // arraybuffer responses carry the hub's JSON error as bytes — decode it.
+      let reason = err?.response?.status ? `HTTP ${err.response.status}` : (err?.message || 'load failed');
+      try {
+        const msg = JSON.parse(new TextDecoder().decode(err?.response?.data))?.message;
+        if (msg) reason += `: ${msg}`;
+      } catch { /* not JSON */ }
       console.warn('[push-scan] failed label for', sid, err);
       skipped.push(`${sid} (${reason})`);
     }
@@ -71,3 +77,4 @@ export async function buildPushScanLabelPdf({ rows, name, onProgress }) {
 
 const isPdf = (b) => b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46; // %PDF
 const isPng = (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+const isJpg = (b) => b[0] === 0xff && b[1] === 0xd8;

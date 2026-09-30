@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { notify, askConfirm } from '../components/Dialog';
+import { notify, askConfirm, askChoice } from '../components/Dialog';
 import { buildInvoicePdf } from '../services/invoicePdf';
 import { PreviewModal } from '../components/Preview';
 import { CreateTicketModal, TicketThreadModal } from '../components/TicketModals';
@@ -456,6 +456,53 @@ export default function Orders({ source = 'normal' }) {
       return notify('Selected orders have no tracking_id yet.', { title: 'Nothing to copy' });
     }
     copyToClipboard(tracks.join('\n'), `tracking_id${tracks.length > 1 ? 's' : ''}`, tracks.length);
+  };
+
+  // Push scan (staff): queue the selected orders for a same-day tracking run,
+  // choosing per batch whether to charge the Settings → Push Scan price or push
+  // free. Charged: unpaid orders get it on total_cost, paid orders are debited
+  // from the owner's wallet. Free: fee 0, nothing moves.
+  const handleBulkPushScan = async () => {
+    // Shipped orders are allowed (re-run tracking); cancelled are not.
+    const targets = orders.filter(o => selected.includes(o.id) && !o.push_tracking && o.ship_type !== 'stamp' && o.status !== 7);
+    if (targets.length === 0) {
+      return notify('Không có đơn nào hợp lệ để push scan (đã push, stamp hoặc cancelled).', { title: 'Push scan' });
+    }
+    let price = 0;
+    try {
+      const res = await api.get('/settings/push-scan-config');
+      price = Number(res.data.price) || 0;
+    } catch { /* hub still prices it */ }
+    const paidCount = targets.filter(o => parseFloat(o.paid_cost) > 0 && parseFloat(o.paid_cost) >= parseFloat(o.total_cost)).length;
+    const skipped = selected.length - targets.length;
+    const lines = [
+      `Push scan ${targets.length} đơn để run tracking ngay trong ngày?`,
+      skipped > 0 ? `(Bỏ qua ${skipped} đơn đã push / stamp / cancelled.)` : null,
+      '',
+      `Tính phí: $${price.toFixed(2)} / đơn (tổng $${(price * targets.length).toFixed(2)})`,
+      targets.length - paidCount > 0 ? `  • ${targets.length - paidCount} đơn chưa thanh toán: cộng vào total cost` : null,
+      paidCount > 0 ? `  • ${paidCount} đơn đã thanh toán: trừ $${(price * paidCount).toFixed(2)} vào ví seller` : null,
+      'Free: push scan không thu phí.',
+    ].filter(l => l !== null);
+    const mode = await askChoice(lines.join('\n'), {
+      title: 'Push scan — tính phí hay free?',
+      cancelText: 'Huỷ',
+      choices: [
+        { value: 'free', label: 'Free', className: 'bg-green-500 hover:bg-green-600' },
+        { value: 'charge', label: `Tính phí $${price.toFixed(2)}`, className: 'bg-sky-500 hover:bg-sky-600' },
+      ],
+    });
+    if (!mode) return;
+    try {
+      const res = await api.post('/orders/push-scan', { order_ids: targets.map(o => o.id), free: mode === 'free' });
+      const failed = (res.data.results || []).filter(r => !r.ok).map(r => r.message);
+      await notify([res.data.message, ...failed].join('\n'), { title: 'Push scan', kind: failed.length ? 'info' : 'success' });
+      setSelected([]);
+      fetchOrders();
+      refreshUnpaidBanner();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Push scan failed', { title: 'Push scan', kind: 'error' });
+    }
   };
 
   const handleBulkReconvert = async () => {
@@ -1600,6 +1647,11 @@ export default function Orders({ source = 'normal' }) {
             <button onClick={handleBulkPay} className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white text-xs rounded-lg">
               Bulk Pay
             </button>
+            {isStaff && (
+              <button onClick={handleBulkPushScan} className="px-3 py-1.5 bg-sky-500 hover:bg-sky-600 text-white text-xs rounded-lg" title="Push scan — run tracking trong ngày (tính phí hoặc free)">
+                Push Scan
+              </button>
+            )}
             {isStaff && (
               <button onClick={handleBulkReconvert} className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded-lg">
                 Bulk Reconvert

@@ -202,6 +202,33 @@ function MergedLabels() {
     }
   };
 
+  // Undo a merge: its orders go back to pending (can be merged again); orders
+  // already run by the tracking cron stay on the label.
+  const cancelScan = async (row) => {
+    const lines = [
+      `Huỷ scan merged label #${row.id}?`,
+      `${row.push_trackings_count} đơn sẽ trả về pending (đơn đã run giữ nguyên).`,
+      row.status === 2 ? 'Label này đang ở trạng thái "Đã gửi".' : null,
+    ].filter(Boolean);
+    if (!await askConfirm(lines.join('\n'), { title: 'Huỷ scan', okText: 'Huỷ scan', cancelText: 'Không' })) return;
+    try {
+      const res = await api.post(`/push-scan/merged-labels/${row.id}/cancel`);
+      notify(res.data.message, { title: 'Huỷ scan', kind: 'success' });
+      fetchRows();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Huỷ scan thất bại', { title: 'Huỷ scan', kind: 'error' });
+    }
+  };
+
+  const copyLink = async (url) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      notify('Đã copy link merged label', { title: 'Copy', kind: 'success' });
+    } catch {
+      notify('Copy thất bại', { title: 'Copy', kind: 'error' });
+    }
+  };
+
   return (
     <div className="space-y-3">
       <select value={status} onChange={e => setStatus(e.target.value)} className="px-3 py-2 bg-white border border-neutral-200 rounded-lg text-sm">
@@ -218,18 +245,30 @@ function MergedLabels() {
               <th className="p-2">Đơn</th>
               <th className="p-2">Status</th>
               <th className="p-2">Created</th>
+              <th className="p-2"></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan="5" className="p-6 text-center text-neutral-400">Loading…</td></tr>
+              <tr><td colSpan="6" className="p-6 text-center text-neutral-400">Loading…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan="5" className="p-6 text-center text-neutral-400">Chưa có merged label.</td></tr>
+              <tr><td colSpan="6" className="p-6 text-center text-neutral-400">Chưa có merged label.</td></tr>
             ) : rows.map(r => (
               <tr key={r.id} className="border-t border-neutral-100 align-top">
                 <td className="p-2 font-mono text-xs">#{r.id}</td>
                 <td className="p-2 text-xs">
-                  {r.label_url ? <a href={r.label_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Mở PDF</a> : '—'}
+                  {r.label_url ? (
+                    <div className="space-y-1">
+                      <div className="font-mono text-neutral-600 max-w-sm break-all select-all">{r.label_url}</div>
+                      <div className="flex gap-2">
+                        <button onClick={() => copyLink(r.label_url)}
+                          className="px-2 py-0.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded">
+                          📋 Copy link
+                        </button>
+                        <a href={r.label_url} target="_blank" rel="noreferrer" className="px-2 py-0.5 text-blue-600 hover:underline">Mở PDF</a>
+                      </div>
+                    </div>
+                  ) : '—'}
                 </td>
                 <td className="p-2 text-xs">
                   <div className="font-semibold">{r.push_trackings_count} đơn</div>
@@ -245,6 +284,13 @@ function MergedLabels() {
                   </select>
                 </td>
                 <td className="p-2 text-xs text-neutral-500">{new Date(r.created_at).toLocaleString()}</td>
+                <td className="p-2 text-right">
+                  <button onClick={() => cancelScan(r)}
+                    className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 text-xs rounded-lg whitespace-nowrap"
+                    title="Trả các đơn của merged label này về pending">
+                    Huỷ scan
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
