@@ -20,6 +20,7 @@ import Convert from './pages/Convert';
 import ConvertLabel from './pages/ConvertLabel';
 import Gangsheet from './pages/Gangsheet';
 import GangsheetLabel from './pages/GangsheetLabel';
+import PushScan from './pages/PushScan';
 import BulkFrontUpdate from './pages/BulkFrontUpdate';
 import DesignCheck from './pages/DesignCheck';
 import AutoPay from './pages/AutoPay';
@@ -81,6 +82,7 @@ export default function App() {
           <Route path="gangsheet-fpt" element={<Gangsheet key="gangsheet-fpt" source="fpt" />} />
           <Route path="gangsheet-label" element={<GangsheetLabel key="gslabel-normal" />} />
           <Route path="gangsheet-label-fpt" element={<GangsheetLabel key="gslabel-fpt" source="fpt" />} />
+          <Route path="push-scan" element={<PushScan />} />
           <Route path="profile" element={<Profile />} />
         </Route>
       </Routes>

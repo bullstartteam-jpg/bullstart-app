@@ -34,6 +34,7 @@ export default function Settings() {
     { id: 'vnpay', label: 'VNPay Merchant' },
     { id: 'bank', label: 'Bank Transfer' },
     { id: 'stamp', label: 'Stamp Shipping' },
+    { id: 'push-scan', label: 'Push Scan' },
     { id: 'order-types', label: 'Order Types' },
     { id: 'shippo', label: 'Shippo' },
     { id: 'resend', label: 'Resend' },
@@ -65,6 +66,7 @@ export default function Settings() {
       {tab === 'vnpay' && <VnpayMerchantTab />}
       {tab === 'bank' && <BankTransferTab />}
       {tab === 'stamp' && <StampConfigTab />}
+      {tab === 'push-scan' && <PushScanConfigTab />}
       {tab === 'order-types' && <OrderTypesTab />}
       {tab === 'shippo' && <ShippoConfigTab />}
       {tab === 'resend' && <ResendConfigTab />}
@@ -280,6 +282,43 @@ function StampConfigTab() {
           <div>1-{base} item: <b>${preview(base)}</b></div>
           <div>{base + 1} item: <b>${preview(base + 1)}</b></div>
           <div>{Number(c.max_items) || base + 2} item (max): <b>${preview(Number(c.max_items) || base + 2)}</b></div>
+        </div>
+        <button onClick={save} disabled={saving} className="mt-4 px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function PushScanConfigTab() {
+  const [c, setC] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { api.get('/settings/push-scan-config').then(res => setC(res.data)); }, []);
+  if (!c) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/push-scan-config', { price: c.price === '' ? 0 : Number(c.price) });
+      setC(res.data);
+      notify('Saved push scan price', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Push Scan</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">
+          Giá mỗi đơn seller push scan (run tracking trong ngày). Đơn chưa thanh toán: cộng vào total cost.
+          Đơn đã thanh toán: surcharge trừ thẳng vào ví.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <NumField label="Giá push scan / đơn ($)" value={c.price} onChange={v => setC({ price: v })} step="0.01" />
         </div>
         <button onClick={save} disabled={saving} className="mt-4 px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
           {saving ? 'Saving…' : 'Save changes'}
