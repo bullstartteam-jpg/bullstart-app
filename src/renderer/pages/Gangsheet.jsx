@@ -450,25 +450,45 @@ function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY), includeProd
 // Each order goes down exactly one branch, checked in this order:
 //   card skin (convert layout 'outside') → tiled Letter sheet, grouped by
 //                                          order_type × chip, 3 orders/chunk
+//   pass sleeve (convert layout 'sleeve') → 6 distinct designs per Letter sheet
+//   sticker sheet ('sticker_sheet')      → one 11×17 page per _qr, grouped by
+//                                          order_type
 //   keep-native variant size (5x5)       → native-size gang, grouped by size
 //   everything else                      → the bucket flow (side + the chosen
 //                                          product/addon/material dimensions)
-// Returns [{ chunk, suffix, tiled, native }] in native → normal → card order.
+// Returns [{ chunk, suffix, tiled, native }] in sticker → native → normal →
+// card → sleeve order.
 // ---------------------------------------------------------------------------
 function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includeProduced = false } = {}) {
   const cardOrders = [];
   const sleeveOrders = [];
+  const stickerOrders = [];
   const nativeOrders = [];
   const normalOrders = [];
   for (const o of orders) {
     const layout = orderConvertLayout(o, layoutMap);
     if (layout === 'outside') cardOrders.push(o);
     else if (layout === 'sleeve') sleeveOrders.push(o);
+    else if (layout === 'sticker_sheet') stickerOrders.push(o);
     else if (orderIsNative(o)) nativeOrders.push(o);
     else normalOrders.push(o);
   }
 
   const chunks = [];
+
+  // Sticker Sheet: the _qr is already the full 11×17 sheet, so each one goes
+  // out as its own page at its own size — the native builder does exactly that.
+  const stickerGroups = new Map();   // order_type → orders[]
+  for (const o of stickerOrders) {
+    const ot = orderOrderType(o) || 'sticker-sheet';
+    if (!stickerGroups.has(ot)) stickerGroups.set(ot, []);
+    stickerGroups.get(ot).push(o);
+  }
+  for (const [ot, ords] of stickerGroups) {
+    for (const chunk of chunkArray(ords, batchSize)) {
+      chunks.push({ chunk, suffix: slugifyAccessory(ot) || 'sticker-sheet', tiled: false, native: true });
+    }
+  }
 
   // Native (e.g. 5x5): merged gang keeping each design's own size, no gap/mark.
   // Grouped by normalized variant size so different native sizes stay separate.
@@ -2428,8 +2448,9 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     // Same branch the router would pick, but kept as ONE chunk so the result
     // maps 1:1 onto this record — re-routing could split it into several and
     // leave no record to swap the files onto.
-    const tiled = orderConvertLayout(orders[0], layoutMap) === 'outside';
-    const native = !tiled && orders.some(orderIsNative);
+    const layout = orderConvertLayout(orders[0], layoutMap);
+    const tiled = layout === 'outside';
+    const native = !tiled && (layout === 'sticker_sheet' || orders.some(orderIsNative));
 
     // Reproduce the old name: same batch sequence, same category suffix. Only
     // the date and the counts move, and those follow the rebuild.

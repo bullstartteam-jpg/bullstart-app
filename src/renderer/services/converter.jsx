@@ -1039,6 +1039,11 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
     );
   }
 
+  // Sticker Sheet: fixed 11×17 canvas, design scaled to 8×11 flush top.
+  if (opts.convert_layout === 'sticker_sheet') {
+    return await composeStickerSheet(sourceImg, sourceW, sourceH, systemId, accessorySummary, source_key);
+  }
+
   // 'native' layout = greeting card 5x5: FIXED 11×5.5" canvas (3300×1650 @300dpi),
   // NOT the default 10×7. The flat 5x5 design is 10×5 (2:1) which scales cleanly
   // to 11×5.5 (also 2:1). Barcode/system_id panel still stamped bottom-left below.
@@ -1117,6 +1122,74 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
     BARCODE_W,
     BARCODE_H
   );
+
+  const rawBlob = await canvasToBlob(canvas, 'image/png');
+  return await setPngDpi(rawBlob, 300);
+}
+
+// 'sticker_sheet' convert layout: a FIXED 11×17" portrait canvas (3300×5100
+// @300dpi). The design is scaled to exactly 8×11" (2400×3300), centred
+// horizontally and flush with the top edge; a landscape source is rotated -90°
+// to portrait first. The Code 128 (system_id) + text panel sits in the blank
+// area BELOW the design, left-aligned with it, so it never covers a sticker.
+// Back faces get no panel, same as the default layout.
+//
+//   ┌──────── 11" ────────┐
+//   │   ┌─── 8" ───┐      │
+//   │   │  design  │ 11"  │
+//   │   └──────────┘      │ 17"
+//   │   ▌▌▌▐▐▌ SS-xxxx    │
+//   │                     │
+//   └─────────────────────┘
+async function composeStickerSheet(sourceImg, sourceW, sourceH, systemId, accessorySummary = '', sourceKey) {
+  const CANVAS_W = 3300, CANVAS_H = 5100;   // 11 × 17 in
+  const DESIGN_W = 2400, DESIGN_H = 3300;   // 8 × 11 in
+  const DESIGN_X = Math.round((CANVAS_W - DESIGN_W) / 2);
+  const DESIGN_Y = 0;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = CANVAS_W;
+  canvas.height = CANVAS_H;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  if (sourceW > sourceH) {
+    ctx.save();
+    ctx.translate(DESIGN_X + DESIGN_W / 2, DESIGN_Y + DESIGN_H / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(sourceImg, -DESIGN_H / 2, -DESIGN_W / 2, DESIGN_H, DESIGN_W);
+    ctx.restore();
+  } else {
+    ctx.drawImage(sourceImg, DESIGN_X, DESIGN_Y, DESIGN_W, DESIGN_H);
+  }
+
+  if (sourceKey !== 'back') {
+    // Same panel metrics as the default layout's bottom-left stamp.
+    const GAP = 60;               // design bottom edge → panel
+    const PANEL_PAD = 10;
+    const TEXT_FONT = 32;
+    const TEXT_H = TEXT_FONT + 8;
+    const TEXT_TO_BAR = 6;
+    const BARCODE_W = 350;
+    const BARCODE_H = 130;
+    const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
+    const panelX = DESIGN_X;
+    const panelY = DESIGN_Y + DESIGN_H + GAP;
+
+    ctx.fillStyle = '#000000';
+    ctx.font = `bold ${TEXT_FONT}px sans-serif`;
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.fillText(codeText, panelX + PANEL_PAD, panelY + PANEL_PAD);
+    ctx.drawImage(
+      generateBarcodeCanvas(systemId, 3),
+      panelX + PANEL_PAD,
+      panelY + PANEL_PAD + TEXT_H + TEXT_TO_BAR,
+      BARCODE_W,
+      BARCODE_H,
+    );
+  }
 
   const rawBlob = await canvasToBlob(canvas, 'image/png');
   return await setPngDpi(rawBlob, 300);
