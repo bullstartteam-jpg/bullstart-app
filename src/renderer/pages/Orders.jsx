@@ -261,6 +261,8 @@ export default function Orders({ source = 'normal' }) {
   const [recalcLoading, setRecalcLoading] = useState(false);
   const [recalcApplying, setRecalcApplying] = useState(false);
   const [recalcData, setRecalcData] = useState(null);
+  // false = ship only (Tính lại ship), true = full re-price (Tính lại giá).
+  const [recalcFull, setRecalcFull] = useState(false);
 
   // Bulk-Assign modal
   const [showAssign, setShowAssign] = useState(false);
@@ -1228,20 +1230,23 @@ export default function Orders({ source = 'normal' }) {
   // Shipping-only recalc on the SELECTED orders: preview the shipping diff,
   // then (on confirm) apply + refund the overpaid ones. Keeps print_cost — only
   // corrects shipping (e.g. a mis-priced variant). Per-select to avoid mass errors.
-  const openRecalc = async () => {
+  // full = true re-prices items + add-ons too (current tier of each seller).
+  const openRecalc = async (full = false) => {
+    const label = full ? 'Tính lại giá' : 'Tính lại ship';
     if (selected.length === 0) {
-      notify('Chọn ít nhất 1 đơn để tính lại ship.', { title: 'Tính lại ship', kind: 'info' });
+      notify(`Chọn ít nhất 1 đơn để ${label.toLowerCase()}.`, { title: label, kind: 'info' });
       return;
     }
+    setRecalcFull(full);
     setShowRecalc(true);
     setRecalcData(null);
     setRecalcLoading(true);
     try {
-      const res = await api.post('/orders/recalc-shipping/preview', { order_ids: selected });
+      const res = await api.post('/orders/recalc-shipping/preview', { order_ids: selected, full });
       setRecalcData(res.data);
     } catch (err) {
       setShowRecalc(false);
-      notify(err.response?.data?.message || 'Không tải được preview tính lại ship', { title: 'Lỗi', kind: 'error' });
+      notify(err.response?.data?.message || `Không tải được preview ${label.toLowerCase()}`, { title: 'Lỗi', kind: 'error' });
     } finally {
       setRecalcLoading(false);
     }
@@ -1251,16 +1256,18 @@ export default function Orders({ source = 'normal' }) {
     const rows = recalcData?.orders || [];
     if (rows.length === 0) return;
     const ok = await askConfirm(
-      `Tính lại shipping cho ${rows.length} đơn và hoàn $${Number(recalcData.total_refund).toFixed(2)} cho các đơn đã paid trả dư?\nGiữ nguyên print_cost; chỉ ghi đè shipping_cost + total_cost.`,
-      { title: 'Xác nhận tính lại ship & refund', okText: 'Áp dụng' }
+      recalcFull
+        ? `Tính lại giá (in + add-on + ship) cho ${rows.length} đơn theo tier hiện tại của seller và hoàn $${Number(recalcData.total_refund).toFixed(2)} cho các đơn đã paid trả dư?\nĐơn đã paid mà giá mới cao hơn: chỉ cập nhật total, không trừ thêm ví.`
+        : `Tính lại shipping cho ${rows.length} đơn và hoàn $${Number(recalcData.total_refund).toFixed(2)} cho các đơn đã paid trả dư?\nGiữ nguyên print_cost; chỉ ghi đè shipping_cost + total_cost.`,
+      { title: recalcFull ? 'Xác nhận tính lại giá & refund' : 'Xác nhận tính lại ship & refund', okText: 'Áp dụng' }
     );
     if (!ok) return;
     setRecalcApplying(true);
     try {
-      const res = await api.post('/orders/recalc-shipping/apply', { order_ids: rows.map(r => r.id) });
+      const res = await api.post('/orders/recalc-shipping/apply', { order_ids: rows.map(r => r.id), full: recalcFull });
       setShowRecalc(false);
       setSelected([]);
-      await notify(res.data.message, { title: 'Tính lại ship', kind: 'success' });
+      await notify(res.data.message, { title: recalcFull ? 'Tính lại giá' : 'Tính lại ship', kind: 'success' });
       fetchOrders();
       refreshUnpaidBanner();
     } catch (err) {
@@ -1374,12 +1381,22 @@ export default function Orders({ source = 'normal' }) {
           )}
           {isStaff && (
             <button
-              onClick={openRecalc}
+              onClick={() => openRecalc(false)}
               disabled={selected.length === 0}
               className="px-4 py-2 bg-cyan-100 hover:bg-cyan-200 disabled:opacity-50 text-cyan-700 text-sm rounded-lg transition-colors"
               title="Tính lại shipping_cost cho các đơn đã chọn theo bảng giá hiện tại, xem lệch và hoàn tiền đơn trả dư"
             >
               Tính lại ship{selected.length > 0 ? ` (${selected.length})` : ''}
+            </button>
+          )}
+          {isStaff && (
+            <button
+              onClick={() => openRecalc(true)}
+              disabled={selected.length === 0}
+              className="px-4 py-2 bg-indigo-100 hover:bg-indigo-200 disabled:opacity-50 text-indigo-700 text-sm rounded-lg transition-colors"
+              title="Tính lại toàn bộ giá (in + add-on + ship) của các đơn đã chọn theo tier hiện tại của seller, xem lệch và hoàn tiền đơn trả dư"
+            >
+              Tính lại giá{selected.length > 0 ? ` (${selected.length})` : ''}
             </button>
           )}
           <button onClick={openPayAll} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-sm rounded-lg transition-colors">
@@ -2215,9 +2232,12 @@ export default function Orders({ source = 'normal' }) {
       {showRecalc && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => !recalcApplying && setShowRecalc(false)}>
           <div className="bg-white rounded-xl shadow-2xl w-[860px] max-w-[95%] max-h-[85vh] flex flex-col p-5" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-neutral-800 mb-1">Tính lại shipping</h3>
+            <h3 className="text-base font-semibold text-neutral-800 mb-1">{recalcFull ? 'Tính lại giá' : 'Tính lại shipping'}</h3>
             <p className="text-xs text-neutral-500 mb-3">
-              Tính lại <span className="font-medium">shipping_cost</span> theo bảng giá hiện tại cho các đơn đã chọn (giữ nguyên print_cost). Đơn đã paid mà tổng mới thấp hơn sẽ được hoàn chênh lệch về ví (transaction type <span className="font-mono">refund</span>).
+              {recalcFull
+                ? <>Tính lại <span className="font-medium">giá in + add-on + shipping</span> theo bảng giá và <span className="font-medium">tier hiện tại</span> của seller cho các đơn đã chọn (đơn cancelled bỏ qua).</>
+                : <>Tính lại <span className="font-medium">shipping_cost</span> theo bảng giá hiện tại cho các đơn đã chọn (giữ nguyên print_cost).</>}
+              {' '}Đơn đã paid mà tổng mới thấp hơn sẽ được hoàn chênh lệch về ví (transaction type <span className="font-mono">refund</span>); cao hơn thì chỉ cập nhật total.
             </p>
 
             {recalcLoading && <p className="text-sm text-neutral-500 py-6 text-center">Đang tính lại…</p>}
@@ -2230,7 +2250,7 @@ export default function Orders({ source = 'normal' }) {
                     <div className="text-neutral-800 font-semibold">{recalcData.requested}</div>
                   </div>
                   <div className="bg-[#faf8f6] rounded-lg p-2 border border-neutral-200">
-                    <div className="text-neutral-500 text-xs">Lệch ship</div>
+                    <div className="text-neutral-500 text-xs">{recalcFull ? 'Lệch giá' : 'Lệch ship'}</div>
                     <div className="text-neutral-800 font-semibold">{recalcData.changed}</div>
                   </div>
                   <div className="bg-emerald-50 rounded-lg p-2 border border-emerald-200">
@@ -2240,7 +2260,7 @@ export default function Orders({ source = 'normal' }) {
                 </div>
 
                 {recalcData.orders.length === 0 ? (
-                  <p className="text-sm text-neutral-500 py-6 text-center">{recalcData.requested} đơn đã chọn — không đơn nào lệch shipping. Không cần làm gì.</p>
+                  <p className="text-sm text-neutral-500 py-6 text-center">{recalcData.requested} đơn đã chọn — không đơn nào lệch {recalcFull ? 'giá' : 'shipping'}. Không cần làm gì.</p>
                 ) : (
                   <div className="overflow-auto border border-neutral-200 rounded-lg flex-1">
                     <table className="w-full text-xs">
@@ -2248,6 +2268,7 @@ export default function Orders({ source = 'normal' }) {
                         <tr className="text-neutral-500 text-left">
                           <th className="px-2 py-1.5 font-medium">System ID</th>
                           <th className="px-2 py-1.5 font-medium">Seller</th>
+                          {recalcFull && <th className="px-2 py-1.5 font-medium text-right">In cũ→mới</th>}
                           <th className="px-2 py-1.5 font-medium text-right">Ship cũ</th>
                           <th className="px-2 py-1.5 font-medium text-right">Ship mới</th>
                           <th className="px-2 py-1.5 font-medium text-right">Total cũ→mới</th>
@@ -2260,6 +2281,12 @@ export default function Orders({ source = 'normal' }) {
                           <tr key={r.id} className="border-t border-neutral-100">
                             <td className="px-2 py-1.5 text-neutral-800 font-mono">{r.system_id}</td>
                             <td className="px-2 py-1.5 text-neutral-600">{r.user_name || `#${r.user_id}`}</td>
+                            {recalcFull && (
+                              <td className="px-2 py-1.5 text-right text-neutral-600" title={r.missing_addons?.length ? `Tier của seller không có giá add-on: ${r.missing_addons.join(', ')} — giữ giá cũ` : ''}>
+                                ${Number(r.old_print).toFixed(2)} → <span className={`font-medium ${r.new_print < r.old_print ? 'text-emerald-600' : r.new_print > r.old_print ? 'text-red-600' : 'text-neutral-800'}`}>${Number(r.new_print).toFixed(2)}</span>
+                                {r.missing_addons?.length > 0 && <span className="ml-1 text-amber-600">⚠</span>}
+                              </td>
+                            )}
                             <td className="px-2 py-1.5 text-right text-neutral-500">${Number(r.old_shipping).toFixed(2)}</td>
                             <td className={`px-2 py-1.5 text-right font-medium ${r.diff_shipping < 0 ? 'text-emerald-600' : r.diff_shipping > 0 ? 'text-red-600' : 'text-neutral-700'}`}>${Number(r.new_shipping).toFixed(2)}</td>
                             <td className="px-2 py-1.5 text-right text-neutral-600">${Number(r.old_total).toFixed(2)} → <span className="font-medium text-neutral-800">${Number(r.new_total).toFixed(2)}</span></td>
