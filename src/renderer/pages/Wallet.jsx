@@ -26,10 +26,14 @@ export default function Wallet() {
   const [activeTab, setActiveTab] = useState('deposits'); // 'deposits' | 'paid' | 'refunds'
   // Filter state — applies to both the table view and the CSV export.
   // Admin can pick a specific user; sellers only see their own (server enforces).
-  const [filters, setFilters] = useState({ user_id: '', date_from: '', date_to: '', search: '' });
+  const [filters, setFilters] = useState({ user_id: '', date_from: '', date_to: '', search: '', search_list: '' });
   // Separate text state so typing debounces into `filters.search` (which drives
   // the request) rather than firing a query on every keystroke.
   const [searchInput, setSearchInput] = useState('');
+  // Paste-a-list search (exact system_id / ref_id), edited in a modal.
+  const [showSearchList, setShowSearchList] = useState(false);
+  const [searchListInput, setSearchListInput] = useState('');
+  const countIds = (v) => String(v || '').split(/[\s,]+/).filter(Boolean).length;
   useEffect(() => {
     const t = setTimeout(() => {
       setFilters(f => (f.search === searchInput.trim() ? f : { ...f, search: searchInput.trim() }));
@@ -106,6 +110,7 @@ export default function Wallet() {
     if (filters.date_from) p.date_from = filters.date_from;
     if (filters.date_to)   p.date_to   = filters.date_to;
     if (filters.search)    p.search    = filters.search;
+    if (filters.search_list) p.search_list = filters.search_list;
     return p;
   };
 
@@ -136,7 +141,7 @@ export default function Wallet() {
       })
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, activeTab, filters.user_id, filters.date_from, filters.date_to, filters.search]);
+  }, [page, activeTab, filters.user_id, filters.date_from, filters.date_to, filters.search, filters.search_list]);
 
   const switchTab = (tab) => {
     if (tab === activeTab) return;
@@ -209,7 +214,7 @@ export default function Wallet() {
   // refunded by mistake.
   const [selectedTxIds, setSelectedTxIds] = useState(new Set());
   const [bulkRefunding, setBulkRefunding] = useState(false);
-  useEffect(() => { setSelectedTxIds(new Set()); }, [page, activeTab, filters.user_id, filters.date_from, filters.date_to, filters.search]);
+  useEffect(() => { setSelectedTxIds(new Set()); }, [page, activeTab, filters.user_id, filters.date_from, filters.date_to, filters.search, filters.search_list]);
 
   // A paid tx can be refunded only once — already-refunded rows (refunded_at
   // set, e.g. via the keep-history bulk refund) are excluded from selection.
@@ -523,6 +528,30 @@ export default function Wallet() {
             className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-sm min-w-[200px]"
           />
         </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => { setSearchListInput(filters.search_list); setShowSearchList(true); }}
+            className={`px-3 py-1.5 text-xs rounded ${
+              filters.search_list
+                ? 'bg-orange-100 text-orange-700 border border-orange-300'
+                : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
+            }`}
+            title="Dán danh sách system_id / ref_id (xuống dòng hoặc dấu phẩy)"
+          >
+            {filters.search_list ? `Search list (${countIds(filters.search_list)})` : 'Search List'}
+          </button>
+          {filters.search_list && (
+            <button
+              type="button"
+              onClick={() => { setFilters(f => ({ ...f, search_list: '' })); setPage(1); }}
+              className="px-1.5 py-1.5 text-xs text-neutral-500 hover:text-red-500"
+              title="Bỏ lọc theo list"
+            >
+              ✕
+            </button>
+          )}
+        </div>
         <div>
           <label className="block text-[10px] uppercase tracking-wider text-neutral-500 font-semibold mb-1">From</label>
           <input
@@ -541,9 +570,9 @@ export default function Wallet() {
             className="px-2 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded text-sm"
           />
         </div>
-        {(filters.user_id || filters.date_from || filters.date_to || filters.search) && (
+        {(filters.user_id || filters.date_from || filters.date_to || filters.search || filters.search_list) && (
           <button
-            onClick={() => { setFilters({ user_id: '', date_from: '', date_to: '', search: '' }); setSearchInput(''); setPage(1); }}
+            onClick={() => { setFilters({ user_id: '', date_from: '', date_to: '', search: '', search_list: '' }); setSearchInput(''); setPage(1); }}
             className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded"
           >
             Clear filters
@@ -703,6 +732,41 @@ export default function Wallet() {
       </div>
 
       <Pagination page={page} lastPage={meta.last_page} onChange={setPage} />
+
+      {showSearchList && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setShowSearchList(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-[560px] max-w-[95%] p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-neutral-800 mb-2">Search theo list system_id / ref_id</h3>
+            <p className="text-xs text-neutral-500 mb-3">
+              Dán system_id hoặc ref_id, cách nhau bằng <strong>xuống dòng</strong> hoặc <strong>dấu phẩy</strong>. Tìm khớp chính xác
+              (ô <span className="font-mono">Search</span> bên cạnh tìm gần đúng). Áp dụng cho tab đang mở và cả Export CSV.
+            </p>
+            <textarea
+              value={searchListInput}
+              onChange={e => setSearchListInput(e.target.value)}
+              placeholder="PS_C3071&#10;CCS8089&#10;5782901234567&#10;..."
+              rows={10}
+              className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm font-mono"
+            />
+            <div className="text-xs text-neutral-500 mt-2">
+              Detected: <span className="font-semibold">{countIds(searchListInput)}</span> mã
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setShowSearchList(false)} className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Cancel</button>
+              <button
+                onClick={() => {
+                  setFilters(f => ({ ...f, search_list: searchListInput.trim() }));
+                  setPage(1);
+                  setShowSearchList(false);
+                }}
+                className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
