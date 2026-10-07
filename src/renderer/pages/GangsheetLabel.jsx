@@ -27,6 +27,7 @@ export default function GangsheetLabel({ source = 'normal' }) {
   const [mergeProgress, setMergeProgress] = useState(null);   // {done, total, system_id}
   const [mergeResult, setMergeResult] = useState(null);       // last merged label info
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [remerging, setRemerging] = useState(false);
   const [sidText, setSidText] = useState('');
 
   const fetch = async () => {
@@ -145,7 +146,7 @@ export default function GangsheetLabel({ source = 'normal' }) {
    * GSL, build the merged PDF, upload to B2, and save file_url back. Used by
    * both the merge-selected-labels flow and the merge-from-system_ids flow.
    */
-  const finishMerge = async (merged, scanCode, orderIds) => {
+  const finishMerge = async (merged, scanCode, orderIds, phase = 'Building merged PDF') => {
     const scanUrl = `${scanBase}/gs/${scanCode}`;
 
     const showRes = await api.get(`/gangsheet-labels/${merged.id}`);
@@ -156,7 +157,7 @@ export default function GangsheetLabel({ source = 'normal' }) {
       orders,
       scanUrl,
       name: merged.name,
-      onProgress: (p) => setMergeProgress(p),
+      onProgress: (p) => setMergeProgress({ ...p, phase }),
     });
 
     const credsRes = await api.get('/gangsheets/storage-credentials');
@@ -184,7 +185,50 @@ export default function GangsheetLabel({ source = 'normal' }) {
       skipped: built.skipped,
     });
     fetch();
-    return { publicUrl, orders };
+    return { publicUrl, orders, skipped: built.skipped };
+  };
+
+  /**
+   * Ghép lại: rebuild each selected label's PDF in place (same GSL id and
+   * scan code) straight from the orders' existing convert_label, and
+   * overwrite its file_url. Never touches shipping_label.
+   */
+  const handleRemerge = async (labels) => {
+    if (labels.length === 0) return;
+    if (!window.electronAPI?.s3Upload) { alert('Cần mở từ desktop app để upload PDF lên B2.'); return; }
+    if (!confirm(`Ghép lại PDF cho ${labels.length} gangsheet label từ convert_label hiện có?`)) return;
+
+    setRemerging(true);
+    setMergeProgress(null);
+    setMergeResult(null);
+    const failed = [];
+    try {
+      for (const label of labels) {
+        const showRes = await api.get(`/gangsheet-labels/${label.id}`);
+        const { scan_code: scanCode, orders = [] } = showRes.data;
+        if (orders.length === 0) { failed.push(`GSL${label.id}: 0 order`); continue; }
+
+        const { skipped } = await finishMerge(
+          { id: label.id, name: showRes.data.gangsheet_label?.name || label.name },
+          scanCode,
+          orders.map(o => o.id),
+          `Ghép lại PDF GSL${label.id}`,
+        );
+        failed.push(...skipped.map(x => `GSL${label.id} · ${x}`));
+      }
+      setSelectedIds(new Set());
+      if (failed.length) {
+        alert(`Bỏ qua ${failed.length} đơn:\n${failed.slice(0, 15).join('\n')}${failed.length > 15 ? '\n…' : ''}`);
+      }
+    } catch (err) {
+      const detail = err?.response?.data?.message || err?.message || 'Failed';
+      const status = err?.response?.status ? ` [HTTP ${err.response.status}]` : '';
+      console.error('[remerge] error', err);
+      alert(`Ghép lại failed${status}:\n${detail}`);
+    } finally {
+      setRemerging(false);
+      setMergeProgress(null);
+    }
   };
 
   /** Build a gangsheet label PDF straight from a pasted list of system_ids. */
@@ -246,6 +290,14 @@ export default function GangsheetLabel({ source = 'normal' }) {
             {merging ? 'Merging…' : `⤵ Merge selected (${selectedIds.size})`}
           </button>
           <button
+            onClick={() => handleRemerge(data.data.filter(l => selectedIds.has(l.id)))}
+            disabled={merging || remerging || selectedIds.size === 0}
+            title="Build lại PDF của các label đã chọn từ convert_label hiện có (giữ nguyên GSL + scan code)"
+            className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-sm rounded-lg"
+          >
+            {remerging ? 'Ghép lại…' : `↻ Ghép lại (${selectedIds.size})`}
+          </button>
+          <button
             onClick={handleBulkDelete}
             disabled={bulkDeleting || selectedIds.size === 0}
             title="Xoá nhiều gangsheet label đã chọn"
@@ -260,7 +312,7 @@ export default function GangsheetLabel({ source = 'normal' }) {
       {/* Merge progress + result */}
       {mergeProgress && (
         <div className="bg-white rounded-xl border border-orange-200 p-3 shadow-sm text-sm">
-          <div className="font-medium text-orange-700 mb-1">Building merged PDF…</div>
+          <div className="font-medium text-orange-700 mb-1">{mergeProgress.phase || 'Building merged PDF'}…</div>
           <div className="text-xs text-neutral-600">
             Page {mergeProgress.done}/{mergeProgress.total}
             {mergeProgress.system_id && <> · <span className="font-mono text-orange-600">{mergeProgress.system_id}</span></>}
@@ -273,7 +325,7 @@ export default function GangsheetLabel({ source = 'normal' }) {
       {mergeResult && (
         <div className="bg-white rounded-xl border border-green-200 p-4 shadow-sm text-sm">
           <div className="font-semibold text-green-700 mb-1">
-            ✓ Merged label GSL{mergeResult.id} created — {mergeResult.orderCount} order(s), {mergeResult.pageCount} page(s)
+            ✓ Label GSL{mergeResult.id} built — {mergeResult.orderCount} order(s), {mergeResult.pageCount} page(s)
           </div>
           <div className="text-xs text-neutral-600 space-y-1">
             <div>
@@ -400,6 +452,12 @@ export default function GangsheetLabel({ source = 'normal' }) {
                     {l.file_url && (
                       <a href={l.file_url} target="_blank" rel="noreferrer" className="text-xs text-orange-600 hover:text-orange-700">PDF</a>
                     )}
+                    <button
+                      onClick={() => handleRemerge([l])}
+                      disabled={merging || remerging}
+                      title="Build lại PDF từ convert_label hiện có"
+                      className="px-2 py-1 bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white text-xs rounded"
+                    >Ghép lại</button>
                     {l.status !== 'completed' && (
                       <button onClick={() => completeAll(l.id)} className="px-2 py-1 bg-green-500 hover:bg-green-600 text-white text-xs rounded">Complete all</button>
                     )}
