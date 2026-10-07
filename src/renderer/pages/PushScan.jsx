@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
-import { notify, askConfirm } from '../components/Dialog';
+import { notify, askConfirm, askChoice } from '../components/Dialog';
 import { buildPushScanLabelPdf } from '../services/pushScanLabelBuilder';
 
 // push_trackings.status
@@ -36,19 +36,19 @@ const Pill = ({ s }) => <span className={`px-2 py-0.5 rounded text-[11px] font-s
  * flips them to "run" once the order is in transit.
  */
 export default function PushScan() {
-  const [tab, setTab] = useState('orders'); // 'orders' | 'merged'
+  const [tab, setTab] = useState('orders'); // 'orders' | 'merged' | 'stale'
   return (
     <div className="p-6">
       <h2 className="text-xl font-bold text-neutral-800 mb-4">Push Scan</h2>
       <div className="flex gap-2 mb-4">
-        {[['orders', 'Đơn push scan'], ['merged', 'Merged labels']].map(([id, label]) => (
+        {[['orders', 'Đơn push scan'], ['merged', 'Merged labels'], ['stale', 'Cần chú ý']].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)}
             className={`px-4 py-2 text-sm rounded-lg ${tab === id ? 'bg-orange-500 text-white' : 'bg-white border border-neutral-200 text-neutral-600'}`}>
             {label}
           </button>
         ))}
       </div>
-      {tab === 'orders' ? <PushOrders /> : <MergedLabels />}
+      {tab === 'orders' ? <PushOrders /> : tab === 'merged' ? <MergedLabels /> : <StaleOrders />}
     </div>
   );
 }
@@ -248,6 +248,36 @@ function MergedLabels() {
     }
   };
 
+  // Delete the label and drop its orders from push scan (as if never pushed).
+  // The operator picks whether the push-scan fee goes back to the seller.
+  const deleteLabel = async (row) => {
+    const choice = await askChoice(
+      [
+        `Xoá merged label #${row.id}?`,
+        `${row.push_trackings_count} đơn sẽ bị BỎ khỏi push scan (kể cả đơn đã run) — như chưa từng push.`,
+        '',
+        'Hoàn phí: trừ phí push scan khỏi total đơn; đơn đã trả tiền thì hoàn phần đó về ví seller.',
+        'Giữ phí: đơn vẫn giữ phí push scan đã tính.',
+      ].join('\n'),
+      {
+        title: 'Xoá merged label',
+        cancelText: 'Không',
+        choices: [
+          { value: 'keep', label: 'Xoá · giữ phí', className: 'bg-neutral-500 hover:bg-neutral-600' },
+          { value: 'refund', label: 'Xoá · hoàn phí', className: 'bg-red-500 hover:bg-red-600' },
+        ],
+      },
+    );
+    if (!choice) return;
+    try {
+      const res = await api.delete(`/push-scan/merged-labels/${row.id}`, { params: { refund: choice === 'refund' ? 1 : 0 } });
+      notify(res.data.message, { title: 'Xoá merged label', kind: 'success' });
+      fetchRows();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Xoá thất bại', { title: 'Xoá merged label', kind: 'error' });
+    }
+  };
+
   const copyLink = async (url) => {
     try {
       await navigator.clipboard.writeText(url);
@@ -318,6 +348,147 @@ function MergedLabels() {
                     title="Trả các đơn của merged label này về pending">
                     Huỷ scan
                   </button>
+                  <button onClick={() => deleteLabel(r)}
+                    className="ml-1 px-2 py-1 bg-red-500 hover:bg-red-600 text-white text-xs rounded-lg whitespace-nowrap"
+                    title="Xoá label và bỏ các đơn khỏi push scan">
+                    Xoá
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// "Cần chú ý": orders created > 1.5 days ago but still stuck at pre_shipment /
+// accepted — the label exists yet USPS hasn't really moved the package. Staff
+// can (re)push scan them straight from here.
+function StaleOrders() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState([]);
+  const [pushing, setPushing] = useState(false);
+
+  const fetchRows = () => {
+    setLoading(true);
+    api.get('/push-scan/stale', { params: { search: search || undefined, per_page: 500 } })
+      .then(res => setRows(res.data.data || []))
+      .catch(err => notify(err.response?.data?.message || 'Load failed', { title: 'Cần chú ý', kind: 'error' }))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { setSelected([]); fetchRows(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Only orders not already queued in push_trackings can be (re)pushed.
+  const selectable = rows.filter(r => !r.already_pushed);
+  const toggle = (id) => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  const toggleAll = () => setSelected(s => s.length === selectable.length ? [] : selectable.map(r => r.id));
+
+  const ageDays = (iso) => iso ? ((Date.now() - new Date(iso).getTime()) / 86400000).toFixed(1) : '?';
+
+  const handlePush = async () => {
+    const ids = selected.filter(id => selectable.some(r => r.id === id));
+    if (ids.length === 0) return;
+    const mode = await askChoice(
+      [`Push scan ${ids.length} đơn để run tracking ngay?`, '', 'Tính phí: cộng phí push scan vào đơn.', 'Free: push scan không thu phí.'].join('\n'),
+      {
+        title: 'Push scan — tính phí hay free?',
+        cancelText: 'Huỷ',
+        choices: [
+          { value: 'charge', label: 'Tính phí', className: 'bg-orange-500 hover:bg-orange-600' },
+          { value: 'free', label: 'Free', className: 'bg-neutral-500 hover:bg-neutral-600' },
+        ],
+      },
+    );
+    if (!mode) return;
+    setPushing(true);
+    try {
+      const res = await api.post('/orders/push-scan', { order_ids: ids, free: mode === 'free' });
+      const failed = (res.data.results || []).filter(r => !r.ok).map(r => r.message);
+      notify([res.data.message, ...failed].join('\n'), { title: 'Push scan', kind: failed.length ? 'info' : 'success' });
+      setSelected([]);
+      fetchRows();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Push scan failed', { title: 'Push scan', kind: 'error' });
+    } finally {
+      setPushing(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2 items-center">
+        <input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && fetchRows()}
+          placeholder="System ID / Ref ID / Tracking…" className="px-3 py-2 bg-white border border-neutral-200 rounded-lg text-sm w-64" />
+        <button onClick={fetchRows} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Tìm</button>
+        <span className="text-xs text-neutral-500">Quá 1.5 ngày còn pre-shipment / accepted · {rows.length} đơn</span>
+        <div className="ml-auto">
+          <button onClick={handlePush} disabled={pushing || selected.length === 0}
+            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+            {pushing ? 'Đang push…' : `Push scan (${selected.length})`}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-neutral-200 overflow-x-auto shadow-sm">
+        <table className="w-full text-sm">
+          <thead className="bg-[#faf8f6] text-left text-xs text-neutral-500">
+            <tr>
+              <th className="p-2 w-8">
+                <input type="checkbox" checked={selectable.length > 0 && selected.length === selectable.length} onChange={toggleAll} disabled={selectable.length === 0} className="accent-orange-500" />
+              </th>
+              <th className="p-2">System ID</th>
+              <th className="p-2">Ref ID</th>
+              <th className="p-2">Seller</th>
+              <th className="p-2">Tracking</th>
+              <th className="p-2">Shipping label</th>
+              <th className="p-2 text-right">Tuổi (ngày)</th>
+              <th className="p-2">Tạo lúc</th>
+              <th className="p-2">Push scan</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan="9" className="p-6 text-center text-neutral-400">Loading…</td></tr>
+            ) : rows.length === 0 ? (
+              <tr><td colSpan="9" className="p-6 text-center text-neutral-400">Không có đơn nào quá hạn.</td></tr>
+            ) : rows.map(r => (
+              <tr key={r.id} className="border-t border-neutral-100">
+                <td className="p-2">
+                  {!r.already_pushed && <input type="checkbox" checked={selected.includes(r.id)} onChange={() => toggle(r.id)} className="accent-orange-500" />}
+                </td>
+                <td className="p-2 font-mono text-xs text-orange-600">{r.system_id}</td>
+                <td className="p-2 text-xs">{r.ref_id || '—'}</td>
+                <td className="p-2 text-xs">{r.user?.name || '—'}</td>
+                <td className="p-2 text-xs">
+                  <div className="font-mono">{r.tracking_id || '—'}</div>
+                  {r.tracking?.status && (
+                    <span
+                      className={`inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold ${TRACKING_COLOR[r.tracking.status] || TRACKING_COLOR.unknown}`}
+                      title={[
+                        r.tracking.status_description,
+                        r.tracking.last_event_at && `Event: ${new Date(r.tracking.last_event_at).toLocaleString()}`,
+                        r.tracking.checked_at && `Quét lúc: ${new Date(r.tracking.checked_at).toLocaleString()}`,
+                      ].filter(Boolean).join('\n')}
+                    >
+                      {r.tracking.status.replace(/_/g, ' ')}
+                    </span>
+                  )}
+                </td>
+                <td className="p-2 text-xs">
+                  {r.shipping_label
+                    ? <a href={r.shipping_label} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Xem</a>
+                    : <span className="text-red-500">Không có</span>}
+                </td>
+                <td className="p-2 text-right tabular-nums font-semibold text-orange-600">{ageDays(r.created_at)}</td>
+                <td className="p-2 text-xs text-neutral-500">{new Date(r.created_at).toLocaleString()}</td>
+                <td className="p-2 text-xs">
+                  {r.already_pushed
+                    ? <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-700">Đã push</span>
+                    : <span className="text-neutral-400">—</span>}
                 </td>
               </tr>
             ))}

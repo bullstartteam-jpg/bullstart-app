@@ -13,7 +13,7 @@ export default function ProductDetail() {
   const [variantForm, setVariantForm] = useState({ sku: '', color: '', size: '', paper_type: '', weight: '', length: '', width: '', height: '' });
   const [showVariantForm, setShowVariantForm] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ name: '', style: '', line_id: '', order_type: '', status: 1 });
+  const [editForm, setEditForm] = useState({ name: '', style: '', line_id: '', order_type: '', status: 1, customs_description: '', hs_tariff_number: '', origin_country: '', customs_value: '' });
   const [orderTypes, setOrderTypes] = useState([]);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
@@ -25,7 +25,7 @@ export default function ProductDetail() {
   const fetchProduct = () => {
     api.get(`/products/${id}`).then(res => {
       setProduct(res.data.product);
-      setEditForm({ name: res.data.product.name, style: res.data.product.style || '', line_id: res.data.product.line_id || '', order_type: res.data.product.order_type || '', status: res.data.product.status });
+      setEditForm({ name: res.data.product.name, style: res.data.product.style || '', line_id: res.data.product.line_id || '', order_type: res.data.product.order_type || '', status: res.data.product.status, customs_description: res.data.product.customs_description || '', hs_tariff_number: res.data.product.hs_tariff_number || '', origin_country: res.data.product.origin_country || '', customs_value: res.data.product.customs_value ?? '' });
     }).finally(() => setLoading(false));
   };
 
@@ -204,6 +204,27 @@ export default function ProductDetail() {
                   <option value={1}>Active</option>
                   <option value={0}>Inactive</option>
                 </select>
+              </div>
+            </div>
+            <div className="pt-3 mt-1 border-t border-neutral-100">
+              <p className="text-xs font-semibold text-neutral-600 mb-2">Thuế quan (hàng quốc tế) — dùng khi mua label Shippo đi nước ngoài</p>
+              <div className="grid grid-cols-4 gap-3">
+                <div>
+                  <label className="text-xs text-neutral-500">Mô tả khai (EN)</label>
+                  <input value={editForm.customs_description} onChange={e => setEditForm({ ...editForm, customs_description: e.target.value })} placeholder="vd: Cotton T-Shirt" maxLength={120} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs text-neutral-500">Mã HS (tariff)</label>
+                  <input value={editForm.hs_tariff_number} onChange={e => setEditForm({ ...editForm, hs_tariff_number: e.target.value })} placeholder="vd: 6109.10" maxLength={32} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm font-mono" />
+                </div>
+                <div>
+                  <label className="text-xs text-neutral-500">Nước sản xuất</label>
+                  <input value={editForm.origin_country} onChange={e => setEditForm({ ...editForm, origin_country: e.target.value.toUpperCase() })} placeholder="vd: US" maxLength={2} className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm font-mono uppercase" />
+                </div>
+                <div>
+                  <label className="text-xs text-neutral-500">Giá khai/cái (tùy chọn)</label>
+                  <input type="number" step="0.01" min="0" value={editForm.customs_value} onChange={e => setEditForm({ ...editForm, customs_value: e.target.value })} placeholder="mặc định = giá item" className="w-full mt-1 px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-neutral-800 text-sm" />
+                </div>
               </div>
             </div>
             <div className="flex gap-2">
