@@ -361,7 +361,7 @@ function canvasToBlob(canvas, type = 'image/png') {
  *   { blob, filename, linePrefix, firstSid, lastSid, ordersInChunk, metasUsed,
  *     orderIds, metaIds }
  */
-export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0, pageFormat = 'letter', collectPages = false } = {}) {
+export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0, pageFormat = 'letter', collectPages = false, transparent = false } = {}) {
   if (!orders.length) throw new Error('Empty chunk');
 
   const records = flattenQrMetas(orders, { includeProduced });
@@ -401,15 +401,19 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
   for await (const { rec, img } of withPrefetchedImages(records)) {
 
     if (native) {
-      // Page = the design's own size; draw 1:1 on a white backing, no marks/gap.
+      // Page = the design's own size; draw 1:1, no marks/gap. White backing
+      // unless `transparent` (Sticker Sheet): then the page keeps the _qr's
+      // own alpha, so only the design + barcode panel print.
       const w = img.naturalWidth || img.width;
       const h = img.naturalHeight || img.height;
       const c = document.createElement('canvas');
       c.width = w;
       c.height = h;
       const cx = c.getContext('2d');
-      cx.fillStyle = '#ffffff';
-      cx.fillRect(0, 0, w, h);
+      if (!transparent) {
+        cx.fillStyle = '#ffffff';
+        cx.fillRect(0, 0, w, h);
+      }
       cx.drawImage(img, 0, 0, w, h);
 
       const blob = await canvasToBlob(c, 'image/png');

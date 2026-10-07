@@ -54,7 +54,7 @@ export function DialogHost() {
   const accent = top.kind === 'error' ? 'text-red-600' : top.kind === 'success' ? 'text-green-600' : 'text-neutral-800';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => top.type === 'confirm' ? close(false) : top.type === 'choice' ? close(null) : close(true)}>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => top.type === 'confirm' ? close(false) : top.type === 'choice' ? close(null) : close(true)}>
       <div className="bg-white rounded-xl shadow-2xl w-[420px] max-w-[90%] p-5" onClick={e => e.stopPropagation()}>
         <h3 className={`text-base font-semibold mb-2 ${accent}`}>{top.title}</h3>
         <div className="text-sm text-neutral-700 whitespace-pre-line mb-4">{top.message}</div>

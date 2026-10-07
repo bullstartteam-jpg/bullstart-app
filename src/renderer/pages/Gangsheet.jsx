@@ -9,7 +9,7 @@ import {
   fetchResizeTargets, reconvertResizeItems,
 } from '../services/converter';
 import Pagination from '../components/Pagination';
-import { notify } from '../components/Dialog';
+import { notify, askConfirm } from '../components/Dialog';
 
 // fulfill_status (order.status) options relevant to ganging (exclude shipped).
 const STATUS_OPTIONS = [
@@ -443,6 +443,16 @@ function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY), includeProd
   };
 }
 
+// One copy of `order` per _qr meta, each carrying only that meta, so the
+// builder emits exactly one page. Used to give every Sticker Sheet _qr its
+// own gang.
+function splitOrderPerQr(order, { includeProduced = false } = {}) {
+  return flattenQrMetas([order], { includeProduced }).map(({ item, meta }) => ({
+    ...order,
+    items: [{ ...item, metas: [meta] }],
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // Shared gang routing — used by BOTH Compose and Find / Re-gang so a re-gang
 // lands on exactly the same sheets the first run would have produced.
@@ -451,8 +461,8 @@ function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY), includeProd
 //   card skin (convert layout 'outside') → tiled Letter sheet, grouped by
 //                                          order_type × chip, 3 orders/chunk
 //   pass sleeve (convert layout 'sleeve') → 6 distinct designs per Letter sheet
-//   sticker sheet ('sticker_sheet')      → one 11×17 page per _qr, grouped by
-//                                          order_type
+//   sticker sheet ('sticker_sheet')      → one gang per _qr, a single page at
+//                                          the _qr's own size (11×17)
 //   keep-native variant size (5x5)       → native-size gang, grouped by size
 //   everything else                      → the bucket flow (side + the chosen
 //                                          product/addon/material dimensions)
@@ -476,17 +486,13 @@ function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includePro
 
   const chunks = [];
 
-  // Sticker Sheet: the _qr is already the full 11×17 sheet, so each one goes
-  // out as its own page at its own size — the native builder does exactly that.
-  const stickerGroups = new Map();   // order_type → orders[]
+  // Sticker Sheet: the _qr is already the full 11×17 sheet, so every _qr is a
+  // gang of its own — one page at the _qr's own size (native builder). An
+  // order with quantity 2 yields two gangs. batchSize does not apply.
   for (const o of stickerOrders) {
-    const ot = orderOrderType(o) || 'sticker-sheet';
-    if (!stickerGroups.has(ot)) stickerGroups.set(ot, []);
-    stickerGroups.get(ot).push(o);
-  }
-  for (const [ot, ords] of stickerGroups) {
-    for (const chunk of chunkArray(ords, batchSize)) {
-      chunks.push({ chunk, suffix: slugifyAccessory(ot) || 'sticker-sheet', tiled: false, native: true });
+    const suffix = slugifyAccessory(orderOrderType(o)) || 'sticker-sheet';
+    for (const single of splitOrderPerQr(o, { includeProduced })) {
+      chunks.push({ chunk: [single], suffix, tiled: false, native: true, sticker: true });
     }
   }
 
@@ -649,12 +655,13 @@ function chunkPageFormat({ tiled, sleeve, native }) {
 }
 
 /** Build one routed chunk into a PDF with the builder its branch calls for. */
-function buildChunkPdf({ chunk, suffix, tiled, sleeve, native }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
+function buildChunkPdf({ chunk, suffix, tiled, sleeve, native, sticker }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
   const opts = { linePrefix, nameSuffix: suffix, seq, includeProduced, collectPages, onProgress };
   if (sleeve) return buildSleeveGangsheet(chunk, opts);
   return tiled
     ? buildTiledGangsheet(chunk, opts)
-    : buildGangsheetForChunk(chunk, { ...opts, pageFormat: chunkPageFormat({ tiled, sleeve, native }) });
+    // Sticker Sheet pages keep the _qr's transparency — no white backing.
+    : buildGangsheetForChunk(chunk, { ...opts, pageFormat: chunkPageFormat({ tiled, sleeve, native }), transparent: !!sticker });
 }
 
 // Gang PDF page-format selector (shared, persisted per machine in localStorage).
@@ -2253,10 +2260,17 @@ function gangCategory(filename) {
 const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Khác';
 
 function ManageTab({ isAdmin, source = 'normal' }) {
-  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, no_partner: false, page: 1 });
+  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, no_partner: false, created_by: '', page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
+  // Options for the "Người tạo" filter — everyone who has built a gang here.
+  const [creators, setCreators] = useState([]);
+  useEffect(() => {
+    api.get('/gangsheets/creators', { params: source !== 'normal' ? { source } : {} })
+      .then(res => setCreators(res.data || []))
+      .catch(() => {});
+  }, [source]);
   // Bulk-select state for the Manage tab. Reset whenever the visible page
   // changes so a hidden selection can't survive a page flip.
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -2266,6 +2280,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
   const [bulkReconverting, setBulkReconverting] = useState(false);
   const [partnerModal, setPartnerModal] = useState(null);   // gang being assigned to partners
   const [bulkPartnerOpen, setBulkPartnerOpen] = useState(false);
+  const [dupOpen, setDupOpen] = useState(false);   // "Xoá gang trùng" confirm list
   const [regangId, setRegangId] = useState(null);
   const [regangProgress, setRegangProgress] = useState(null);
   const [bulkRegang, setBulkRegang] = useState(null);
@@ -2354,6 +2369,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
       if (filters.page_format) params.page_format = filters.page_format;
       if (filters.unshipped) params.unshipped = 1;
       if (filters.no_partner) params.no_partner = 1;
+      if (filters.created_by) params.created_by = filters.created_by;
       const res = await api.get('/gangsheets', { params });
       setList(res.data);
       setSelectedIds(new Set()); // reset on every re-fetch
@@ -2361,7 +2377,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchList(); }, [filters.page, filters.page_format, filters.unshipped, filters.no_partner]);
+  useEffect(() => { fetchList(); }, [filters.page, filters.page_format, filters.unshipped, filters.no_partner, filters.created_by]);
 
   // Category chips + filtered rows (client-side, on the current page).
   const catCounts = {};
@@ -2436,7 +2452,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
    */
   const regangOne = async (g, { skipMissing = false, onProgress, creds: given } = {}) => {
     const src = await api.get(`/gangsheets/${g.id}/rebuild-source`);
-    const orders = src.data?.orders || [];
+    let orders = src.data?.orders || [];
     const missing = src.data?.missing || [];
     if (orders.length === 0) throw new Error('Gang không còn đơn nào để dựng lại');
     if (missing.length > 0 && !skipMissing && !confirm(
@@ -2452,11 +2468,21 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     const tiled = layout === 'outside';
     const native = !tiled && (layout === 'sticker_sheet' || orders.some(orderIsNative));
 
+    // A Sticker Sheet gang holds ONE _qr, but rebuild-source returns every _qr
+    // of its orders — keep only the metas this gang actually printed.
+    if (layout === 'sticker_sheet' && Array.isArray(g.meta_ids) && g.meta_ids.length) {
+      const keep = new Set(g.meta_ids.map(Number));
+      orders = orders.map(o => ({
+        ...o,
+        items: (o.items || []).map(it => ({ ...it, metas: (it.metas || []).filter(m => keep.has(Number(m.id))) })),
+      }));
+    }
+
     // Reproduce the old name: same batch sequence, same category suffix. Only
     // the date and the counts move, and those follow the rebuild.
     const { seq, suffix } = parseGangName(g.filename);
     const built = await buildChunkPdf(
-      { chunk: orders, suffix, tiled, native },
+      { chunk: orders, suffix, tiled, native, sticker: layout === 'sticker_sheet' },
       {
         seq,
         linePrefix: g.line_id || dominantLineId(orders),
@@ -2663,7 +2689,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     fetchList();
   };
   const clearFilters = () => {
-    setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, no_partner: false, page: 1 });
+    setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, no_partner: false, created_by: '', page: 1 });
     setTimeout(fetchList, 0);
   };
 
@@ -2718,6 +2744,15 @@ function ManageTab({ isAdmin, source = 'normal' }) {
           <textarea value={filters.line_id} onChange={e => setFilters(f => ({ ...f, line_id: e.target.value }))} rows={1}
             placeholder="e.g. GC, PS_C3071, PS_C3405"
             className="mt-1 w-64 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono resize-y align-bottom" />
+        </div>
+        <div>
+          <label className="text-xs text-neutral-500 block">Người tạo</label>
+          <select value={filters.created_by}
+            onChange={e => setFilters(f => ({ ...f, created_by: e.target.value, page: 1 }))}
+            className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+            <option value="">Tất cả</option>
+            {creators.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
         </div>
         <button type="submit" className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Apply</button>
         <button type="button" onClick={clearFilters} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Clear</button>
@@ -2806,6 +2841,16 @@ function ManageTab({ isAdmin, source = 'normal' }) {
             title="Xoá mọi gang được tạo quá 7 ngày (theo kênh hiện tại)"
           >
             {clearingOld ? 'Clearing…' : 'Clear gang > 1 tuần'}
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setDupOpen(true)}
+            className="px-3 py-1.5 bg-white border border-red-300 hover:bg-red-50 text-red-700 text-sm rounded-lg"
+            title="Tìm các gang in trùng _qr với gang khác, xem lại rồi xác nhận xoá"
+          >
+            Xoá gang trùng
           </button>
         )}
         <span className="text-xs text-neutral-500 ml-auto">
@@ -3019,7 +3064,8 @@ function ManageTab({ isAdmin, source = 'normal' }) {
         onChange={(p) => setFilters(f => ({ ...f, page: p }))}
       />
 
-      {detail && <DetailModal gs={detail} onClose={() => setDetail(null)} />}
+      {detail && <DetailModal gs={detail} onClose={() => setDetail(null)} onChanged={fetchList} />}
+      {dupOpen && <DuplicateCleanupModal source={source} onClose={() => setDupOpen(false)} onDeleted={fetchList} />}
       {partnerModal && <PartnerAssignModal gs={partnerModal} onClose={() => setPartnerModal(null)} onSaved={fetchList} />}
       {bulkPartnerOpen && (
         <PartnerBulkAssignModal
@@ -3032,14 +3078,40 @@ function ManageTab({ isAdmin, source = 'normal' }) {
   );
 }
 
-function DetailModal({ gs, onClose }) {
+function DetailModal({ gs, onClose, onChanged }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);   // order being un-produced
 
+  const load = () => api.get(`/gangsheets/${gs.id}`).then(res => setData(res.data));
   useEffect(() => {
     setLoading(true);
-    api.get(`/gangsheets/${gs.id}`).then(res => setData(res.data)).finally(() => setLoading(false));
+    load().finally(() => setLoading(false));
   }, [gs.id]);
+
+  // Send one order back to the gang queue: its _qr from this gang and the
+  // order go production=false, and it leaves this gang + its label.
+  const unproduce = async (o) => {
+    const ok = await askConfirm(
+      `Xoá production đơn ${o.system_id}?\n`
+      + '• Đơn và các _qr của nó trong gang này về lại hàng chờ tạo gang.\n'
+      + '• Đơn bị gỡ khỏi gang và label của gang.\n'
+      + '• File PDF của gang vẫn còn trang này cho tới khi Rebuild.',
+      { title: 'Xoá production', okText: 'Xoá production' },
+    );
+    if (!ok) return;
+    setBusyId(o.id);
+    try {
+      const res = await api.post(`/gangsheets/${gs.id}/orders/${o.id}/unproduce`);
+      notify(res.data?.message || 'Đã xoá production', { title: 'Xoá production', kind: 'success' });
+      await load();
+      onChanged?.();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Xoá production thất bại', { title: 'Xoá production', kind: 'error' });
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   return (
     <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
@@ -3073,6 +3145,7 @@ function DetailModal({ gs, onClose }) {
                       <th className="py-2 text-left">User</th>
                       <th className="py-2 text-right">Total</th>
                       <th className="py-2 text-right">Status</th>
+                      <th className="py-2"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3083,6 +3156,13 @@ function DetailModal({ gs, onClose }) {
                         <td className="py-1.5 text-xs">{o.user?.name || '-'}</td>
                         <td className="py-1.5 text-right">${o.total_cost}</td>
                         <td className="py-1.5 text-right text-xs">{o.status}</td>
+                        <td className="py-1.5 pl-3 text-right">
+                          <button onClick={() => unproduce(o)} disabled={busyId !== null}
+                            className="px-2 py-0.5 text-[11px] rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 whitespace-nowrap"
+                            title="Đưa đơn về hàng chờ tạo gang và gỡ khỏi gang này">
+                            {busyId === o.id ? '…' : 'Xoá production'}
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -3236,6 +3316,142 @@ function PartnerBulkAssignModal({ gangs, onClose, onSaved }) {
             className="px-4 py-1.5 bg-purple-500 hover:bg-purple-600 disabled:opacity-40 text-white text-sm rounded-lg">
             {saving ? `Đang lưu ${progress?.done ?? 0}/${progress?.total ?? gangs.length}…` : 'Lưu'}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// "Xoá gang trùng": every group of gangs that print the same _qr (hub
+// /gangsheets/duplicates), with the hub's suggestion pre-ticked — keep the
+// newest, delete an older gang only when everything it prints is on a kept
+// one. The operator reviews, untick/ticks, then confirms; deletion is the
+// normal bulk-delete (soft, orders/metas stay production).
+function DuplicateCleanupModal({ source, onClose, onDeleted }) {
+  const [groups, setGroups] = useState(null);
+  const [checked, setChecked] = useState(new Set());
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    api.get('/gangsheets/duplicates', { params: source !== 'normal' ? { source } : {} })
+      .then(res => {
+        setGroups(res.data?.groups || []);
+        setChecked(new Set(res.data?.suggested_ids || []));
+      })
+      .catch(err => {
+        notify(err?.response?.data?.message || 'Không tải được danh sách gang trùng', { title: 'Gang trùng', kind: 'error' });
+        onClose();
+      });
+  }, []);
+
+  const toggle = (id) => setChecked(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  // A group with every gang ticked would leave its prints on no gang at all.
+  const wipedGroups = (groups || []).filter(gr => gr.gangs.every(g => checked.has(g.id))).length;
+
+  const confirmDelete = async () => {
+    if (checked.size === 0) return;
+    const warn = wipedGroups ? `\n\n⚠ ${wipedGroups} nhóm bị xoá hết, không còn gang nào giữ các bản in đó.` : '';
+    const ok = await askConfirm(
+      `Xoá ${checked.size} gang trùng?\nĐơn/meta vẫn giữ trạng thái production.${warn}`,
+      { title: 'Xoá gang trùng', okText: `Xoá ${checked.size} gang` },
+    );
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      const res = await api.post('/gangsheets/bulk-delete', { gangsheet_ids: [...checked] });
+      notify(res.data?.message || `Đã xoá ${checked.size} gang`, { title: 'Xoá gang trùng', kind: 'success' });
+      onDeleted?.();
+      onClose();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Xoá thất bại', { title: 'Xoá gang trùng', kind: 'error' });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const fmtDate = (d) => d ? new Date(d).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' }) : '';
+
+  return (
+    <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
+      <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[90vw] max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-200 flex justify-between items-center">
+          <h3 className="text-sm font-semibold text-neutral-800">
+            Xoá gang trùng {groups && <span className="text-neutral-500 font-normal">— {groups.length} nhóm</span>}
+          </h3>
+          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800 text-xl leading-none">×</button>
+        </div>
+        <div className="px-4 py-2 text-xs text-neutral-500 border-b border-neutral-100 bg-[#faf8f6]">
+          Mỗi nhóm là các gang in trùng _qr với nhau. Đã tick sẵn đề xuất: giữ gang mới nhất, chỉ xoá gang cũ khi mọi bản in của nó đã nằm ở gang được giữ.
+          Cột "Riêng" = số bản in chỉ gang đó còn giữ. Bỏ tick / tick lại tuỳ ý trước khi xác nhận.
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {groups === null ? (
+            <p className="text-sm text-neutral-400">Đang tìm gang trùng…</p>
+          ) : groups.length === 0 ? (
+            <p className="text-sm text-neutral-500">Không có gang trùng.</p>
+          ) : groups.map((gr, gi) => {
+            const allChecked = gr.gangs.every(g => checked.has(g.id));
+            return (
+              <div key={gi} className={`rounded-lg border ${allChecked ? 'border-red-400' : 'border-neutral-200'}`}>
+                <table className="w-full text-xs">
+                  <thead className="text-neutral-500 bg-[#faf8f6]">
+                    <tr>
+                      <th className="px-2 py-1.5 w-8"></th>
+                      <th className="px-2 py-1.5 text-left">Gang</th>
+                      <th className="px-2 py-1.5 text-left">Tạo</th>
+                      <th className="px-2 py-1.5 text-right">Đơn</th>
+                      <th className="px-2 py-1.5 text-right">Bản in</th>
+                      <th className="px-2 py-1.5 text-right">Riêng</th>
+                      <th className="px-2 py-1.5 text-left">Trạng thái</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {gr.gangs.map(g => (
+                      <tr key={g.id} onClick={() => toggle(g.id)}
+                        className={`border-t border-neutral-100 cursor-pointer ${checked.has(g.id) ? 'bg-red-50' : 'hover:bg-neutral-50'}`}>
+                        <td className="px-2 py-1.5 text-center">
+                          <input type="checkbox" checked={checked.has(g.id)} onChange={() => toggle(g.id)}
+                            onClick={e => e.stopPropagation()} className="accent-red-500" />
+                        </td>
+                        <td className="px-2 py-1.5 font-mono text-neutral-700 break-all">
+                          <span className="text-neutral-400">#{g.id}</span> {g.filename}
+                        </td>
+                        <td className="px-2 py-1.5 text-neutral-600 whitespace-nowrap">
+                          {fmtDate(g.created_at)}
+                          {g.creator?.name && <div className="text-[10px] text-neutral-400">{g.creator.name}</div>}
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{g.orders_count}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{g.total_prints}</td>
+                        <td className={`px-2 py-1.5 text-right tabular-nums ${g.unique_prints ? 'text-emerald-700 font-semibold' : 'text-neutral-400'}`}>{g.unique_prints}</td>
+                        <td className="px-2 py-1.5 space-x-1 whitespace-nowrap">
+                          {g.downloaded_at && <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px]">đã làm</span>}
+                          {g.partners?.length > 0 && <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 text-[10px]">{g.partners.map(p => p.name).join(', ')}</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {allChecked && <div className="px-2 py-1 text-[11px] text-red-600 border-t border-red-200">Đang tick xoá cả nhóm — các bản in này sẽ không còn gang nào.</div>}
+              </div>
+            );
+          })}
+        </div>
+        <div className="px-4 py-3 border-t border-neutral-200 flex items-center gap-2">
+          <span className="text-xs text-neutral-500">Đã chọn <b className="text-red-600">{checked.size}</b> gang</span>
+          <button onClick={() => setChecked(new Set())} disabled={checked.size === 0}
+            className="text-xs text-neutral-500 hover:text-neutral-800 underline disabled:opacity-40">Bỏ chọn hết</button>
+          <div className="ml-auto flex gap-2">
+            <button onClick={onClose} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Huỷ</button>
+            <button onClick={confirmDelete} disabled={checked.size === 0 || deleting}
+              className="px-4 py-1.5 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white text-sm rounded-lg">
+              {deleting ? 'Đang xoá…' : `Xoá ${checked.size} gang`}
+            </button>
+          </div>
         </div>
       </div>
     </div>

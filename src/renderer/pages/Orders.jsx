@@ -507,6 +507,29 @@ export default function Orders({ source = 'normal' }) {
     }
   };
 
+  // Move the selected orders to the other channel (Order FPT ↔ Orders).
+  const handleBulkMoveSource = async () => {
+    if (selected.length === 0) return;
+    const target = isFpt ? 'normal' : 'fpt';
+    const targetLabel = isFpt ? 'Orders (đơn thường)' : 'Order FPT';
+    const ok = await askConfirm(`Chuyển ${selected.length} đơn sang ${targetLabel}?`, { title: 'Chuyển đơn', okText: 'Chuyển' });
+    if (!ok) return;
+    try {
+      const res = await api.post('/orders/bulk-set-source', { order_ids: selected, source: target });
+      const inProd = res.data.in_production || [];
+      await notify(
+        res.data.message + (inProd.length
+          ? `\n\n${inProd.length} đơn đã vào gangsheet (gang/label cũ vẫn giữ kênh cũ): ${inProd.slice(0, 10).join(', ')}${inProd.length > 10 ? '…' : ''}`
+          : ''),
+        { title: 'Chuyển đơn', kind: 'success' },
+      );
+      setSelected([]);
+      fetchOrders();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Error', { title: 'Chuyển đơn thất bại', kind: 'error' });
+    }
+  };
+
   const handleBulkReconvert = async () => {
     if (selected.length === 0) return;
     const ok = await askConfirm(`Reconvert ${selected.length} order(s)?\nTheir _qr metas will be removed and rebuilt by the converter cron.`, { title: 'Confirm reconvert', okText: 'Reconvert' });
@@ -1135,6 +1158,30 @@ export default function Orders({ source = 'normal' }) {
     }
   };
 
+  // One order: take it off every gang that holds it and put it (and all its
+  // _qr) back in the gang queue — hub POST /orders/{id}/unproduce-gang.
+  const handleUnproduceGang = async (order) => {
+    const ok = await askConfirm(
+      `Xoá production đơn ${order.system_id}?\n`
+      + '• Gỡ đơn khỏi mọi gang và label gang đang chứa nó.\n'
+      + '• Đơn và toàn bộ _qr về lại hàng chờ tạo gang.\n'
+      + '• File PDF của gang cũ vẫn còn trang này cho tới khi Rebuild.',
+      { title: 'Xoá production', okText: 'Xoá production' },
+    );
+    if (!ok) return;
+    try {
+      const res = await api.post(`/orders/${order.id}/unproduce-gang`);
+      const gangs = res.data?.gangs || [];
+      notify(
+        res.data?.message + (gangs.length ? `\n${[...new Set(gangs)].join('\n')}` : ''),
+        { title: 'Xoá production', kind: 'success' },
+      );
+      fetchOrders();
+    } catch (err) {
+      notify(err.response?.data?.message || 'Xoá production thất bại', { title: 'Xoá production', kind: 'error' });
+    }
+  };
+
   const handleBulkReProduction = async () => {
     if (selected.length === 0) return;
     const ok = await askConfirm(`Re-production ${selected.length} order(s)?\nĐặt production=false cho orders và toàn bộ order_item_metas của chúng. Đơn sẽ được tính lại trong gangsheet kế tiếp.`, { title: 'Confirm re-production', okText: 'Re-production' });
@@ -1670,6 +1717,12 @@ export default function Orders({ source = 'normal' }) {
               </button>
             )}
             {isStaff && (
+              <button onClick={handleBulkMoveSource} className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs rounded-lg"
+                title={isFpt ? 'Chuyển các đơn đã chọn sang Orders (đơn thường)' : 'Chuyển các đơn đã chọn sang Order FPT'}>
+                {isFpt ? '⇄ Chuyển sang Orders' : '⇄ Chuyển sang FPT'}
+              </button>
+            )}
+            {isStaff && (
               <button onClick={handleBulkReconvert} className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded-lg">
                 Bulk Reconvert
               </button>
@@ -1942,9 +1995,15 @@ export default function Orders({ source = 'normal' }) {
                     {order.resend_of_order_id && (
                       <span className="inline-block px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-700 text-[10px] font-semibold uppercase tracking-wide" title={`Resend của đơn #${order.resend_of_order_id}`}>resend</span>
                     )}
-                    {order.production && (
+                    {order.production && (isStaff ? (
+                      <button type="button" onClick={e => { e.stopPropagation(); handleUnproduceGang(order); }}
+                        className="group inline-flex items-center justify-center w-4 h-4 rounded-full bg-green-500 hover:bg-red-500 text-white text-[10px] leading-none"
+                        title="Đã tạo gangsheet (production) — click để xoá production và gỡ đơn khỏi gang">
+                        <span className="group-hover:hidden">✓</span><span className="hidden group-hover:inline">×</span>
+                      </button>
+                    ) : (
                       <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-green-500 text-white text-[10px] leading-none" title="Đã tạo gangsheet (production)">✓</span>
-                    )}
+                    ))}
                     {hasOrderFailure(order.id) && (
                       <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[10px] leading-none" title={`${countOrderFailures(order.id)} image URL(s) failed validation`}>!</span>
                     )}

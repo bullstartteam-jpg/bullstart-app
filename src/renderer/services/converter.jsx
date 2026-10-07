@@ -886,13 +886,15 @@ const CARD_SKIN_BAND_W = 200;   // left strip width for barcode + info (~0.67" @
 // by eye. Light tones keep the black QR modules scannable. Detection is by the
 // add-on style text (e.g. "Small Chip", "Holographic Rainbow") with a fallback
 // to the short codes (SMC / BC / HLG*). Priority: Holo wins over any chip.
+const MULTI_CARD_BG = '#D8B4FE';   // tím pastel: đơn nhiều thẻ / nhiều tờ
+
 function qrBgForAddon(addonCode, orderCardTotal = 1) {
   // Đơn ra từ 2 thẻ trở lên: TÍM, bỏ qua mọi luật chip bên dưới. Thẻ của một
   // đơn nhiều thẻ phải gom lại đóng chung, nên dấu hiệu đó quan trọng hơn loại
   // chip — thợ nhìn màu là biết phải tìm cho đủ bộ.
   // Đếm theo TỔNG QUANTITY chứ không phải số dòng item: đơn 1 item × qty 3 vẫn
   // là 3 thẻ phải đóng chung.
-  if (Number(orderCardTotal) >= 2) return '#D8B4FE';          // Nhiều thẻ → tím pastel
+  if (Number(orderCardTotal) >= 2) return MULTI_CARD_BG;      // Nhiều thẻ → tím pastel
 
   const s = String(addonCode || '').toLowerCase();
   const has = (re) => re.test(s);
@@ -1041,7 +1043,10 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
 
   // Sticker Sheet: fixed 11×17 canvas, design scaled to 8×11 flush top.
   if (opts.convert_layout === 'sticker_sheet') {
-    return await composeStickerSheet(sourceImg, sourceW, sourceH, systemId, accessorySummary, source_key);
+    return await composeStickerSheet(
+      sourceImg, sourceW, sourceH, systemId, accessorySummary, source_key,
+      opts.order_card_total || opts.order_items_count || 1,
+    );
   }
 
   // 'native' layout = greeting card 5x5: FIXED 11×5.5" canvas (3300×1650 @300dpi),
@@ -1141,7 +1146,7 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
 //   │   ▌▌▌▐▐▌ SS-xxxx    │
 //   │                     │
 //   └─────────────────────┘
-async function composeStickerSheet(sourceImg, sourceW, sourceH, systemId, accessorySummary = '', sourceKey) {
+async function composeStickerSheet(sourceImg, sourceW, sourceH, systemId, accessorySummary = '', sourceKey, orderCardTotal = 1) {
   const CANVAS_W = 3300, CANVAS_H = 5100;   // 11 × 17 in
   const DESIGN_W = 2400, DESIGN_H = 3300;   // 8 × 11 in
   const DESIGN_X = Math.round((CANVAS_W - DESIGN_W) / 2);
@@ -1177,8 +1182,17 @@ async function composeStickerSheet(sourceImg, sourceW, sourceH, systemId, access
     const panelX = DESIGN_X;
     const panelY = DESIGN_Y + DESIGN_H + GAP;
 
-    ctx.fillStyle = '#000000';
+    // Backing under text + barcode — the canvas is transparent outside the
+    // design, and the bars need a light ground to scan. White, or the same
+    // pastel purple as card skins when the order ships ≥ 2 sheets, so the
+    // operator knows to gather the whole set.
     ctx.font = `bold ${TEXT_FONT}px sans-serif`;
+    const panelW = Math.max(Math.ceil(ctx.measureText(codeText).width), BARCODE_W) + PANEL_PAD * 2;
+    const panelH = PANEL_PAD + TEXT_H + TEXT_TO_BAR + BARCODE_H + PANEL_PAD;
+    ctx.fillStyle = Number(orderCardTotal) >= 2 ? MULTI_CARD_BG : '#ffffff';
+    ctx.fillRect(panelX, panelY, panelW, panelH);
+
+    ctx.fillStyle = '#000000';
     ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
     ctx.fillText(codeText, panelX + PANEL_PAD, panelY + PANEL_PAD);
@@ -1412,12 +1426,20 @@ async function renderPdfFirstPageAsImage(base64) {
   return await loadFromSrc(dataUrl);
 }
 
+// A remote <img> that never answers would otherwise hang the caller forever
+// (e.g. the direct-img fallback after an IPC fetch failure).
+const LOAD_IMAGE_TIMEOUT_MS = 60000;
+
 function loadFromSrc(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    const timer = setTimeout(() => {
+      img.src = '';
+      reject(new Error(`Image load timeout sau ${LOAD_IMAGE_TIMEOUT_MS / 1000}s: ${src.startsWith('data:') ? 'data URL' : src}`));
+    }, LOAD_IMAGE_TIMEOUT_MS);
     img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = (e) => reject(new Error('Image load failed: ' + (e?.message || src)));
+    img.onload = () => { clearTimeout(timer); resolve(img); };
+    img.onerror = (e) => { clearTimeout(timer); reject(new Error('Image load failed: ' + (e?.message || src))); };
     img.src = src;
   });
 }
