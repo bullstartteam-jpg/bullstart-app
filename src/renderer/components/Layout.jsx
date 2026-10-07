@@ -7,6 +7,7 @@ import { getUiPrefs } from '../utils/uiPrefs';
 const navItems = [
   { path: '/', label: 'Dashboard', icon: '◉', module: 'dashboard' },
   { path: '/reports', label: 'Reports', icon: '▥', module: 'dashboard' },
+  { path: '/revenue', label: 'Doanh thu', icon: '💰', requiresAdmin: true },
   { path: '/partner-dashboard', label: 'Partner', icon: '🤝', requiresAdmin: true },
   { path: '/partner-payouts', label: 'Partner Payout', icon: '💸', requiresAdmin: true },
   { path: '/orders', label: 'Orders', icon: '◈', module: 'orders' },

@@ -545,8 +545,17 @@ function workingText(breakdown) {
   return parts.join(' | ');
 }
 
+// YYYY-MM-DD in the hub's day convention (America/Chicago), `offset` days from today.
+function chicagoDate(offset = 0) {
+  const d = new Date(Date.now() + offset * 86400000);
+  return d.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+}
+
 function RevenueModal({ partner, onClose, onApplied }) {
-  const [range, setRange] = useState({ date_from: '', date_to: '', product_id: '', system_id: '' });
+  // Default view: the last 7 days, only orders not priced yet.
+  const [range, setRange] = useState({
+    date_from: chicagoDate(-6), date_to: chicagoDate(0), product_id: '', system_id: '', unpriced: true,
+  });
   const [products, setProducts] = useState([]);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -573,6 +582,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
       if (range.date_to) params.date_to = range.date_to;
       if (range.product_id) params.product_id = range.product_id;
       if (range.system_id) params.system_id = range.system_id;
+      if (range.unpriced) params.unpriced = 1;
       const res = await api.get(`/partner-report/${partner.user.id}/orders`, { params });
       setData(res.data);
     } catch (err) {
@@ -679,6 +689,12 @@ function RevenueModal({ partner, onClose, onApplied }) {
               placeholder="BS-..."
               className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm w-32" />
           </div>
+          <label className="flex items-center gap-1.5 text-sm text-neutral-700 pb-1.5 cursor-pointer select-none">
+            <input type="checkbox" checked={range.unpriced}
+              onChange={e => setRange(r => ({ ...r, unpriced: e.target.checked }))}
+              className="accent-orange-500" />
+            Chỉ đơn chưa tính
+          </label>
           <button onClick={load} className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Xem</button>
           <button onClick={exportCsv} disabled={!data?.orders?.length}
             className="px-3 py-1.5 bg-emerald-100 hover:bg-emerald-200 disabled:opacity-40 text-emerald-700 text-sm rounded-lg">
@@ -694,7 +710,9 @@ function RevenueModal({ partner, onClose, onApplied }) {
           {loading ? (
             <p className="p-6 text-center text-neutral-400 text-sm">Loading…</p>
           ) : (data?.orders?.length ?? 0) === 0 ? (
-            <p className="p-6 text-center text-neutral-400 text-sm">Không có đơn đã ship nào trong khoảng này.</p>
+            <p className="p-6 text-center text-neutral-400 text-sm">
+              {range.unpriced ? 'Không có đơn chưa tính nào trong khoảng này.' : 'Không có đơn đã ship nào trong khoảng này.'}
+            </p>
           ) : (
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-[#faf8f6]">
