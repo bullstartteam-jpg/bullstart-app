@@ -256,6 +256,19 @@ function AnalysesTab({ templates, onOpen, initialTemplate = '' }) {
 const STATUS_LABEL = { 0: 'New', 1: 'Processing', 2: 'Wrong size', 3: 'Fixed', 4: 'Reprint', 5: 'On hold', 6: 'Shipped', 7: 'Cancelled', 8: 'Resend' };
 const OPEN_STATUSES = [0, 1, 2, 3, 4, 5, 8];   // default scope: not shipped / cancelled
 
+// "Tìm System ID": one or many IDs (comma / space / newline), substring match.
+const parseSearch = (q) => String(q || '').split(/[\s,;]+/).map(t => t.trim().toUpperCase()).filter(Boolean);
+const orderMatches = (terms) => (o) => !terms.length || terms.some(t => String(o.system_id || '').toUpperCase().includes(t));
+
+// A single-tab group narrowed to the searched orders. Its analysis ids follow,
+// so "Tạo gang" / "Chia partner" act on just those orders.
+const narrowGroup = (g, match, active) => {
+  if (!active) return g;
+  const orders = g.orders.filter(match);
+  const ids = orders.flatMap(o => o.analysis_ids || []);
+  return { ...g, orders, analysis_ids: ids.length ? ids : g.analysis_ids };
+};
+
 // Ganged state of an order / design: all its _qr on a gang, some, or none.
 const gangState = (x) => (!x?.qr_total ? 'none' : x.qr_ganged >= x.qr_total ? 'done' : x.qr_ganged > 0 ? 'part' : 'none');
 
@@ -289,6 +302,10 @@ function SummaryTab({ onOpen, onSaved }) {
   };
   const [design, setDesign] = useState('');   // multi: show orders containing this design key
   const [hideGanged, setHideGanged] = useState(false);
+  const [search, setSearch] = useState('');
+  const terms = parseSearch(search);
+  const match = orderMatches(terms);
+  const searching = terms.length > 0;
   // Partner the gangs go to: new gangs on create, made gangs via "Chia partner".
   const [partners, setPartners] = useState([]);
   const [partnerId, setPartnerId] = useState('');
@@ -397,6 +414,8 @@ function SummaryTab({ onOpen, onSaved }) {
       <span className="mx-1 text-neutral-300">|</span>
       <button onClick={() => setPreset(OPEN_STATUSES)} className="px-2 py-1 text-xs text-neutral-600 underline">Đang làm</button>
       <button onClick={() => setPreset(Object.keys(STATUS_LABEL).map(Number))} className="px-2 py-1 text-xs text-neutral-600 underline">Tất cả</button>
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Tìm System ID (nhiều, cách nhau dấu phẩy)"
+        className="w-64 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-xs font-mono" />
       <label className="ml-auto flex items-center gap-1.5 text-xs text-neutral-600">
         Partner
         <select value={partnerId} onChange={e => setPartnerId(e.target.value)}
@@ -455,14 +474,14 @@ function SummaryTab({ onOpen, onSaved }) {
         )}
       </div>
 
-      {mode === 'multi' && <MultiOrders orders={(data.orders || []).filter(o => !hideGanged || gangState(o) !== 'done')} options={data.design_options || []}
+      {mode === 'multi' && <MultiOrders orders={(data.orders || []).filter(o => (!hideGanged || gangState(o) !== 'done') && match(o))} options={data.design_options || []}
         design={design} onDesign={setDesign} onOpen={onOpen} onGang={makeGangs} busy={!!ganging}
         onAssign={assignPartner} partnerName={partnerName} />}
 
       {mode === 'single' && data.groups.length > 0 && (
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-neutral-700">Theo mẫu</h3>
-          {data.groups.map(g => <SummaryCard key={`t${g.template.id}`} g={g} onOpen={onOpen} hideGanged={hideGanged}
+          {data.groups.map(g0 => narrowGroup(g0, match, searching)).filter(g => !searching || g.orders.length).map(g => <SummaryCard key={`t${g.template.id}`} g={g} onOpen={onOpen} hideGanged={hideGanged}
             action={<>
               <GangButton busy={!!ganging} onClick={() => makeGangs(g.analysis_ids, g.label)} />
               <PartnerButtons g={g} partnerName={partnerName}
@@ -475,7 +494,7 @@ function SummaryTab({ onOpen, onSaved }) {
       {mode === 'single' && data.unmatched.length > 0 && (
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-neutral-700">Chưa có mẫu</h3>
-          {data.unmatched.map((g, i) => (
+          {data.unmatched.map((g0, i) => [narrowGroup(g0, match, searching), i]).filter(([g]) => !searching || g.orders.length).map(([g, i]) => (
             <SummaryCard key={`u${i}`} g={g} onOpen={onOpen} hideGanged={hideGanged}
               action={saving === i
                 ? <SaveTemplateForm onCancel={() => setSaving(null)} onSave={(name) => saveGroup(g, name)} />
@@ -488,6 +507,10 @@ function SummaryTab({ onOpen, onSaved }) {
                   </>} />
           ))}
         </div>
+      )}
+
+      {searching && mode === 'single' && ![...data.groups, ...data.unmatched].some(g => g.orders.some(match)) && (
+        <p className="text-sm text-neutral-500">Không tìm thấy System ID này trong các trạng thái đang chọn.</p>
       )}
 
       {data.groups.length === 0 && data.unmatched.length === 0 && (data.orders || []).length === 0 && (
@@ -592,10 +615,22 @@ function PartnerButtons({ g, partnerName, onAssign, onRemove }) {
 
 function MultiOrders({ orders, options, design, onDesign, onOpen, onGang, busy, onAssign, partnerName }) {
   const shown = design ? orders.filter(o => o.parts.some(p => p.key === design)) : orders;
+  // Ticked orders; the actions run on them, or on every shown order when none is ticked.
+  const [picked, setPicked] = useState(() => new Set());
+  const pickedShown = shown.filter(o => picked.has(o.order_id));
+  const target = pickedShown.length ? pickedShown : shown;
+  const scope = pickedShown.length ? `${pickedShown.length} đơn đã chọn` : `${shown.length} đơn`;
+  const allPicked = shown.length > 0 && shown.every(o => picked.has(o.order_id));
+  const togglePick = (id) => setPicked(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const togglePickAll = () => setPicked(prev => {
+    const n = new Set(prev);
+    if (allPicked) shown.forEach(o => n.delete(o.order_id)); else shown.forEach(o => n.add(o.order_id));
+    return n;
+  });
   // With a design picked, gang only that design's sheets of these orders.
-  const gangIds = shown.flatMap(o => o.parts.filter(p => !design || p.key === design).flatMap(p => p.analysis_ids || []));
+  const gangIds = target.flatMap(o => o.parts.filter(p => !design || p.key === design).flatMap(p => p.analysis_ids || []));
   const designLabel = design ? (options.find(o => o.key === design)?.label || '') : 'tất cả mẫu';
-  const ids = shown.map(o => o.system_id).filter(Boolean);
+  const ids = target.map(o => o.system_id).filter(Boolean);
   const copy = async () => {
     try { await navigator.clipboard.writeText(ids.join('\n')); notify(`Đã copy ${ids.length} ID`, { title: 'Copy', kind: 'success' }); }
     catch { notify('Không copy được', { title: 'Copy', kind: 'error' }); }
@@ -610,22 +645,28 @@ function MultiOrders({ orders, options, design, onDesign, onOpen, onGang, busy, 
             options={options.map(o => ({ value: o.key, label: o.label, image: o.sample_url, sub: `${o.orders} đơn · ${o.sheets} tờ` }))} />
         </div>
         <span className="text-sm text-neutral-600"><b>{shown.length}</b> đơn · <b>{shown.reduce((n, o) => n + o.sheets, 0)}</b> tờ</span>
+        {pickedShown.length > 0 && (
+          <span className="text-sm text-orange-700">
+            Đã chọn <b>{pickedShown.length}</b> đơn
+            <button onClick={() => setPicked(new Set())} className="ml-2 text-xs text-neutral-500 underline">Bỏ chọn</button>
+          </span>
+        )}
         <div className="ml-auto flex gap-2">
           <button onClick={copy} disabled={!ids.length}
             className="px-3 py-1.5 text-xs rounded-lg border border-neutral-200 hover:bg-neutral-50 disabled:opacity-40">Copy ID ({ids.length})</button>
           <button onClick={() => onAssign(gangIds, `multi · ${designLabel}`)} disabled={!gangIds.length || !partnerName}
             className="px-3 py-1.5 text-xs rounded-lg border border-sky-300 text-sky-700 hover:bg-sky-50 disabled:opacity-40"
             title={partnerName ? '' : 'Chọn Partner ở thanh lọc trước'}>
-            {partnerName ? `Chia ${partnerName}` : 'Chia partner'} ({shown.length} đơn)
+            {partnerName ? `Chia ${partnerName}` : 'Chia partner'} ({scope})
           </button>
-          {shown.some(o => o.partner) && (
+          {target.some(o => o.partner) && (
             <button onClick={() => onAssign(gangIds, `multi · ${designLabel}`, { remove: true })}
               className="px-3 py-1.5 text-xs rounded-lg border border-red-200 text-red-600 hover:bg-red-50">Gỡ partner</button>
           )}
           <button onClick={() => onGang(gangIds, `multi · ${designLabel}`)} disabled={busy || !gangIds.length}
             className="px-3 py-1.5 text-xs rounded-lg bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white"
             title={design ? 'Tạo gang các tờ của mẫu đang lọc trong các đơn này' : 'Tạo gang mọi tờ của các đơn này'}>
-            Tạo gang ({shown.length} đơn)
+            Tạo gang ({scope})
           </button>
         </div>
       </div>
@@ -634,6 +675,9 @@ function MultiOrders({ orders, options, design, onDesign, onOpen, onGang, busy, 
         <table className="w-full text-sm">
           <thead className="text-xs text-neutral-500 bg-[#faf8f6]">
             <tr>
+              <th className="px-3 py-2 w-8">
+                <input type="checkbox" checked={allPicked} onChange={togglePickAll} className="accent-orange-500" title="Chọn tất cả đơn đang hiện" />
+              </th>
               <th className="px-3 py-2 text-left">Đơn</th>
               <th className="px-3 py-2 text-left">Trạng thái</th>
               <th className="px-3 py-2 text-right">Tờ</th>
@@ -644,9 +688,12 @@ function MultiOrders({ orders, options, design, onDesign, onOpen, onGang, busy, 
           </thead>
           <tbody className="divide-y divide-neutral-100">
             {shown.length === 0 ? (
-              <tr><td colSpan={6} className="p-6 text-center text-neutral-400">Không có đơn.</td></tr>
+              <tr><td colSpan={7} className="p-6 text-center text-neutral-400">Không có đơn.</td></tr>
             ) : shown.map(o => (
-              <tr key={o.order_id} className="align-top">
+              <tr key={o.order_id} className={`align-top ${picked.has(o.order_id) ? 'bg-orange-50/60' : ''}`}>
+                <td className="px-3 py-2">
+                  <input type="checkbox" checked={picked.has(o.order_id)} onChange={() => togglePick(o.order_id)} className="accent-orange-500" />
+                </td>
                 <td className="px-3 py-2 font-mono text-xs text-orange-600 whitespace-nowrap">{o.system_id}</td>
                 <td className="px-3 py-2 text-xs text-neutral-600 whitespace-nowrap">{STATUS_LABEL[o.status] || o.status}</td>
                 <td className="px-3 py-2 text-right tabular-nums font-semibold">{o.sheets}</td>
