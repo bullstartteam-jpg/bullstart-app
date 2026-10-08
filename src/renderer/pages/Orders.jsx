@@ -18,6 +18,9 @@ import { hasOrderFailure, countOrderFailures, syncOrders, URL_FAILURES_EVENT } f
 import { flattenQrMetas } from '../services/gangsheetBuilder';
 import { buildZip } from '../services/zipWriter';
 
+// push_trackings.status → label (same meaning as the Push Scan page).
+const PUSH_SCAN_STATUS = { 1: 'chờ merge', 2: 'đã merge label', 3: 'đã run' };
+
 // Delivery-tracking status → badge colors (matches web-bullstart).
 const TRACKING_COLOR = {
   delivered: 'bg-emerald-100 text-emerald-700',
@@ -1994,6 +1997,12 @@ export default function Orders({ source = 'normal' }) {
                     {order.system_id}
                     {order.resend_of_order_id && (
                       <span className="inline-block px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-700 text-[10px] font-semibold uppercase tracking-wide" title={`Resend của đơn #${order.resend_of_order_id}`}>resend</span>
+                    )}
+                    {order.push_tracking && (
+                      <span className="inline-block px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 text-[10px] font-semibold uppercase tracking-wide"
+                        title={`Push scan · ${PUSH_SCAN_STATUS[order.push_tracking.status] || ''}${Number(order.push_scan_fee) > 0 ? ` · phí $${order.push_scan_fee}` : ' · miễn phí'}`}>
+                        push{order.push_tracking.status === 3 ? ' ✓' : ''}
+                      </span>
                     )}
                     {order.production && (isStaff ? (
                       <button type="button" onClick={e => { e.stopPropagation(); handleUnproduceGang(order); }}

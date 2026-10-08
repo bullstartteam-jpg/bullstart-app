@@ -259,6 +259,12 @@ export default function OrderDetail() {
             {order.resend_of_order_id && (
               <span className="inline-block px-2 py-0.5 rounded bg-cyan-100 text-cyan-700 text-xs font-semibold uppercase tracking-wide">resend</span>
             )}
+            {order.push_tracking && (
+              <span className="inline-block px-2 py-0.5 rounded bg-violet-100 text-violet-700 text-xs font-semibold uppercase tracking-wide"
+                title={Number(order.push_scan_fee) > 0 ? `Phí push scan $${order.push_scan_fee}` : 'Push scan miễn phí'}>
+                push scan · {({ 1: 'chờ merge', 2: 'đã merge label', 3: 'đã run' })[order.push_tracking.status] || ''}
+              </span>
+            )}
           </h2>
           {order.ref_id && <p className="text-xs text-neutral-500 mt-1">Ref: <span className="font-mono">{order.ref_id}</span></p>}
           {!hasRole('seller') && (() => {
