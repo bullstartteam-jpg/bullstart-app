@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { buildGangsheetForChunk, buildTiledGangsheet, buildSleeveGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks, rasterizeGangPdf, fetchFileBytes } from '../services/gangsheetBuilder';
+import { buildGangsheetForChunk, buildStickerPassthrough, buildTiledGangsheet, buildSleeveGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks, rasterizeGangPdf, fetchFileBytes } from '../services/gangsheetBuilder';
 import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGroup, deleteOpenGroups } from '../services/groupGang';
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
@@ -9,6 +9,7 @@ import {
   fetchResizeTargets, reconvertResizeItems,
 } from '../services/converter';
 import Pagination from '../components/Pagination';
+import ImagePicker from '../components/ImagePicker';
 import { notify, askConfirm } from '../components/Dialog';
 
 // fulfill_status (order.status) options relevant to ganging (exclude shipped).
@@ -577,6 +578,39 @@ function pngNameForPage(pdfFilename, pageIndex) {
   return `${base}_p${String(pageIndex + 1).padStart(2, '0')}.png`;
 }
 
+/**
+ * Upload a built gang to B2. `png`: also the per-page PNGs (from the build
+ * canvas, so transparent); `pdf`: the PDF(s) — card-skin gangs come back as
+ * one PDF per page (built.pdfPages). Sticker Sheet gangs are PNG-only: the
+ * print shop works from the PNG, so the PDF is skipped and file_url points at
+ * the PNG. file_url is otherwise the first PDF, so existing screens and
+ * download links keep working.
+ */
+async function uploadGangFiles(built, { creds, png, pdf = true, onProgress }) {
+  let pngUrls = null;
+  if (png && built.pageBlobs?.length) {
+    pngUrls = await uploadGangPngs(built.pageBlobs, {
+      creds, pdfFilename: built.baseFilename || built.filename, onProgress,
+    });
+  }
+  const pdfUrls = [];
+  if (pdf) {
+    const pdfFiles = built.pdfPages?.length
+      ? built.pdfPages
+      : [{ blob: built.blob, filename: built.filename }];
+    for (const f of pdfFiles) {
+      const key = `${creds.folder}/${f.filename}`;
+      await window.electronAPI.s3Upload({
+        credentials: creds, bucket: creds.bucket, key,
+        body: new Uint8Array(await f.blob.arrayBuffer()),
+        contentType: 'application/pdf',
+      });
+      pdfUrls.push(`${creds.public_url_base}/${key}`);
+    }
+  }
+  return { fileUrl: pdfUrls[0] || pngUrls?.[0], pngUrls, pdfUrls };
+}
+
 /** Upload every page blob to B2; returns the public URLs in page order. */
 async function uploadGangPngs(pageBlobs, { creds, pdfFilename, onProgress }) {
   const urls = [];
@@ -595,6 +629,64 @@ async function uploadGangPngs(pageBlobs, { creds, pdfFilename, onProgress }) {
     onProgress?.({ pngDone: i + 1, pngTotal: pageBlobs.length });
   }
   return urls;
+}
+
+/**
+ * Gang Sticker Sheet orders from the Sticker Sheet page: every _qr becomes its
+ * own one-page gang at its own size, transparent — the same split the Compose
+ * tab does for Sticker Sheet. `orders` come from /sticker-sheets/gang-source
+ * (only the _qr to gang). The hub tags each gang with the template of its
+ * _qr's design. PNG only, like every Sticker Sheet gang (uploadGangFiles).
+ * Returns the created gangs.
+ */
+export async function createStickerGangs(orders, { onProgress } = {}) {
+  if (!window.electronAPI?.s3Upload) {
+    throw new Error('Tạo gang cần chạy trong app desktop (Electron).');
+  }
+  const chunks = [];
+  for (const o of orders) {
+    const suffix = slugifyAccessory(orderOrderType(o)) || 'sticker-sheet';
+    for (const single of splitOrderPerQr(o)) {
+      chunks.push({ chunk: [single], suffix, tiled: false, native: true, sticker: true });
+    }
+  }
+  if (chunks.length === 0) throw new Error('Không có _qr nào để tạo gang');
+
+  const creds = (await api.get('/gangsheets/storage-credentials')).data;
+  const created = [];
+  let done = 0;
+  // Each gang is a download + an upload of one 5–10 MB PNG: network-bound, so
+  // a few run side by side.
+  const makeOne = async (i) => {
+    const { chunk } = chunks[i];
+    const linePrefix = chunk[0]?.items?.[0]?.product_variant?.product?.line_id || '';
+    const built = await buildChunkPdf(chunks[i], { linePrefix, seq: i + 1, collectPages: true });
+    const { fileUrl, pngUrls } = await uploadGangFiles(built, { creds, png: true, pdf: false });
+    const res = await api.post('/gangsheets', {
+      filename: built.filename,
+      file_url: fileUrl,
+      png_urls: pngUrls,
+      line_id: linePrefix,
+      source: chunk[0]?.source || 'normal',
+      page_format: chunkPageFormat(chunks[i]),
+      first_system_id: built.firstSid,
+      last_system_id: built.lastSid,
+      orders_count: built.ordersInChunk,
+      metas_count: built.metasUsed,
+      order_ids: built.orderIds,
+      meta_ids: built.metaIds,
+    });
+    created.push(res.data.gangsheet);
+    onProgress?.({ done: ++done, total: chunks.length, system_id: chunk[0]?.system_id });
+  };
+  const CONCURRENCY = 3;
+  let next = 0;
+  const workers = Array.from({ length: Math.min(CONCURRENCY, chunks.length) }, async () => {
+    while (next < chunks.length) await makeOne(next++);
+  });
+  onProgress?.({ done: 0, total: chunks.length });
+  await Promise.all(workers);
+  return created;
 }
 
 /** Open every PNG of a gang (external browser in the desktop app). */
@@ -655,8 +747,14 @@ function chunkPageFormat({ tiled, sleeve, native }) {
 }
 
 /** Build one routed chunk into a PDF with the builder its branch calls for. */
-function buildChunkPdf({ chunk, suffix, tiled, sleeve, native, sticker }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
+async function buildChunkPdf({ chunk, suffix, tiled, sleeve, native, sticker }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
   const opts = { linePrefix, nameSuffix: suffix, seq, includeProduced, collectPages, onProgress };
+  // Sticker Sheet: the gang page IS the _qr PNG — pass the file through
+  // instead of re-rendering it (falls back when the _qr is not a PNG).
+  if (sticker) {
+    const fast = await buildStickerPassthrough(chunk, opts);
+    if (fast) { onProgress?.({ done: 1, total: 1 }); return fast; }
+  }
   if (sleeve) return buildSleeveGangsheet(chunk, opts);
   return tiled
     ? buildTiledGangsheet(chunk, opts)
@@ -934,44 +1032,18 @@ function ComposeTab({ source = 'normal' }) {
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
 
         const pageFormat = chunkPageFormat(chunks[ci]);
+        // Sticker Sheet gangs are always PNG-only; others follow the PNG box.
+        const sticker = !!chunks[ci].sticker;
         const built = await buildChunkPdf(chunks[ci], {
-          linePrefix, seq: ci + 1, collectPages: exportPng,
+          linePrefix, seq: ci + 1, collectPages: exportPng || sticker,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 
-        // 0) PNG first (khi có tick): từng trang một file, cùng tên với PDF.
-        //    Tên PNG bám theo baseFilename (tên chunk chưa đánh số trang) —
-        //    built.filename giờ đã là tên của TRANG 1.
-        let pngUrls = null;
-        if (exportPng && built.pageBlobs?.length) {
-          pngUrls = await uploadGangPngs(built.pageBlobs, {
-            creds, pdfFilename: built.baseFilename || built.filename,
-            onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
-          });
-        }
-
-        // 1) Upload PDF directly to B2 from the desktop app — hub is not involved.
-        //    Card-skin gangs come back as one PDF per page (built.pdfPages);
-        //    every other branch still returns a single multi-page file.
-        const pdfFiles = built.pdfPages?.length
-          ? built.pdfPages
-          : [{ blob: built.blob, filename: built.filename }];
-        const pdfUrls = [];
-        for (const f of pdfFiles) {
-          const key = `${creds.folder}/${f.filename}`;
-          const bytes = new Uint8Array(await f.blob.arrayBuffer());
-          await window.electronAPI.s3Upload({
-            credentials: creds,
-            bucket: creds.bucket,
-            key,
-            body: bytes,
-            contentType: 'application/pdf',
-          });
-          pdfUrls.push(`${creds.public_url_base}/${key}`);
-        }
-        // First page is the record's file_url so existing screens and download
-        // links keep working; the rest ride along in pdf_urls.
-        const publicUrl = pdfUrls[0];
+        // 1) Upload straight to B2 from the desktop app — hub is not involved.
+        const { fileUrl: publicUrl, pngUrls, pdfUrls } = await uploadGangFiles(built, {
+          creds, png: exportPng || sticker, pdf: !sticker,
+          onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
+        });
 
         // 2) Tell the hub to record the gangsheet + flip productions=true.
         const res = await api.post('/gangsheets', {
@@ -1974,37 +2046,16 @@ function FindTab({ source = 'normal' }) {
         const totalInChunk = flattenQrMetas(chunk, { includeProduced: true }).length;
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
 
+        const sticker = !!chunks[ci].sticker;   // PNG-only, see Compose
         const built = await buildChunkPdf(chunks[ci], {
-          linePrefix, seq: ci + 1, includeProduced: true, collectPages: exportPng,
+          linePrefix, seq: ci + 1, includeProduced: true, collectPages: exportPng || sticker,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 
-        let pngUrls = null;
-        if (exportPng && built.pageBlobs?.length) {
-          pngUrls = await uploadGangPngs(built.pageBlobs, {
-            creds, pdfFilename: built.baseFilename || built.filename,
-            onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
-          });
-        }
-
-        // Card-skin gangs: one PDF per page (see the Compose flow above).
-        const pdfFiles = built.pdfPages?.length
-          ? built.pdfPages
-          : [{ blob: built.blob, filename: built.filename }];
-        const pdfUrls = [];
-        for (const f of pdfFiles) {
-          const key = `${creds.folder}/${f.filename}`;
-          const bytes = new Uint8Array(await f.blob.arrayBuffer());
-          await window.electronAPI.s3Upload({
-            credentials: creds,
-            bucket: creds.bucket,
-            key,
-            body: bytes,
-            contentType: 'application/pdf',
-          });
-          pdfUrls.push(`${creds.public_url_base}/${key}`);
-        }
-        const publicUrl = pdfUrls[0];
+        const { fileUrl: publicUrl, pngUrls, pdfUrls } = await uploadGangFiles(built, {
+          creds, png: exportPng || sticker, pdf: !sticker,
+          onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
+        });
 
         const res = await api.post('/gangsheets', {
           filename: built.filename,
@@ -2260,12 +2311,17 @@ function gangCategory(filename) {
 const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Khác';
 
 function ManageTab({ isAdmin, source = 'normal' }) {
-  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, no_partner: false, created_by: '', page: 1 });
+  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, no_partner: false, created_by: '', sticker_template_id: '', page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
   // Options for the "Người tạo" filter — everyone who has built a gang here.
   const [creators, setCreators] = useState([]);
+  // Options for the "Mẫu sticker" filter (Sticker Sheet templates).
+  const [stickerTemplates, setStickerTemplates] = useState([]);
+  useEffect(() => {
+    api.get('/sticker-templates').then(res => setStickerTemplates(res.data || [])).catch(() => {});
+  }, []);
   useEffect(() => {
     api.get('/gangsheets/creators', { params: source !== 'normal' ? { source } : {} })
       .then(res => setCreators(res.data || []))
@@ -2320,6 +2376,11 @@ function ManageTab({ isAdmin, source = 'normal' }) {
   const [pngProgress, setPngProgress] = useState(null);
   const handleExportPng = async (g, { force = false } = {}) => {
     if (g.png_urls?.length && !force) { openGangPngs(g); return; }   // đã có → dùng lại
+    // PNG-only gangs (Sticker Sheet) have no PDF to rasterise — rebuild instead.
+    if (!/\.pdf(\?|$)/i.test(String(g.file_url || ''))) {
+      notify('Gang này không có PDF (Sticker Sheet chỉ có PNG). Dùng Re-gang để dựng lại PNG.', { title: 'Xuất PNG', kind: 'error' });
+      return;
+    }
     if (!window.electronAPI?.s3Upload) {
       notify('Xuất PNG cần bản desktop (Electron).', { title: 'Xuất PNG', kind: 'error' });
       return;
@@ -2370,6 +2431,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
       if (filters.unshipped) params.unshipped = 1;
       if (filters.no_partner) params.no_partner = 1;
       if (filters.created_by) params.created_by = filters.created_by;
+      if (filters.sticker_template_id) params.sticker_template_id = filters.sticker_template_id;
       const res = await api.get('/gangsheets', { params });
       setList(res.data);
       setSelectedIds(new Set()); // reset on every re-fetch
@@ -2377,7 +2439,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchList(); }, [filters.page, filters.page_format, filters.unshipped, filters.no_partner, filters.created_by]);
+  useEffect(() => { fetchList(); }, [filters.page, filters.page_format, filters.unshipped, filters.no_partner, filters.created_by, filters.sticker_template_id]);
 
   // Category chips + filtered rows (client-side, on the current page).
   const catCounts = {};
@@ -2499,30 +2561,15 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     const creds = given || (await api.get('/gangsheets/storage-credentials')).data;
 
     // PNG from the build canvas — transparent, unlike the PDF rasteriser that
-    // Export PNG uses.
-    const pngUrls = built.pageBlobs?.length
-      ? await uploadGangPngs(built.pageBlobs, {
-          creds, pdfFilename: built.baseFilename || built.filename, onProgress,
-        })
-      : null;
-
-    const pdfFiles = built.pdfPages?.length
-      ? built.pdfPages
-      : [{ blob: built.blob, filename: built.filename }];
-    const pdfUrls = [];
-    for (const f of pdfFiles) {
-      const key = `${creds.folder}/${f.filename}`;
-      const bytes = new Uint8Array(await f.blob.arrayBuffer());
-      await window.electronAPI.s3Upload({
-        credentials: creds, bucket: creds.bucket, key, body: bytes,
-        contentType: 'application/pdf',
-      });
-      pdfUrls.push(`${creds.public_url_base}/${key}`);
-    }
+    // Export PNG uses. Sticker Sheet gangs: PNG only.
+    const sticker = layout === 'sticker_sheet';
+    const { fileUrl, pngUrls, pdfUrls } = await uploadGangFiles(built, {
+      creds, png: true, pdf: !sticker, onProgress,
+    });
 
     const res = await api.put(`/gangsheets/${g.id}/files`, {
       filename: built.filename,
-      file_url: pdfUrls[0],
+      file_url: fileUrl,
       pdf_urls: pdfUrls.length > 1 ? pdfUrls : null,
       png_urls: pngUrls,
     });
@@ -2689,7 +2736,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     fetchList();
   };
   const clearFilters = () => {
-    setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, no_partner: false, created_by: '', page: 1 });
+    setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, no_partner: false, created_by: '', sticker_template_id: '', page: 1 });
     setTimeout(fetchList, 0);
   };
 
@@ -2754,6 +2801,17 @@ function ManageTab({ isAdmin, source = 'normal' }) {
             {creators.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
         </div>
+        {stickerTemplates.length > 0 && (
+          <div>
+            <label className="text-xs text-neutral-500 block">Mẫu sticker</label>
+            <ImagePicker value={filters.sticker_template_id}
+              onChange={v => setFilters(f => ({ ...f, sticker_template_id: v, page: 1 }))}
+              options={stickerTemplates.map(t => ({
+                value: String(t.id), label: t.name, image: t.sample_url,
+                sub: `${t.sticker_count} sticker · ${t.orders_count} đơn`,
+              }))} />
+          </div>
+        )}
         <button type="submit" className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Apply</button>
         <button type="button" onClick={clearFilters} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Clear</button>
         <button
@@ -2944,6 +3002,10 @@ function ManageTab({ isAdmin, source = 'normal' }) {
                 </td>
                 <td className="px-3 py-2 font-mono text-xs text-neutral-700 max-w-[260px]">
                   <div className="truncate">
+                    {g.sticker_template && (
+                      <span className="mr-1.5 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-sans font-semibold"
+                        title="Mẫu Sticker Sheet">{g.sticker_template.name}</span>
+                    )}
                     {g.is_duplicate && (
                       <span className="mr-1.5 px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-sans font-semibold"
                         title={`Trùng order với gang #${(g.duplicate_gang_ids || []).join(', #')}`}>duplicate</span>

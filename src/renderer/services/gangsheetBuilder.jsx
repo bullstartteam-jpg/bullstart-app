@@ -264,6 +264,44 @@ export async function rasterizeGangPdf(url, { onProgress } = {}) {
  * available (no CORS, no renderer memory copy of the response), falling back
  * to fetch() in the browser. Exported for the Manage tab's zip download.
  */
+/**
+ * Sticker Sheet gang without re-rendering. Such a gang is ONE _qr on one page
+ * at the _qr's own size with its transparency kept — byte for byte the _qr PNG
+ * the converter already made (11×17 @300dpi, 5–10 MB). So the file is fetched
+ * and handed on as the gang's page; no decode, no 17 MP re-encode, no PDF.
+ * Returns the same shape as buildGangsheetForChunk (pageBlobs = [the PNG]),
+ * or null when the _qr is not a PNG — the caller then renders normally.
+ */
+export async function buildStickerPassthrough(orders, { linePrefix, includeProduced = false, nameSuffix = '', seq = 0 } = {}) {
+  const records = flattenQrMetas(orders, { includeProduced });
+  if (records.length !== 1) return null;
+  const { order, meta } = records[0];
+  const bytes = await fetchImageBytes(meta.value);
+  const isPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47;
+  if (!isPng) return null;
+  const filename = gangsheetFilename({
+    linePrefix: (linePrefix || '').toUpperCase(),
+    firstSid: order.system_id,
+    lastSid: order.system_id,
+    ordersCount: 1,
+    metasCount: 1,
+    suffix: nameSuffix,
+    seq,
+  });
+  return {
+    blob: null,
+    pageBlobs: [new Blob([bytes], { type: 'image/png' })],
+    filename,
+    linePrefix,
+    firstSid: order.system_id,
+    lastSid: order.system_id,
+    ordersInChunk: 1,
+    metasUsed: 1,
+    orderIds: [order.id],
+    metaIds: [meta.id],
+  };
+}
+
 export function fetchFileBytes(url) {
   return fetchImageBytes(url);
 }
