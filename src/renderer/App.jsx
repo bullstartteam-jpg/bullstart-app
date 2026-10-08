@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard';
 import Reports from './pages/Reports';
 import PartnerDashboard from './pages/PartnerDashboard';
 import Revenue from './pages/Revenue';
+import StickerSheets from './pages/StickerSheets';
 import PartnerPayouts from './pages/PartnerPayouts';
 import Orders from './pages/Orders';
 import OrderDetail from './pages/OrderDetail';
@@ -84,6 +85,7 @@ export default function App() {
           <Route path="gangsheet-fpt" element={<Gangsheet key="gangsheet-fpt" source="fpt" />} />
           <Route path="gangsheet-label" element={<GangsheetLabel key="gslabel-normal" />} />
           <Route path="gangsheet-label-fpt" element={<GangsheetLabel key="gslabel-fpt" source="fpt" />} />
+          <Route path="sticker-sheets" element={<StickerSheets />} />
           <Route path="push-scan" element={<PushScan />} />
           <Route path="profile" element={<Profile />} />
         </Route>
