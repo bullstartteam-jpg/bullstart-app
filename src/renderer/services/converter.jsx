@@ -31,6 +31,7 @@ const qrJob = createJob({
         accessory_summary: it.accessory_summary || '',
         line_id: it.line_id || '',
         convert_layout: it.convert_layout || 'default',
+        variant_size: it.variant_size || '',
         addon_code: it.addon_code || '',
         order_card_total: it.order_card_total || it.order_items_count || 1,
         target_key: p.target_key,
@@ -525,6 +526,7 @@ export async function reconvertResizeItems(items, { targetW = 3300, targetH = 21
         source_key: t.source_key,
         line_id: item.line_id,
         convert_layout: item.convert_layout,
+        variant_size: item.variant_size,
         addon_code: item.addon_code,
         order_card_total: item.order_card_total || item.order_items_count,
         is_greeting_card_back: !!t.is_greeting_card_back,
@@ -554,6 +556,7 @@ async function processOne(item, meta) {
       source_key: meta.source_key,
       line_id: item.line_id,
       convert_layout: item.convert_layout,
+      variant_size: item.variant_size,
       addon_code: item.addon_code,
       order_card_total: item.order_card_total || item.order_items_count,
       is_greeting_card_back: !!meta.is_greeting_card_back,
@@ -1041,6 +1044,14 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
     );
   }
 
+  // Kindle Insert: design scaled to the variant's W × L, plus a barcode band.
+  if (opts.convert_layout === 'kindle_insert') {
+    return await composeKindleInsert(
+      sourceImg, sourceW, sourceH, systemId, accessorySummary, source_key,
+      opts.variant_size, opts.order_card_total || opts.order_items_count || 1,
+    );
+  }
+
   // Sticker Sheet: fixed 11×17 canvas, design scaled to 8×11 flush top.
   if (opts.convert_layout === 'sticker_sheet') {
     return await composeStickerSheet(
@@ -1192,6 +1203,107 @@ async function composeStickerSheet(sourceImg, sourceW, sourceH, systemId, access
     ctx.fillStyle = Number(orderCardTotal) >= 2 ? MULTI_CARD_BG : '#ffffff';
     ctx.fillRect(panelX, panelY, panelW, panelH);
 
+    ctx.fillStyle = '#000000';
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.fillText(codeText, panelX + PANEL_PAD, panelY + PANEL_PAD);
+    ctx.drawImage(
+      generateBarcodeCanvas(systemId, 3),
+      panelX + PANEL_PAD,
+      panelY + PANEL_PAD + TEXT_H + TEXT_TO_BAR,
+      BARCODE_W,
+      BARCODE_H,
+    );
+  }
+
+  const rawBlob = await canvasToBlob(canvas, 'image/png');
+  return await setPngDpi(rawBlob, 300);
+}
+
+// Parse the inch size out of a variant size label, e.g.
+// 'Scribe 11" 7.4" × 9.6" (189 × 245 mm)' → { w: 7.4, l: 9.6 } (w ≤ l).
+export function parseInchSize(label) {
+  const m = String(label || '').match(/(\d+(?:\.\d+)?)\s*(?:"|in)?\s*[×xX]\s*(\d+(?:\.\d+)?)\s*(?:"|in)/);
+  if (!m) return null;
+  const a = parseFloat(m[1]), b = parseFloat(m[2]);
+  if (!(a > 0 && b > 0)) return null;
+  return { w: Math.min(a, b), l: Math.max(a, b) };
+}
+
+// Bounding box of the opaque pixels (alpha > 10) — designs ship on a larger
+// transparent canvas around the actual piece. Null when fully transparent.
+function opaqueBounds(img, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
+  const data = ctx.getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      if (data[row + x * 4 + 3] > 10) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
+// 'kindle_insert' convert layout. The design's transparent margin is trimmed,
+// the piece is turned portrait (-90° when landscape) and scaled to exactly the
+// variant's W × L inches @300dpi; a band is added below the L side holding the
+// Code 128 (system_id) + text panel — white, or purple when the order has ≥ 2
+// pieces. Back faces keep the band (same size) but get no panel. When the
+// variant size can't be parsed, the trimmed design keeps its own pixel size.
+async function composeKindleInsert(sourceImg, sourceW, sourceH, systemId, accessorySummary = '', sourceKey, variantSize, orderCardTotal = 1) {
+  const DPI = 300;
+  const BAND_H = 240;                 // 0.8 in added to L for the barcode
+  const box = opaqueBounds(sourceImg, sourceW, sourceH) || { x: 0, y: 0, w: sourceW, h: sourceH };
+  const landscape = box.w > box.h;
+  const size = parseInchSize(variantSize);
+  // Portrait piece size in px.
+  const pieceW = size ? Math.round(size.w * DPI) : (landscape ? box.h : box.w);
+  const pieceH = size ? Math.round(size.l * DPI) : (landscape ? box.w : box.h);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = pieceW;
+  canvas.height = pieceH + BAND_H;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  if (landscape) {
+    ctx.save();
+    ctx.translate(pieceW / 2, pieceH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(sourceImg, box.x, box.y, box.w, box.h, -pieceH / 2, -pieceW / 2, pieceH, pieceW);
+    ctx.restore();
+  } else {
+    ctx.drawImage(sourceImg, box.x, box.y, box.w, box.h, 0, 0, pieceW, pieceH);
+  }
+
+  if (sourceKey !== 'back') {
+    // Same panel metrics as the sticker sheet / default stamp.
+    const PANEL_PAD = 10;
+    const TEXT_FONT = 32;
+    const TEXT_H = TEXT_FONT + 8;
+    const TEXT_TO_BAR = 6;
+    const BARCODE_W = 350;
+    const BARCODE_H = 130;
+    const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
+    ctx.font = `bold ${TEXT_FONT}px sans-serif`;
+    const panelW = Math.min(pieceW, Math.max(Math.ceil(ctx.measureText(codeText).width), BARCODE_W) + PANEL_PAD * 2);
+    const panelH = PANEL_PAD + TEXT_H + TEXT_TO_BAR + BARCODE_H + PANEL_PAD;
+    const panelX = 0;
+    const panelY = pieceH + Math.round((BAND_H - panelH) / 2);
+
+    ctx.fillStyle = Number(orderCardTotal) >= 2 ? MULTI_CARD_BG : '#ffffff';
+    ctx.fillRect(panelX, panelY, panelW, panelH);
     ctx.fillStyle = '#000000';
     ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
