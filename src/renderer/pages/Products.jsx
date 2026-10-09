@@ -13,6 +13,8 @@ export default function Products() {
   const [dupName, setDupName] = useState('');
   const [dupBusy, setDupBusy] = useState(false);
   const [statusBusy, setStatusBusy] = useState(null); // id of product whose status is toggling
+  const [picked, setPicked] = useState(() => new Set()); // product ids selected for bulk tier copy
+  const [tiers, setTiers] = useState([]);
   const { hasRole } = useAuth();
   const navigate = useNavigate();
 
@@ -24,6 +26,24 @@ export default function Products() {
   };
 
   useEffect(() => { fetchProducts(); }, []);
+  useEffect(() => {
+    if (hasRole('admin')) api.get('/settings/tiers').then(res => setTiers(res.data || [])).catch(() => {});
+  }, []);
+
+  const togglePick = (id, e) => {
+    e.stopPropagation();
+    setPicked(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+  const allShownPicked = products.length > 0 && products.every(p => picked.has(p.id));
+  const togglePickAll = () => setPicked(prev => {
+    const next = new Set(prev);
+    products.forEach(p => (allShownPicked ? next.delete(p.id) : next.add(p.id)));
+    return next;
+  });
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -101,6 +121,17 @@ export default function Products() {
         </form>
       </div>
 
+      {hasRole('admin') && tiers.length > 1 && products.length > 0 && (
+        <BulkCopyTierPrices
+          tiers={tiers}
+          picked={picked}
+          products={products}
+          allShownPicked={allShownPicked}
+          onTogglePickAll={togglePickAll}
+          onClear={() => setPicked(new Set())}
+        />
+      )}
+
       {/* Create form */}
       {showCreate && (
         <form onSubmit={handleCreate} className="mb-4 bg-white rounded-xl border border-neutral-200 p-4 flex gap-3 items-end shadow-sm">
@@ -127,12 +158,18 @@ export default function Products() {
         ) : products.length === 0 ? (
           <p className="text-neutral-400 col-span-3">No products found</p>
         ) : products.map(product => (
-          <div key={product.id} onClick={() => navigate(`/products/${product.id}`)} className="bg-white rounded-xl border border-neutral-200 p-4 hover:border-orange-300 hover:shadow-md cursor-pointer transition-all shadow-sm">
+          <div key={product.id} onClick={() => navigate(`/products/${product.id}`)} className={`bg-white rounded-xl border p-4 hover:border-orange-300 hover:shadow-md cursor-pointer transition-all shadow-sm ${picked.has(product.id) ? 'border-orange-400 ring-2 ring-orange-100' : 'border-neutral-200'}`}>
             <div className="flex justify-between items-start">
-              <div>
+              <div className="flex items-start gap-2">
+                {hasRole('admin') && (
+                  <input type="checkbox" checked={picked.has(product.id)} onClick={e => togglePick(product.id, e)} onChange={() => {}}
+                    title="Chọn để copy giá tier" className="mt-1 accent-orange-500 cursor-pointer" />
+                )}
+                <div>
                 <h3 className="text-neutral-800 font-medium">{product.name}</h3>
                 {product.style && <p className="text-neutral-500 text-xs mt-1">Style: {product.style}</p>}
                 <p className="text-neutral-400 text-xs mt-1">{product.variants?.length || 0} variants</p>
+                </div>
               </div>
               {hasRole('admin') ? (
                 <button
@@ -183,6 +220,71 @@ export default function Products() {
           </form>
         </div>
       )}
+    </div>
+  );
+}
+
+// Copy every price (all variant keys + all add-on styles) of the selected
+// products from one tier onto another — the bulk version of ProductDetail's
+// CopyTierPrices. Overwrites the target tier's matching prices.
+function BulkCopyTierPrices({ tiers, picked, products, allShownPicked, onTogglePickAll, onClear }) {
+  const [fromId, setFromId] = useState('');
+  const [toId, setToId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const tierName = (tid) => tiers.find(t => String(t.id) === String(tid))?.name || `#${tid}`;
+  const count = picked.size;
+
+  const handleCopy = async () => {
+    if (!count) return alert('Chọn ít nhất 1 product');
+    if (!fromId || !toId) return alert('Chọn tier nguồn và tier đích');
+    if (fromId === toId) return alert('Tier nguồn và tier đích phải khác nhau');
+    const names = products.filter(p => picked.has(p.id)).map(p => p.name);
+    const preview = names.slice(0, 10).join('\n• ') + (count > names.slice(0, 10).length ? `\n… (${count} product)` : '');
+    if (!confirm(`Copy toàn bộ giá của ${count} product từ tier "${tierName(fromId)}" sang "${tierName(toId)}"?\n\n• ${preview}\n\nGiá variant + add-on đang có ở "${tierName(toId)}" sẽ bị GHI ĐÈ.`)) return;
+    setBusy(true);
+    try {
+      const res = await api.post('/products/copy-tier-prices', {
+        product_ids: [...picked], from_tier_id: Number(fromId), to_tier_id: Number(toId),
+      });
+      alert(res.data.message);
+      onClear();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Copy giá thất bại');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-4 bg-white rounded-xl border border-neutral-200 p-3 shadow-sm flex flex-wrap items-end gap-3">
+      <div className="flex items-center gap-2 pb-1.5">
+        <label className="flex items-center gap-1.5 text-sm text-neutral-700 cursor-pointer">
+          <input type="checkbox" checked={allShownPicked} onChange={onTogglePickAll} className="accent-orange-500" />
+          Chọn tất cả
+        </label>
+        <span className="text-xs text-neutral-500">Đã chọn <b className="text-orange-600">{count}</b></span>
+        {count > 0 && <button onClick={onClear} className="text-xs text-neutral-400 hover:text-neutral-600">Bỏ chọn</button>}
+      </div>
+      <div className="flex-1" />
+      <div>
+        <label className="text-xs text-neutral-500 block">Copy giá từ tier</label>
+        <select value={fromId} onChange={e => setFromId(e.target.value)} className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+          <option value="">— chọn —</option>
+          {tiers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+      </div>
+      <span className="pb-2 text-neutral-400">→</span>
+      <div>
+        <label className="text-xs text-neutral-500 block">Sang tier</label>
+        <select value={toId} onChange={e => setToId(e.target.value)} className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+          <option value="">— chọn —</option>
+          {tiers.filter(t => String(t.id) !== String(fromId)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+      </div>
+      <button onClick={handleCopy} disabled={busy || !count || !fromId || !toId}
+        className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">
+        {busy ? 'Đang copy…' : `Copy giá ${count || ''} product`}
+      </button>
     </div>
   );
 }
