@@ -930,3 +930,172 @@ export async function buildTiledGangsheet(orders, {
     metaIds: metaIdsUsed,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Die Cut Sticker gang (convert layout 'native_band'). Letter 8.5×11 sheet like
+// the card skin (11×17 with `large`, for 4x4 / 5x5): each _qr is printed at its
+// OWN size, twice — the original with its barcode band, then a design-only copy
+// (band cropped off). At most 3 _qr per Letter page, 2 per 11×17 page; pieces are shelf-packed left→right, top→bottom, and the whole chunk
+// is turned 90° when that fits more pieces per sheet. Pages that overflow start
+// a new sheet. One single-page PDF per sheet + transparent PNGs, same as the
+// tiled card-skin builder.
+// ---------------------------------------------------------------------------
+const DIECUT_BAND_H = 240;     // band composeImage('native_band') adds below the design
+const DIECUT_PER_PAGE = 3;     // _qr per Letter sheet
+const DIECUT_LARGE = { pageW: 3300, pageH: 5100, perPage: 2 };   // 11×17, 4x4 / 5x5
+const DIECUT_COPIES = 2;       // 1 original (with band) + 1 design-only copy
+const DIECUT_MARGIN = 30;      // 0.1" page margin — lets a 4x4 pair (8.2") fit Letter
+const DIECUT_GAP = 60;         // 0.2" between pieces
+
+// How many w×h pieces a shelf fits on one page (for picking orientation).
+function diecutFitCount(w, h, pageW, pageH) {
+  const innerW = pageW - DIECUT_MARGIN * 2;
+  const innerH = pageH - DIECUT_MARGIN * 2;
+  if (w > innerW || h > innerH) return 0;
+  const perRow = Math.floor((innerW + DIECUT_GAP) / (w + DIECUT_GAP));
+  const rows = Math.floor((innerH + DIECUT_GAP) / (h + DIECUT_GAP));
+  return perRow * rows;
+}
+
+export async function buildDieCutGangsheet(orders, {
+  onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0, collectPages = false,
+  large = false,
+} = {}) {
+  if (!orders.length) throw new Error('Empty chunk');
+  const records = flattenQrMetas(orders, { includeProduced });
+  if (!records.length) throw new Error('No _qr metas in this chunk');
+
+  // Shadow the Letter constants so the packing/PDF code below serves both sizes.
+  const PAGE_W = large ? DIECUT_LARGE.pageW : 2550;
+  const PAGE_H = large ? DIECUT_LARGE.pageH : 3300;
+  const perPage = large ? DIECUT_LARGE.perPage : DIECUT_PER_PAGE;
+  const innerW = PAGE_W - DIECUT_MARGIN * 2;
+  const innerH = PAGE_H - DIECUT_MARGIN * 2;
+  const pageBlobs = [];
+  const pagePngBytes = [];
+  const canvas = document.createElement('canvas');
+  canvas.width = PAGE_W;
+  canvas.height = PAGE_H;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  const flushPage = async () => {
+    if (collectPages) pageBlobs.push(await canvasToBlob(canvas, 'image/png'));
+    const flat = document.createElement('canvas');
+    flat.width = PAGE_W;
+    flat.height = PAGE_H;
+    const fctx = flat.getContext('2d');
+    fctx.fillStyle = '#ffffff';
+    fctx.fillRect(0, 0, PAGE_W, PAGE_H);
+    fctx.drawImage(canvas, 0, 0);
+    const blob = await canvasToBlob(flat, 'image/png');
+    pagePngBytes.push(new Uint8Array(await blob.arrayBuffer()));
+  };
+
+  let rotate = null;              // decided on the first image
+  let x = 0, y = 0, rowH = 0;     // shelf cursor inside the margins
+  let onPage = 0;                 // _qr placed on the current page
+  let dirty = false;
+  const newPage = async () => {
+    if (dirty) await flushPage();
+    ctx.clearRect(0, 0, PAGE_W, PAGE_H);
+    x = 0; y = 0; rowH = 0; onPage = 0; dirty = false;
+  };
+  // Next free spot for a box of bw×bh, or null when the page is full.
+  const reserve = (bw, bh) => {
+    if (x > 0 && x + bw > innerW) { x = 0; y += rowH + DIECUT_GAP; rowH = 0; }
+    if (y + bh > innerH) return null;
+    const at = { px: DIECUT_MARGIN + x, py: DIECUT_MARGIN + y };
+    x += bw + DIECUT_GAP;
+    rowH = Math.max(rowH, bh);
+    return at;
+  };
+
+  const total = records.length;
+  let done = 0;
+  const orderIdsUsed = [];
+  const metaIdsUsed = [];
+  const seenOrders = new Set();
+  await newPage();
+
+  for await (const { rec, img } of withPrefetchedImages(records)) {
+    const iw = img.width, ih = img.height;
+    const band = ih > DIECUT_BAND_H * 2 ? DIECUT_BAND_H : 0;
+    if (rotate === null) {
+      rotate = diecutFitCount(ih, iw, PAGE_W, PAGE_H) > diecutFitCount(iw, ih, PAGE_W, PAGE_H);
+    }
+    // Pieces: [srcH, drawn w, drawn h] — the copy drops the band.
+    const pieces = [];
+    for (let c = 0; c < DIECUT_COPIES; c++) {
+      const srcH = c === 0 ? ih : ih - band;
+      let w = rotate ? srcH : iw;
+      let h = rotate ? iw : srcH;
+      const s = Math.min(1, innerW / w, innerH / h);   // never larger than the page
+      pieces.push({ srcH, w: Math.round(w * s), h: Math.round(h * s), s });
+    }
+
+    if (onPage >= perPage) await newPage();
+    for (const p of pieces) {
+      let at = reserve(p.w, p.h);
+      if (!at) { await newPage(); at = reserve(p.w, p.h); }
+      ctx.save();
+      if (rotate) {
+        ctx.translate(at.px + p.w, at.py);
+        ctx.rotate(Math.PI / 2);
+        ctx.drawImage(img, 0, 0, iw, p.srcH, 0, 0, p.h, p.w);
+      } else {
+        ctx.drawImage(img, 0, 0, iw, p.srcH, at.px, at.py, p.w, p.h);
+      }
+      ctx.restore();
+      dirty = true;
+    }
+    onPage++;
+
+    metaIdsUsed.push(rec.meta.id);
+    if (!seenOrders.has(rec.order.id)) { seenOrders.add(rec.order.id); orderIdsUsed.push(rec.order.id); }
+    done++;
+    onProgress?.({ done, total, system_id: rec.order.system_id, key: rec.meta.key });
+  }
+  if (dirty) await flushPage();
+
+  const orderedOrders = orders.filter(o => seenOrders.has(o.id));
+  const firstSid = orderedOrders[0]?.system_id || '';
+  const lastSid = orderedOrders[orderedOrders.length - 1]?.system_id || firstSid;
+  const filename = gangsheetFilename({
+    linePrefix: (linePrefix || '').toUpperCase(),
+    firstSid, lastSid,
+    ordersCount: orderedOrders.length,
+    metasCount: metaIdsUsed.length,
+    suffix: nameSuffix,
+    seq,
+  });
+
+  const pageWpt = (PAGE_W / DPI) * PT_PER_IN;
+  const pageHpt = (PAGE_H / DPI) * PT_PER_IN;
+  const pdfPages = [];
+  for (let i = 0; i < pagePngBytes.length; i++) {
+    const doc = await PDFDocument.create();
+    const pageImg = await doc.embedPng(pagePngBytes[i]);
+    const page = doc.addPage([pageWpt, pageHpt]);
+    page.drawImage(pageImg, { x: 0, y: 0, width: pageWpt, height: pageHpt });
+    const bytes = await doc.save();
+    pdfPages.push({
+      blob: new Blob([bytes], { type: 'application/pdf' }),
+      filename: pdfNameForPage(filename, i),
+    });
+  }
+
+  return {
+    blob: pdfPages[0]?.blob ?? new Blob([], { type: 'application/pdf' }),
+    filename: pdfPages[0]?.filename ?? filename,
+    pdfPages,
+    baseFilename: filename,
+    pageBlobs, linePrefix,
+    firstSid, lastSid,
+    ordersInChunk: orderedOrders.length,
+    metasUsed: metaIdsUsed.length,
+    orderIds: orderIdsUsed,
+    metaIds: metaIdsUsed,
+  };
+}

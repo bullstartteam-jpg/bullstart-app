@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { buildGangsheetForChunk, buildStickerPassthrough, buildTiledGangsheet, buildSleeveGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks, rasterizeGangPdf, fetchFileBytes } from '../services/gangsheetBuilder';
+import { buildGangsheetForChunk, buildStickerPassthrough, buildTiledGangsheet, buildDieCutGangsheet, buildSleeveGangsheet, chunkArray, flattenQrMetas, isQrKey, getGangPageFormat, setGangPageFormat, setGangMarks, rasterizeGangPdf, fetchFileBytes } from '../services/gangsheetBuilder';
 import { generateClaimedGroups, runGroupAssign, removeDesignAndRegen, deleteGroup, deleteOpenGroups } from '../services/groupGang';
 import {
   subscribeAssignJob, startAssignJob, stopAssignJob, runAssignNow,
@@ -444,6 +444,14 @@ function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY), includeProd
   };
 }
 
+// Convert layouts whose _qr is already the finished print piece: every _qr is
+// ganged on its own, at its own size, and the PNG is passed through untouched
+// (renamed only, no PDF).
+const PASSTHROUGH_LAYOUTS = ['sticker_sheet', 'kindle_insert'];
+const isPassthroughLayout = (layout) => PASSTHROUGH_LAYOUTS.includes(layout);
+// Die Cut sizes ganged on 11×17 (2 _qr per sheet) instead of Letter.
+const DIECUT_LARGE_SIZES = new Set(['4x4', '5x5']);
+
 // One copy of `order` per _qr meta, each carrying only that meta, so the
 // builder emits exactly one page. Used to give every Sticker Sheet _qr its
 // own gang.
@@ -462,8 +470,12 @@ function splitOrderPerQr(order, { includeProduced = false } = {}) {
 //   card skin (convert layout 'outside') → tiled Letter sheet, grouped by
 //                                          order_type × chip, 3 orders/chunk
 //   pass sleeve (convert layout 'sleeve') → 6 distinct designs per Letter sheet
-//   sticker sheet ('sticker_sheet')      → one gang per _qr, a single page at
-//                                          the _qr's own size (11×17)
+//   sticker sheet / kindle insert        → one gang per _qr, the _qr PNG passed
+//   ('sticker_sheet', 'kindle_insert')     through at its own size
+//   die cut ('native_band')              → Letter sheet like the card skin, each
+//                                          _qr at its own size + a design-only
+//                                          copy, 3 _qr per sheet, grouped by
+//                                          order_type × size
 //   keep-native variant size (5x5)       → native-size gang, grouped by size
 //   everything else                      → the bucket flow (side + the chosen
 //                                          product/addon/material dimensions)
@@ -474,13 +486,15 @@ function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includePro
   const cardOrders = [];
   const sleeveOrders = [];
   const stickerOrders = [];
+  const dieCutOrders = [];
   const nativeOrders = [];
   const normalOrders = [];
   for (const o of orders) {
     const layout = orderConvertLayout(o, layoutMap);
     if (layout === 'outside') cardOrders.push(o);
     else if (layout === 'sleeve') sleeveOrders.push(o);
-    else if (layout === 'sticker_sheet') stickerOrders.push(o);
+    else if (isPassthroughLayout(layout)) stickerOrders.push(o);
+    else if (layout === 'native_band') dieCutOrders.push(o);
     else if (orderIsNative(o)) nativeOrders.push(o);
     else normalOrders.push(o);
   }
@@ -491,9 +505,30 @@ function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includePro
   // gang of its own — one page at the _qr's own size (native builder). An
   // order with quantity 2 yields two gangs. batchSize does not apply.
   for (const o of stickerOrders) {
-    const suffix = slugifyAccessory(orderOrderType(o)) || 'sticker-sheet';
+    const suffix = slugifyAccessory(orderOrderType(o))
+      || orderConvertLayout(o, layoutMap).replace('_', '-');
     for (const single of splitOrderPerQr(o, { includeProduced })) {
       chunks.push({ chunk: [single], suffix, tiled: false, native: true, sticker: true });
+    }
+  }
+
+  // Die Cut: group by order_type × variant size so a sheet packs one piece
+  // size, then cut on multiples of 3 _qr like the card skin.
+  const dieCutGroups = new Map();
+  for (const o of dieCutOrders) {
+    const ot = orderOrderType(o) || 'die-cut';
+    const sz = normSize(o.items?.[0]?.product_variant?.size) || '';
+    const key = `${ot}||${sz}`;
+    if (!dieCutGroups.has(key)) dieCutGroups.set(key, { ot, sz, orders: [] });
+    dieCutGroups.get(key).orders.push(o);
+  }
+  for (const [, g] of dieCutGroups) {
+    const tag = [slugifyAccessory(g.ot) || 'die-cut', g.sz].filter(Boolean).join('_');
+    // 4x4 / 5x5 don't fit 3 pairs on Letter: 11×17 sheets of 2 _qr, so a
+    // 3-_qr gang splits over 2 sheets.
+    const large = DIECUT_LARGE_SIZES.has(g.sz);
+    for (const chunk of chunkCardOrders(g.orders, 3, includeProduced)) {
+      chunks.push({ chunk, suffix: tag, dieCut: true, large });
     }
   }
 
@@ -740,14 +775,15 @@ function saveExportPng(v) {
 }
 
 /** page_format recorded on the hub for a routed chunk. */
-function chunkPageFormat({ tiled, sleeve, native }) {
-  // Both tiled layouts put 6 pieces on a Letter sheet; they differ in how, not
-  // in the page.
-  return (tiled || sleeve) ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
+function chunkPageFormat({ tiled, sleeve, native, dieCut, large }) {
+  if (dieCut && large) return 'tabloid';
+  // Both tiled layouts (and the die cut sheet) put 6 pieces on a Letter
+  // sheet; they differ in how, not in the page.
+  return (tiled || sleeve || dieCut) ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
 }
 
 /** Build one routed chunk into a PDF with the builder its branch calls for. */
-async function buildChunkPdf({ chunk, suffix, tiled, sleeve, native, sticker }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
+async function buildChunkPdf({ chunk, suffix, tiled, sleeve, native, sticker, dieCut, large }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
   const opts = { linePrefix, nameSuffix: suffix, seq, includeProduced, collectPages, onProgress };
   // Sticker Sheet: the gang page IS the _qr PNG — pass the file through
   // instead of re-rendering it (falls back when the _qr is not a PNG).
@@ -756,6 +792,7 @@ async function buildChunkPdf({ chunk, suffix, tiled, sleeve, native, sticker }, 
     if (fast) { onProgress?.({ done: 1, total: 1 }); return fast; }
   }
   if (sleeve) return buildSleeveGangsheet(chunk, opts);
+  if (dieCut) return buildDieCutGangsheet(chunk, { ...opts, large });
   return tiled
     ? buildTiledGangsheet(chunk, opts)
     // Sticker Sheet pages keep the _qr's transparency — no white backing.
@@ -2378,7 +2415,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     if (g.png_urls?.length && !force) { openGangPngs(g); return; }   // đã có → dùng lại
     // PNG-only gangs (Sticker Sheet) have no PDF to rasterise — rebuild instead.
     if (!/\.pdf(\?|$)/i.test(String(g.file_url || ''))) {
-      notify('Gang này không có PDF (Sticker Sheet chỉ có PNG). Dùng Re-gang để dựng lại PNG.', { title: 'Xuất PNG', kind: 'error' });
+      notify('Gang này không có PDF (Sticker Sheet / Kindle Insert chỉ có PNG). Dùng Re-gang để dựng lại PNG.', { title: 'Xuất PNG', kind: 'error' });
       return;
     }
     if (!window.electronAPI?.s3Upload) {
@@ -2528,11 +2565,14 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     // leave no record to swap the files onto.
     const layout = orderConvertLayout(orders[0], layoutMap);
     const tiled = layout === 'outside';
-    const native = !tiled && (layout === 'sticker_sheet' || orders.some(orderIsNative));
+    const passthrough = isPassthroughLayout(layout);
+    const dieCut = layout === 'native_band';
+    const large = dieCut && DIECUT_LARGE_SIZES.has(normSize(orders[0]?.items?.[0]?.product_variant?.size));
+    const native = !tiled && !dieCut && (passthrough || orders.some(orderIsNative));
 
     // A Sticker Sheet gang holds ONE _qr, but rebuild-source returns every _qr
     // of its orders — keep only the metas this gang actually printed.
-    if (layout === 'sticker_sheet' && Array.isArray(g.meta_ids) && g.meta_ids.length) {
+    if (passthrough && Array.isArray(g.meta_ids) && g.meta_ids.length) {
       const keep = new Set(g.meta_ids.map(Number));
       orders = orders.map(o => ({
         ...o,
@@ -2544,7 +2584,7 @@ function ManageTab({ isAdmin, source = 'normal' }) {
     // the date and the counts move, and those follow the rebuild.
     const { seq, suffix } = parseGangName(g.filename);
     const built = await buildChunkPdf(
-      { chunk: orders, suffix, tiled, native, sticker: layout === 'sticker_sheet' },
+      { chunk: orders, suffix, tiled, native, sticker: passthrough, dieCut, large },
       {
         seq,
         linePrefix: g.line_id || dominantLineId(orders),
@@ -2562,9 +2602,8 @@ function ManageTab({ isAdmin, source = 'normal' }) {
 
     // PNG from the build canvas — transparent, unlike the PDF rasteriser that
     // Export PNG uses. Sticker Sheet gangs: PNG only.
-    const sticker = layout === 'sticker_sheet';
     const { fileUrl, pngUrls, pdfUrls } = await uploadGangFiles(built, {
-      creds, png: true, pdf: !sticker, onProgress,
+      creds, png: true, pdf: !passthrough, onProgress,
     });
 
     const res = await api.put(`/gangsheets/${g.id}/files`, {
