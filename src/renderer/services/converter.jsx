@@ -1052,6 +1052,16 @@ async function composeImage(sourceUrl, systemId, accessorySummary = '', opts = {
     );
   }
 
+  // Native + band (e.g. Die Cut Sticker): design kept at its own pixel size,
+  // barcode band added below.
+  if (opts.convert_layout === 'native_band') {
+    const canvas = document.createElement('canvas');
+    canvas.width = sourceW;
+    canvas.height = sourceH + BARCODE_BAND_H;
+    canvas.getContext('2d').drawImage(sourceImg, 0, 0);
+    return await finishBarcodeBand(canvas, sourceH, systemId, accessorySummary, source_key, opts.order_card_total || opts.order_items_count || 1);
+  }
+
   // Sticker Sheet: fixed 11×17 canvas, design scaled to 8×11 flush top.
   if (opts.convert_layout === 'sticker_sheet') {
     return await composeStickerSheet(
@@ -1262,7 +1272,6 @@ function opaqueBounds(img, w, h) {
 // variant size can't be parsed, the trimmed design keeps its own pixel size.
 async function composeKindleInsert(sourceImg, sourceW, sourceH, systemId, accessorySummary = '', sourceKey, variantSize, orderCardTotal = 1) {
   const DPI = 300;
-  const BAND_H = 240;                 // 0.8 in added to L for the barcode
   const box = opaqueBounds(sourceImg, sourceW, sourceH) || { x: 0, y: 0, w: sourceW, h: sourceH };
   const landscape = box.w > box.h;
   const size = parseInchSize(variantSize);
@@ -1272,7 +1281,7 @@ async function composeKindleInsert(sourceImg, sourceW, sourceH, systemId, access
 
   const canvas = document.createElement('canvas');
   canvas.width = pieceW;
-  canvas.height = pieceH + BAND_H;
+  canvas.height = pieceH + BARCODE_BAND_H;
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
@@ -1287,6 +1296,17 @@ async function composeKindleInsert(sourceImg, sourceW, sourceH, systemId, access
     ctx.drawImage(sourceImg, box.x, box.y, box.w, box.h, 0, 0, pieceW, pieceH);
   }
 
+  return await finishBarcodeBand(canvas, pieceH, systemId, accessorySummary, sourceKey, orderCardTotal);
+}
+
+const BARCODE_BAND_H = 240;   // 0.8 in band added below the design for the barcode
+
+// Stamp the Code 128 (system_id) + text panel into the band that starts at
+// `bandY` (the design's bottom edge) and encode the canvas as a 300dpi PNG.
+// The panel is white, or purple when the order has ≥ 2 pieces; the rest of the
+// band stays transparent. Back faces keep the band but get no panel.
+async function finishBarcodeBand(canvas, bandY, systemId, accessorySummary, sourceKey, orderCardTotal = 1) {
+  const ctx = canvas.getContext('2d');
   if (sourceKey !== 'back') {
     // Same panel metrics as the sticker sheet / default stamp.
     const PANEL_PAD = 10;
@@ -1297,10 +1317,10 @@ async function composeKindleInsert(sourceImg, sourceW, sourceH, systemId, access
     const BARCODE_H = 130;
     const codeText = accessorySummary ? `${systemId}-${accessorySummary}` : systemId;
     ctx.font = `bold ${TEXT_FONT}px sans-serif`;
-    const panelW = Math.min(pieceW, Math.max(Math.ceil(ctx.measureText(codeText).width), BARCODE_W) + PANEL_PAD * 2);
+    const panelW = Math.min(canvas.width, Math.max(Math.ceil(ctx.measureText(codeText).width), BARCODE_W) + PANEL_PAD * 2);
     const panelH = PANEL_PAD + TEXT_H + TEXT_TO_BAR + BARCODE_H + PANEL_PAD;
     const panelX = 0;
-    const panelY = pieceH + Math.round((BAND_H - panelH) / 2);
+    const panelY = bandY + Math.round((BARCODE_BAND_H - panelH) / 2);
 
     ctx.fillStyle = Number(orderCardTotal) >= 2 ? MULTI_CARD_BG : '#ffffff';
     ctx.fillRect(panelX, panelY, panelW, panelH);
