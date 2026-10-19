@@ -149,10 +149,10 @@ function Legend({ cls, label }) {
   );
 }
 
-// How a partner is paid: a share of total_cost when a percentage is set,
+// How a partner is paid: total_cost less a percentage when one is set,
 // otherwise their rate card.
 function PayRule({ percent, priceList }) {
-  if (percent != null) return <>Chia: <span className="text-emerald-700 font-semibold">{Number(percent)}% total cost</span></>;
+  if (percent != null) return <>Chia: <span className="text-emerald-700 font-semibold">total cost − {Number(percent)}%</span></>;
   if (priceList) return <>Bảng giá: <span className="text-purple-700">{priceList.name}</span></>;
   return <span className="text-red-500">Chưa đặt % chia — không tính tiền được</span>;
 }
@@ -174,7 +174,7 @@ function PercentEditor({ partner, percent, onSaved, onCancel }) {
     <form onSubmit={e => { e.preventDefault(); save(val); }} className="flex items-center gap-1 mt-1">
       <input type="number" min="0" max="100" step="0.01" autoFocus value={val} onChange={e => setVal(e.target.value)}
         className="w-20 px-2 py-0.5 bg-[#faf8f6] border border-neutral-200 rounded text-xs" />
-      <span className="text-xs text-neutral-500">% total cost</span>
+      <span className="text-xs text-neutral-500">% trừ trên total cost</span>
       <button type="submit" disabled={saving || val === ''} className="px-2 py-0.5 text-xs rounded bg-emerald-500 text-white disabled:opacity-40">Lưu</button>
       {percent != null && (
         <button type="button" disabled={saving} onClick={() => save(null)}
@@ -516,7 +516,7 @@ function Working({ breakdown, total }) {
     return (
       <div className="space-y-0.5">
         <div className="flex gap-2 text-xs">
-          <span className="text-neutral-600">{Number(breakdown.percent.rate)}% × total cost {fmt$(breakdown.percent.base)}</span>
+          <span className="text-neutral-600">total cost {fmt$(breakdown.percent.base)} − {Number(breakdown.percent.rate)}%</span>
           <Dots />
           <span className={pushScan ? 'text-neutral-700' : 'font-semibold text-emerald-700'}>
             {fmt$(pushScan ? breakdown.gross : total)}
@@ -610,7 +610,7 @@ function workingText(breakdown) {
   const items = breakdown?.items || [];
   const orderParts = breakdown?.order || [];
   const push = breakdown?.push_scan ? ` - push scan ${fmt$(breakdown.push_scan)}` : '';
-  if (breakdown?.percent) return `${Number(breakdown.percent.rate)}% x total cost ${fmt$(breakdown.percent.base)}${push}`;
+  if (breakdown?.percent) return `total cost ${fmt$(breakdown.percent.base)} - ${Number(breakdown.percent.rate)}%${push}`;
   const one = (label, note, amt) =>
     `${label}${note ? ` (${note})` : ''} ${amt == null ? '(chưa có giá)' : fmt$(amt)}`;
 
