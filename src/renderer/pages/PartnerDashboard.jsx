@@ -245,9 +245,14 @@ function PartnerCard({ p, onOpen, onPay, onChanged }) {
         <Stat label="Đã trả partner" value={fmt$(p.paid_out)} />
       </div>
 
-      {p.push_scan_orders > 0 && (
-        <div className="text-[11px] text-red-600">
-          Đã trừ phí push scan: <b>−{fmt$(p.push_scan_deducted)}</b> · {p.push_scan_orders} đơn (đã tính trong doanh thu)
+      {/* Push scan: taken off the partner's amount, so shown beside it. */}
+      <div className="grid grid-cols-2 gap-2 text-center">
+        <Stat label={`Đã trừ push scan · ${p.push_scan_orders ?? 0} đơn`} value={`−${fmt$(p.push_scan_deducted ?? 0)}`} tone="red" />
+        <Stat label="Đơn push scan đã ship" value={p.push_scan_total ?? 0} />
+      </div>
+      {p.push_scan_pending > 0 && (
+        <div className="text-[11px] text-amber-700">
+          {p.push_scan_pending} đơn push scan chưa trừ — bấm Tính tiền → Ghi số tiền vào đơn
         </div>
       )}
 
