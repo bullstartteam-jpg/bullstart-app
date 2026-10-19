@@ -503,12 +503,31 @@ function Working({ breakdown, total }) {
   const items = breakdown?.items || [];
   const orderParts = breakdown?.order || [];
 
+  // Flat amount off a push scan order, after the percentage / rate card.
+  const pushScan = breakdown?.push_scan ? (
+    <div className="flex gap-2 text-xs">
+      <span className="text-red-600">Trừ phí push scan</span>
+      <Dots />
+      <span className="text-red-600">−{fmt$(breakdown.push_scan)}</span>
+    </div>
+  ) : null;
+
   if (breakdown?.percent) {
     return (
-      <div className="flex gap-2 text-xs">
-        <span className="text-neutral-600">{Number(breakdown.percent.rate)}% × total cost {fmt$(breakdown.percent.base)}</span>
-        <Dots />
-        <span className="font-semibold text-emerald-700">{fmt$(total)}</span>
+      <div className="space-y-0.5">
+        <div className="flex gap-2 text-xs">
+          <span className="text-neutral-600">{Number(breakdown.percent.rate)}% × total cost {fmt$(breakdown.percent.base)}</span>
+          <Dots />
+          <span className={pushScan ? 'text-neutral-700' : 'font-semibold text-emerald-700'}>
+            {fmt$(pushScan ? breakdown.gross : total)}
+          </span>
+        </div>
+        {pushScan}
+        {pushScan && (
+          <div className="flex gap-2 text-xs font-semibold text-emerald-700 pt-0.5 border-t border-neutral-200">
+            <span>Tổng đơn</span><span className="flex-1" /><span>{fmt$(total)}</span>
+          </div>
+        )}
       </div>
     );
   }
@@ -549,6 +568,8 @@ function Working({ breakdown, total }) {
         </div>
       )}
 
+      {pushScan}
+
       <div className="flex gap-2 text-xs font-semibold text-emerald-700 pt-1 border-t border-neutral-200">
         <span>Tổng đơn</span>
         <span className="flex-1" />
@@ -588,7 +609,8 @@ function Row({ part, amount }) {
 function workingText(breakdown) {
   const items = breakdown?.items || [];
   const orderParts = breakdown?.order || [];
-  if (breakdown?.percent) return `${Number(breakdown.percent.rate)}% x total cost ${fmt$(breakdown.percent.base)}`;
+  const push = breakdown?.push_scan ? ` - push scan ${fmt$(breakdown.push_scan)}` : '';
+  if (breakdown?.percent) return `${Number(breakdown.percent.rate)}% x total cost ${fmt$(breakdown.percent.base)}${push}`;
   const one = (label, note, amt) =>
     `${label}${note ? ` (${note})` : ''} ${amt == null ? '(chưa có giá)' : fmt$(amt)}`;
 
@@ -599,7 +621,7 @@ function workingText(breakdown) {
   if (orderParts.length) {
     parts.push(`Ship: ${orderParts.map(p => one(p.label, p.note, p.amount)).join(' + ')}`);
   }
-  return parts.join(' | ');
+  return parts.join(' | ') + push;
 }
 
 // YYYY-MM-DD in the hub's day convention (America/Chicago), `offset` days from today.
