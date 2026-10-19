@@ -186,16 +186,20 @@ function PercentEditor({ partner, percent, onSaved, onCancel }) {
   );
 }
 
-// Take the push scan deduction off priced orders that do not have it yet.
-async function applyPushScan(p, onDone) {
+// Take the push scan deduction off priced orders that do not have it yet;
+// locked (already marked printed) orders only when asked for explicitly.
+async function applyPushScan(p, onDone, includeLocked = false) {
+  const n = includeLocked ? p.push_scan_fixable + p.push_scan_locked_missing : p.push_scan_fixable;
   const ok = await askConfirm(
-    `Trừ $0.40 push scan cho ${p.push_scan_fixable} đơn của ${p.user.name} chưa bị trừ?
-Chỉ trừ thêm vào số tiền đang có, không tính lại đơn. Đơn đã chốt giữ nguyên.`,
+    `Trừ $0.40 push scan cho ${n} đơn của ${p.user.name} chưa bị trừ?
+Chỉ trừ thêm vào số tiền đang có, không tính lại đơn.`
+    + (includeLocked ? `
+Gồm cả ${p.push_scan_locked_missing} đơn đã chốt — số còn nợ partner giảm tương ứng.` : ' Đơn đã chốt giữ nguyên.'),
     { title: 'Trừ push scan', okText: 'Trừ' },
   );
   if (!ok) return;
   try {
-    const res = await api.post(`/partner-report/${p.user.id}/apply-push-scan`);
+    const res = await api.post(`/partner-report/${p.user.id}/apply-push-scan`, { include_locked: includeLocked });
     notify(res.data?.message, { title: 'Trừ push scan', kind: res.data?.updated ? 'success' : 'info' });
     onDone();
   } catch (err) {
@@ -267,6 +271,15 @@ function PartnerCard({ p, onOpen, onPay, onChanged }) {
         <Stat label={`Đã trừ push scan · ${p.push_scan_orders ?? 0} đơn`} value={`−${fmt$(p.push_scan_deducted ?? 0)}`} tone="red" />
         <Stat label="Đơn push scan đã ship" value={p.push_scan_total ?? 0} />
       </div>
+      {p.push_scan_locked_missing > 0 && (
+        <div className="flex items-center gap-2 text-[11px] text-amber-700">
+          {p.push_scan_locked_missing} đơn push scan đã chốt chưa trừ
+          <button onClick={() => applyPushScan(p, onChanged, true)}
+            className="px-2 py-0.5 rounded border border-red-300 text-red-600 hover:bg-red-50 text-[11px]">
+            Trừ cả đơn đã chốt (−{fmt$((p.push_scan_fixable + p.push_scan_locked_missing) * 0.4)})
+          </button>
+        </div>
+      )}
       {p.push_scan_fixable > 0 && (
         <div className="flex items-center gap-2 text-[11px] text-amber-700">
           {p.push_scan_fixable} đơn push scan chưa trừ
