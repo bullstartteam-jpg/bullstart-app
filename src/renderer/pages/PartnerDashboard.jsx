@@ -245,6 +245,12 @@ function PartnerCard({ p, onOpen, onPay, onChanged }) {
         <Stat label="Đã trả partner" value={fmt$(p.paid_out)} />
       </div>
 
+      {p.push_scan_orders > 0 && (
+        <div className="text-[11px] text-red-600">
+          Đã trừ phí push scan: <b>−{fmt$(p.push_scan_deducted)}</b> · {p.push_scan_orders} đơn (đã tính trong doanh thu)
+        </div>
+      )}
+
       {(p.unpriced > 0 || p.undated > 0) && (
         <div className="flex gap-2 flex-wrap text-[11px]">
           {p.unpriced > 0 && (
@@ -839,7 +845,10 @@ function RevenueModal({ partner, onClose, onApplied }) {
                     <td className="py-1.5 px-3 text-right text-neutral-600">{o.qty}</td>
                     <td className="py-1.5 px-3 text-right text-neutral-500">{fmt$(o.order_total)}</td>
                     <td className="py-1.5 px-3 text-right text-neutral-600">{fmt$(o.current)}</td>
-                    <td className="py-1.5 px-3 text-right font-medium text-neutral-800">{fmt$(o.computed)}</td>
+                    <td className="py-1.5 px-3 text-right font-medium text-neutral-800">
+                      {fmt$(o.computed)}
+                      {o.breakdown?.push_scan ? <div className="text-[10px] font-normal text-red-600">−{fmt$(o.breakdown.push_scan)} push scan</div> : null}
+                    </td>
                     <td className={`py-1.5 px-3 text-right text-xs ${
                       o.diff == null ? 'text-neutral-300'
                         : o.diff > 0 ? 'text-emerald-600' : o.diff < 0 ? 'text-red-500' : 'text-neutral-400'
@@ -867,6 +876,9 @@ function RevenueModal({ partner, onClose, onApplied }) {
             <span className="text-neutral-600">Giá đơn thật: <b>{fmt$(t.order_total)}</b></span>
             <span className="text-neutral-600">Hiện tại: <b>{fmt$(t.current)}</b></span>
             <span className="text-emerald-700">Tính ra: <b>{fmt$(t.computed)}</b></span>
+            {t.push_scan_orders > 0 && (
+              <span className="text-red-600">đã trừ push scan: <b>−{fmt$(t.push_scan)}</b> ({t.push_scan_orders} đơn)</span>
+            )}
             <span className="text-emerald-700">đơn đã paid: <b>{fmt$(t.computed_paid)}</b></span>
             <span className="text-amber-600">đơn chưa paid: <b>{fmt$(t.computed_unpaid)}</b> ({t.orders_unpaid} đơn)</span>
             {t.settled > 0 && <span className="text-neutral-500">{t.settled} đơn đã chốt tiền (giữ nguyên)</span>}
