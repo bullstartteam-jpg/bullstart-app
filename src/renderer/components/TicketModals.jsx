@@ -210,6 +210,23 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
     } finally { setBusy(false); }
   };
 
+  // The opening message is the ticket itself, so removing it removes the
+  // whole thread, replies included.
+  const deleteTicket = async () => {
+    const ok = await askConfirm('Xoá ticket này cùng toàn bộ tin nhắn? Không thể hoàn tác.', { title: 'Xoá ticket', okText: 'Xoá', cancelText: 'Huỷ' });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.delete(`/tickets/${id}`);
+      notify('Đã xoá ticket', { title: 'Tickets', kind: 'success' });
+      onChanged?.();
+      onClose();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Xoá thất bại', { title: 'Tickets', kind: 'error' });
+      setBusy(false);
+    }
+  };
+
   // Opening message is tickets.content; ticket_items holds only the replies.
   // Stitched into one list so the reader never sees that split.
   const thread = ticket
@@ -262,8 +279,10 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
                 <span className="font-medium text-neutral-700 truncate">{m.sender?.name || '—'}</span>
                 <span className="shrink-0 flex items-center gap-2">
                   {fmtTime(m.created_at)}
-                  {m.id !== 'root' && (
-                    <button onClick={() => deleteItem(m.id)} disabled={busy} title="Xoá tin nhắn" aria-label="Xoá tin nhắn"
+                  {(
+                    <button onClick={() => (m.id === 'root' ? deleteTicket() : deleteItem(m.id))} disabled={busy}
+                      title={m.id === 'root' ? 'Xoá ticket (tin mở đầu là ticket)' : 'Xoá tin nhắn'}
+                      aria-label={m.id === 'root' ? 'Xoá ticket' : 'Xoá tin nhắn'}
                       className="p-1 -m-1 rounded text-neutral-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:pointer-events-none">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import Pagination from '../components/Pagination';
-import { notify } from '../components/Dialog';
+import { notify, askConfirm } from '../components/Dialog';
 import {
   TicketThreadModal, TicketStatusPill as StatusPill, TICKET_PLATFORM as PLATFORM, fmtTime as fmt,
 } from '../components/TicketModals';
@@ -26,6 +26,22 @@ export default function Tickets() {
   const toggleSelectAll = () => {
     if (selected.length === tickets.length && tickets.length > 0) setSelected([]);
     else setSelected(tickets.map(t => t.id));
+  };
+
+  // Staff may delete any ticket (the API still checks).
+  const canDelete = () => true;
+  const deleteTicket = async (t) => {
+    const ok = await askConfirm(`Xoá ticket "${t.subject}" cùng toàn bộ tin nhắn? Không thể hoàn tác.`,
+      { title: 'Xoá ticket', okText: 'Xoá', cancelText: 'Huỷ' });
+    if (!ok) return;
+    try {
+      await api.delete(`/tickets/${t.id}`);
+      notify('Đã xoá ticket', { title: 'Ticket', kind: 'success' });
+      setSelected(prev => prev.filter(x => x !== t.id));
+      fetchList();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Xoá thất bại', { title: 'Ticket', kind: 'error' });
+    }
   };
 
   const fetchList = async () => {
@@ -136,13 +152,14 @@ export default function Tickets() {
               <th className="py-2 px-3 text-center">Trả lời</th>
               <th className="py-2 px-3 text-left">Status</th>
               <th className="py-2 px-3 text-left">Tạo lúc</th>
+              <th className="py-2 px-3 w-10"></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={8} className="py-6 text-center text-neutral-400">Loading…</td></tr>
+              <tr><td colSpan={9} className="py-6 text-center text-neutral-400">Loading…</td></tr>
             ) : tickets.length === 0 ? (
-              <tr><td colSpan={8} className="py-6 text-center text-neutral-400">Không có ticket nào</td></tr>
+              <tr><td colSpan={9} className="py-6 text-center text-neutral-400">Không có ticket nào</td></tr>
             ) : tickets.map(t => (
               <tr key={t.id} onClick={() => setOpenId(t.id)}
                 className={`border-b border-neutral-100 hover:bg-orange-50/40 cursor-pointer ${selected.includes(t.id) ? 'bg-orange-50' : ''}`}>
@@ -167,6 +184,17 @@ export default function Tickets() {
                 <td className="py-2 px-3 text-center text-neutral-600">{t.items_count ?? 0}</td>
                 <td className="py-2 px-3"><StatusPill status={t.status} /></td>
                 <td className="py-2 px-3 text-neutral-500 text-xs">{fmt(t.created_at)}</td>
+                <td className="py-2 px-3 text-right" onClick={e => e.stopPropagation()}>
+                  {canDelete(t) && (
+                    <button onClick={() => deleteTicket(t)} title="Xoá ticket" aria-label="Xoá ticket"
+                      className="p-1 rounded text-neutral-400 hover:text-red-600 hover:bg-red-50">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
