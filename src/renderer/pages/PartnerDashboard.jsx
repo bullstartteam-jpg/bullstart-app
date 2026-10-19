@@ -61,7 +61,7 @@ export default function PartnerDashboard() {
         <ShippingChart partners={partners} />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {partners.map(p => (
-            <PartnerCard key={p.user.id} p={p}
+            <PartnerCard key={p.user.id} p={p} onChanged={load}
               onOpen={() => setDetailFor(p)}
               onPay={() => setPayFor(p)} />
           ))}
@@ -149,8 +149,46 @@ function Legend({ cls, label }) {
   );
 }
 
-function PartnerCard({ p, onOpen, onPay }) {
+// How a partner is paid: a share of total_cost when a percentage is set,
+// otherwise their rate card.
+function PayRule({ percent, priceList }) {
+  if (percent != null) return <>Chia: <span className="text-emerald-700 font-semibold">{Number(percent)}% total cost</span></>;
+  if (priceList) return <>Bảng giá: <span className="text-purple-700">{priceList.name}</span></>;
+  return <span className="text-red-500">Chưa đặt % chia — không tính tiền được</span>;
+}
+
+function PercentEditor({ partner, percent, onSaved, onCancel }) {
+  const [val, setVal] = useState(percent ?? '');
+  const [saving, setSaving] = useState(false);
+  const save = async (value) => {
+    setSaving(true);
+    try {
+      const res = await api.put(`/partner-report/${partner.id}/percent`, { percent: value === '' || value == null ? null : Number(value) });
+      notify(res.data?.message, { title: 'Chia partner', kind: 'success' });
+      onSaved();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Lưu thất bại', { title: 'Chia partner', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+  return (
+    <form onSubmit={e => { e.preventDefault(); save(val); }} className="flex items-center gap-1 mt-1">
+      <input type="number" min="0" max="100" step="0.01" autoFocus value={val} onChange={e => setVal(e.target.value)}
+        className="w-20 px-2 py-0.5 bg-[#faf8f6] border border-neutral-200 rounded text-xs" />
+      <span className="text-xs text-neutral-500">% total cost</span>
+      <button type="submit" disabled={saving || val === ''} className="px-2 py-0.5 text-xs rounded bg-emerald-500 text-white disabled:opacity-40">Lưu</button>
+      {percent != null && (
+        <button type="button" disabled={saving} onClick={() => save(null)}
+          className="px-2 py-0.5 text-xs rounded border border-neutral-200 text-neutral-600"
+          title="Bỏ % — quay về tính theo bảng giá">Bỏ %</button>
+      )}
+      <button type="button" onClick={onCancel} className="px-2 py-0.5 text-xs rounded bg-neutral-100 text-neutral-600">Huỷ</button>
+    </form>
+  );
+}
+
+function PartnerCard({ p, onOpen, onPay, onChanged }) {
   const max = Math.max(1, ...p.daily.map(d => d.count));
+  const [editing, setEditing] = useState(false);
 
   return (
     <div className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm space-y-3">
@@ -158,10 +196,18 @@ function PartnerCard({ p, onOpen, onPay }) {
         <div className="min-w-0">
           <div className="text-sm font-semibold text-neutral-800">{p.user.name}</div>
           <div className="text-[11px] text-neutral-500 truncate">
-            {p.price_list
-              ? <>Bảng giá: <span className="text-purple-700">{p.price_list.name}</span></>
-              : <span className="text-red-500">Chưa gán bảng giá — không tính tiền được</span>}
+            <PayRule percent={p.percent} priceList={p.price_list} />
+            {!editing && (
+              <button onClick={() => setEditing(true)} className="ml-2 text-[11px] text-sky-600 underline">
+                {p.percent != null ? 'Sửa %' : 'Đặt %'}
+              </button>
+            )}
           </div>
+          {editing && (
+            <PercentEditor partner={p.user} percent={p.percent}
+              onCancel={() => setEditing(false)}
+              onSaved={() => { setEditing(false); onChanged(); }} />
+          )}
         </div>
         <div className="flex gap-1.5 shrink-0">
           <button onClick={onOpen}
@@ -457,6 +503,16 @@ function Working({ breakdown, total }) {
   const items = breakdown?.items || [];
   const orderParts = breakdown?.order || [];
 
+  if (breakdown?.percent) {
+    return (
+      <div className="flex gap-2 text-xs">
+        <span className="text-neutral-600">{Number(breakdown.percent.rate)}% × total cost {fmt$(breakdown.percent.base)}</span>
+        <Dots />
+        <span className="font-semibold text-emerald-700">{fmt$(total)}</span>
+      </div>
+    );
+  }
+
   if (items.length === 0 && orderParts.length === 0) {
     return <p className="text-xs text-neutral-400">Bảng giá chưa có giá cho sản phẩm của đơn này.</p>;
   }
@@ -532,6 +588,7 @@ function Row({ part, amount }) {
 function workingText(breakdown) {
   const items = breakdown?.items || [];
   const orderParts = breakdown?.order || [];
+  if (breakdown?.percent) return `${Number(breakdown.percent.rate)}% x total cost ${fmt$(breakdown.percent.base)}`;
   const one = (label, note, amt) =>
     `${label}${note ? ` (${note})` : ''} ${amt == null ? '(chưa có giá)' : fmt$(amt)}`;
 
@@ -654,7 +711,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
           <div>
             <h3 className="text-sm font-semibold text-neutral-800">Tính tiền — {partner.user.name}</h3>
             <div className="text-[11px] text-neutral-500">
-              {data?.price_list ? `Bảng giá: ${data.price_list.name}` : 'Chưa gán bảng giá'}
+              <PayRule percent={data?.percent} priceList={data?.price_list} />
             </div>
           </div>
           <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800 text-xl leading-none">×</button>
