@@ -302,6 +302,13 @@ function SummaryTab({ onOpen, onSaved }) {
   };
   const [design, setDesign] = useState('');   // multi: show orders containing this design key
   const [hideGanged, setHideGanged] = useState(false);
+  // Single tab: ticked orders (order_id), across every card.
+  const [picked, setPicked] = useState(() => new Set());
+  const togglePick = (ids, on) => setPicked(prev => {
+    const n = new Set(prev);
+    ids.forEach(id => (on ?? !n.has(id)) ? n.add(id) : n.delete(id));
+    return n;
+  });
   const [search, setSearch] = useState('');
   const terms = parseSearch(search);
   const match = orderMatches(terms);
@@ -371,6 +378,7 @@ function SummaryTab({ onOpen, onSaved }) {
         }
       }
       const shareNote = partnerId ? ` · chia ${shared}/${created.length} gang cho ${partnerName}` : '';
+      setPicked(new Set());
       notify(`Đã tạo ${created.length} gang${shareNote} — xem ở Gangsheet → Manage (lọc theo mẫu).${skipNote}`, { title: 'Tạo gang', kind: 'success' });
       load();
     } catch (err) {
@@ -379,7 +387,7 @@ function SummaryTab({ onOpen, onSaved }) {
       setGanging(null);
     }
   };
-  const pickMode = (m) => { setMode(m); setDesign(''); load(statuses, m); };
+  const pickMode = (m) => { setMode(m); setDesign(''); setPicked(new Set()); load(statuses, m); };
   useEffect(() => { load(); }, []);
 
   const toggleStatus = (k) => {
@@ -448,9 +456,60 @@ function SummaryTab({ onOpen, onSaved }) {
 
   if (data === null) return <div className="space-y-4">{statusFilter}<p className="text-sm text-neutral-400">Đang tổng hợp…</p></div>;
 
+  // Single tab: the cards as shown, and the ticked orders among them.
+  const shownGroups = mode === 'single'
+    ? [...data.groups, ...data.unmatched].map(g0 => narrowGroup(g0, match, searching)).filter(g => !searching || g.orders.length)
+    : [];
+  const shownOrders = shownGroups.flatMap(g => hideGanged ? g.orders.filter(o => gangState(o) !== 'done') : g.orders);
+  const pickedOrders = shownOrders.filter(o => picked.has(o.order_id));
+  const pickedIds = pickedOrders.flatMap(o => o.analysis_ids || []);
+  const allIds = shownGroups.flatMap(g => g.analysis_ids || []);
+  const allTodo = shownOrders.filter(o => gangState(o) !== 'done').length;
+  // A card's own buttons act on its ticked orders, or on the whole card.
+  const groupScope = (g) => {
+    const sel = g.orders.filter(o => picked.has(o.order_id));
+    return sel.length ? { ids: sel.flatMap(o => o.analysis_ids || []), label: `${g.label} · ${sel.length} đơn đã chọn`, n: sel.length }
+      : { ids: g.analysis_ids, label: g.label, n: 0 };
+  };
+
   return (
     <div className="space-y-4">
       {statusFilter}
+      {mode === 'single' && shownOrders.length > 0 && (
+        <div className="bg-white rounded-xl border border-neutral-200 p-3 flex flex-wrap items-center gap-2 text-sm">
+          <label className="flex items-center gap-1.5 text-neutral-700 cursor-pointer">
+            <input type="checkbox" className="accent-orange-500"
+              checked={pickedOrders.length > 0 && pickedOrders.length === shownOrders.length}
+              onChange={e => togglePick(shownOrders.map(o => o.order_id), e.target.checked)} />
+            Chọn tất cả ({shownOrders.length} đơn)
+          </label>
+          {pickedOrders.length > 0 && (
+            <span className="text-orange-700">
+              · Đã chọn <b>{pickedOrders.length}</b> đơn
+              <button onClick={() => setPicked(new Set())} className="ml-2 text-xs text-neutral-500 underline">Bỏ chọn</button>
+            </span>
+          )}
+          <span className="text-xs text-neutral-400">Bấm vào ID đơn để chọn</span>
+          <div className="ml-auto flex gap-2">
+            {pickedOrders.length > 0 && partnerName && (
+              <button onClick={() => assignPartner(pickedIds, `${pickedOrders.length} đơn đã chọn`)}
+                className="px-3 py-1.5 text-xs rounded-lg border border-sky-300 text-sky-700 hover:bg-sky-50">
+                Chia {partnerName} ({pickedOrders.length} đơn đã chọn)
+              </button>
+            )}
+            <button onClick={() => makeGangs(pickedIds, `${pickedOrders.length} đơn đã chọn`)} disabled={!!ganging || !pickedIds.length}
+              className="px-3 py-1.5 text-xs rounded-lg bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white"
+              title="Gang các _qr chưa gang của những đơn đã tick, thuộc mọi mẫu">
+              Tạo gang đã chọn ({pickedOrders.length})
+            </button>
+            <button onClick={() => makeGangs(allIds, `tất cả Single (${shownGroups.length} nhóm)`)} disabled={!!ganging || !allIds.length}
+              className="px-3 py-1.5 text-xs rounded-lg border border-orange-400 text-orange-700 hover:bg-orange-50 disabled:opacity-40"
+              title="Gang mọi _qr chưa gang của tất cả đơn Single đang hiện (theo trạng thái / tìm kiếm)">
+              Tạo gang tất cả ({allTodo} đơn chưa gang)
+            </button>
+          </div>
+        </div>
+      )}
       {ganging && (
         <div className="px-3 py-2 rounded-lg bg-orange-50 border border-orange-200 text-sm text-orange-800">
           Đang tạo gang · {ganging.label}{ganging.total ? ` · ${ganging.done}/${ganging.total}` : ' · đang lấy đơn…'}
@@ -482,11 +541,12 @@ function SummaryTab({ onOpen, onSaved }) {
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-neutral-700">Theo mẫu</h3>
           {data.groups.map(g0 => narrowGroup(g0, match, searching)).filter(g => !searching || g.orders.length).map(g => <SummaryCard key={`t${g.template.id}`} g={g} onOpen={onOpen} hideGanged={hideGanged}
+            picked={picked} onPick={togglePick}
             action={<>
-              <GangButton busy={!!ganging} onClick={() => makeGangs(g.analysis_ids, g.label)} />
+              <GangButton busy={!!ganging} n={groupScope(g).n} onClick={() => makeGangs(groupScope(g).ids, groupScope(g).label)} />
               <PartnerButtons g={g} partnerName={partnerName}
-                onAssign={() => assignPartner(g.analysis_ids, g.label)}
-                onRemove={() => assignPartner(g.analysis_ids, g.label, { remove: true })} />
+                onAssign={() => assignPartner(groupScope(g).ids, groupScope(g).label)}
+                onRemove={() => assignPartner(groupScope(g).ids, groupScope(g).label, { remove: true })} />
             </>} />)}
         </div>
       )}
@@ -496,14 +556,15 @@ function SummaryTab({ onOpen, onSaved }) {
           <h3 className="text-sm font-semibold text-neutral-700">Chưa có mẫu</h3>
           {data.unmatched.map((g0, i) => [narrowGroup(g0, match, searching), i]).filter(([g]) => !searching || g.orders.length).map(([g, i]) => (
             <SummaryCard key={`u${i}`} g={g} onOpen={onOpen} hideGanged={hideGanged}
+              picked={picked} onPick={togglePick}
               action={saving === i
                 ? <SaveTemplateForm onCancel={() => setSaving(null)} onSave={(name) => saveGroup(g, name)} />
                 : <>
                     <button onClick={() => setSaving(i)} className="px-3 py-1 text-xs rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white">Lưu làm mẫu</button>
-                    <GangButton busy={!!ganging} onClick={() => makeGangs(g.analysis_ids, g.label)} />
+                    <GangButton busy={!!ganging} n={groupScope(g).n} onClick={() => makeGangs(groupScope(g).ids, groupScope(g).label)} />
                     <PartnerButtons g={g} partnerName={partnerName}
-                      onAssign={() => assignPartner(g.analysis_ids, g.label)}
-                      onRemove={() => assignPartner(g.analysis_ids, g.label, { remove: true })} />
+                      onAssign={() => assignPartner(groupScope(g).ids, groupScope(g).label)}
+                      onRemove={() => assignPartner(groupScope(g).ids, groupScope(g).label, { remove: true })} />
                   </>} />
           ))}
         </div>
@@ -522,11 +583,12 @@ function SummaryTab({ onOpen, onSaved }) {
 
 // A group's IDs in two labelled rows — still to gang, then already ganged —
 // so it is obvious at a glance which orders are done.
-function OrderChipRows({ orders }) {
+function OrderChipRows({ orders, picked, onPick }) {
   const todo = orders.filter(o => gangState(o) !== 'done');
   const done = orders.filter(o => gangState(o) === 'done');
   const chip = (o) => (
-    <span key={o.order_id} className={`px-1.5 py-0.5 rounded border text-[11px] font-mono ${orderChipCls(o)}`}
+    <span key={o.order_id} onClick={onPick ? () => onPick([o.order_id]) : undefined}
+      className={`px-1.5 py-0.5 rounded border text-[11px] font-mono ${orderChipCls(o)} ${onPick ? 'cursor-pointer select-none' : ''} ${picked?.has(o.order_id) ? 'ring-2 ring-orange-500 bg-orange-100' : ''}`}
       title={`${STATUS_LABEL[o.status] || ''}${gangState(o) === 'part' ? ` · gang ${o.qr_ganged}/${o.qr_total}` : ''}${o.partner ? ` · partner ${o.partner.name}` : ''}`}>
       {gangState(o) === 'done' && '✓ '}{o.system_id}{o.sheets > 1 && <span className="text-orange-600"> ×{o.sheets}</span>}
       {o.partner && <span className="ml-1 text-sky-600 font-sans">· {o.partner.name}</span>}
@@ -547,8 +609,9 @@ function OrderChipRows({ orders }) {
   );
 }
 
-function SummaryCard({ g, onOpen, action, hideGanged }) {
+function SummaryCard({ g, onOpen, action, hideGanged, picked, onPick }) {
   const orders = hideGanged ? g.orders.filter(o => gangState(o) !== 'done') : g.orders;
+  const nPicked = picked ? orders.filter(o => picked.has(o.order_id)).length : 0;
   const ids = orders.map(o => o.system_id).filter(Boolean);
   const copy = async () => {
     try { await navigator.clipboard.writeText(ids.join('\n')); notify(`Đã copy ${ids.length} ID`, { title: 'Copy', kind: 'success' }); }
@@ -571,13 +634,20 @@ function SummaryCard({ g, onOpen, action, hideGanged }) {
               ✓ {g.orders_ganged}/{g.orders_count} đơn đã gang
             </span>
           )}
+          {onPick && orders.length > 0 && (
+            <label className="flex items-center gap-1 text-xs text-neutral-600 cursor-pointer">
+              <input type="checkbox" className="accent-orange-500" checked={nPicked === orders.length}
+                onChange={e => onPick(orders.map(o => o.order_id), e.target.checked)} />
+              Chọn nhóm{nPicked > 0 && <span className="text-orange-700"> ({nPicked})</span>}
+            </label>
+          )}
           <div className="ml-auto flex items-center gap-2">
             {action}
             <button onClick={copy} className="px-3 py-1 text-xs rounded-lg border border-neutral-200 hover:bg-neutral-50">Copy ID ({ids.length})</button>
           </div>
         </div>
         {g.template?.note && <div className="text-[11px] text-neutral-500">{g.template.note}</div>}
-        <OrderChipRows orders={orders} />
+        <OrderChipRows orders={orders} picked={picked} onPick={onPick} />
       </div>
     </div>
   );
@@ -585,11 +655,11 @@ function SummaryCard({ g, onOpen, action, hideGanged }) {
 
 // Multi tab: one row per order with what it prints (design × sheets), filtered
 // to the orders containing the chosen design.
-function GangButton({ onClick, busy }) {
+function GangButton({ onClick, busy, n = 0 }) {
   return (
     <button onClick={onClick} disabled={busy}
       className="px-3 py-1 text-xs rounded-lg bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white"
-      title="Mỗi _qr chưa gang thành 1 gang riêng, gắn mẫu này">Tạo gang</button>
+      title="Mỗi _qr chưa gang thành 1 gang riêng, gắn mẫu này">{n ? `Tạo gang (${n} đã chọn)` : 'Tạo gang'}</button>
   );
 }
 
