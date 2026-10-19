@@ -34,6 +34,7 @@ export default function Settings() {
     { id: 'vnpay', label: 'VNPay Merchant' },
     { id: 'bank', label: 'Bank Transfer' },
     { id: 'stamp', label: 'Stamp Shipping' },
+    { id: 'volume-discount', label: 'Giảm giá SL' },
     { id: 'push-scan', label: 'Push Scan' },
     { id: 'order-types', label: 'Order Types' },
     { id: 'shippo', label: 'Shippo' },
@@ -66,6 +67,7 @@ export default function Settings() {
       {tab === 'vnpay' && <VnpayMerchantTab />}
       {tab === 'bank' && <BankTransferTab />}
       {tab === 'stamp' && <StampConfigTab />}
+      {tab === 'volume-discount' && <VolumeDiscountTab tiers={tiers} />}
       {tab === 'push-scan' && <PushScanConfigTab />}
       {tab === 'order-types' && <OrderTypesTab />}
       {tab === 'shippo' && <ShippoConfigTab />}
@@ -282,6 +284,106 @@ function StampConfigTab() {
           <div>1-{base} item: <b>${preview(base)}</b></div>
           <div>{base + 1} item: <b>${preview(base + 1)}</b></div>
           <div>{Number(c.max_items) || base + 2} item (max): <b>${preview(Number(c.max_items) || base + 2)}</b></div>
+        </div>
+        <button onClick={save} disabled={saving} className="mt-4 px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </section>
+    </div>
+  );
+}
+
+// Volume discount on base_cost: for sellers on the picked tiers, items of the
+// picked products get `percent`% off base_cost when the order holds more than
+// `qty_over` of them. Applied by the backend whenever an order is priced;
+// already-created orders keep their price until re-priced (edit item, Tính lại giá).
+function VolumeDiscountTab({ tiers }) {
+  const [c, setC] = useState(null);
+  const [products, setProducts] = useState([]);
+  const [productFilter, setProductFilter] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get('/settings/volume-discount').then(res => setC(res.data));
+    api.get('/products', { params: { per_page: 1000 } }).then(res => setProducts(res.data.data || [])).catch(() => {});
+  }, []);
+  if (!c) return <div className="text-neutral-400 text-sm">Loading…</div>;
+
+  const set = (k, v) => setC(prev => ({ ...prev, [k]: v }));
+  const toggle = (k, id) => set(k, c[k].includes(id) ? c[k].filter(x => x !== id) : [...c[k], id]);
+  const toggleTier = (id) => toggle('tier_ids', id);
+  const shownProducts = products.filter(p => !productFilter.trim()
+    || `${p.name} ${p.line_id || ''}`.toLowerCase().includes(productFilter.trim().toLowerCase()));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await api.put('/settings/volume-discount', {
+        enabled: !!c.enabled, tier_ids: c.tier_ids, product_ids: c.product_ids,
+        percent: Number(c.percent) || 0, qty_over: Number(c.qty_over) || 0,
+      });
+      setC(res.data);
+      notify('Đã lưu giảm giá', { title: 'Settings', kind: 'success' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Save failed', { title: 'Settings', kind: 'error' });
+    } finally { setSaving(false); }
+  };
+
+  const pct = Number(c.percent) || 0;
+  const over = Number(c.qty_over) || 0;
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-neutral-700 mb-1">Giảm giá theo số lượng</h3>
+        <p className="text-[11px] text-neutral-500 mb-3">
+          Seller thuộc tier được chọn: khi đơn có số lượng các product được chọn lớn hơn ngưỡng, base_cost
+          của các item đó được giảm theo %. Chỉ đếm và chỉ giảm product được chọn; 2nd_fee, add-on và phí ship
+          không giảm. Chưa chọn product nào = không giảm. Đơn đã tạo giữ giá cũ cho tới khi được tính lại.
+        </p>
+        <label className="flex items-center gap-2 mb-3 text-sm text-neutral-700 cursor-pointer">
+          <input type="checkbox" checked={!!c.enabled} onChange={e => set('enabled', e.target.checked)} className="accent-orange-500" />
+          Bật giảm giá
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <NumField label="Giảm (% base_cost)" value={c.percent} onChange={v => set('percent', v)} step="0.1" />
+          <NumField label="Áp dụng khi SL product được chọn lớn hơn" value={c.qty_over} onChange={v => set('qty_over', v)} step="1" />
+        </div>
+        <div className="mt-3">
+          <div className="text-xs text-neutral-500 mb-1">Tier được giảm</div>
+          <div className="flex flex-wrap gap-2">
+            {tiers.map(t => (
+              <label key={t.id} className={`px-3 py-1.5 rounded-lg border text-sm cursor-pointer ${
+                c.tier_ids.includes(t.id) ? 'border-orange-400 bg-orange-50 text-orange-700' : 'border-neutral-200 text-neutral-600'
+              }`}>
+                <input type="checkbox" checked={c.tier_ids.includes(t.id)} onChange={() => toggleTier(t.id)} className="hidden" />
+                {t.name}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="mt-3">
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <span className="text-xs text-neutral-500">Product được giảm ({c.product_ids.length} đã chọn)</span>
+            <input value={productFilter} onChange={e => setProductFilter(e.target.value)} placeholder="Tìm product…"
+              className="px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-xs w-48" />
+          </div>
+          <div className="max-h-64 overflow-y-auto border border-neutral-200 rounded-lg divide-y divide-neutral-100">
+            {shownProducts.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-neutral-400">Không có product nào.</p>
+            ) : shownProducts.map(p => (
+              <label key={p.id} className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-neutral-50">
+                <input type="checkbox" checked={c.product_ids.includes(p.id)} onChange={() => toggle('product_ids', p.id)}
+                  className="accent-orange-500" />
+                <span className="text-neutral-800">{p.name}</span>
+                {p.line_id && <span className="text-xs text-neutral-400 font-mono">{p.line_id}</span>}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="mt-3 p-3 bg-[#faf8f6] border border-neutral-200 rounded text-xs text-neutral-600">
+          Ví dụ: base_cost $5, đơn {over + 1} cái → giảm {pct}% = <b>${(5 * pct / 100).toFixed(2)}</b> mỗi cái
+          {' '}(đơn có {over} cái product được chọn trở xuống không giảm).
         </div>
         <button onClick={save} disabled={saving} className="mt-4 px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
           {saving ? 'Saving…' : 'Save changes'}

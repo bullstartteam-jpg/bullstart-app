@@ -465,6 +465,9 @@ export default function OrderDetail() {
               )}
               <Row label="Tracking ID" value={order.ship_type === 'stamp' ? 'No tracking (stamp)' : (order.tracking_id || '-')} />
               <Row label="Print Cost" value={`$${order.print_cost}`} />
+              {Number(order.base_discount) > 0 && (
+                <Row label="Giảm giá base cost (đã trừ trong Print Cost)" value={`-$${order.base_discount}`} />
+              )}
               <Row label={order.ship_type === 'stamp' ? 'Handling Fee' : 'Shipping Cost'} value={`$${order.shipping_cost}`} />
               <Row label="Total Cost" value={`$${order.total_cost}`} />
               <Row label="Paid" value={`$${order.paid_cost}`} />
