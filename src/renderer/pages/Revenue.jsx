@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { notify } from '../components/Dialog';
+import { TotalsCards } from './Dashboard';
 
 // Admin revenue summary for a period: seller top-ups, order totals per
 // seller, and the split paid to each partner. Days are UTC — the same window
@@ -42,6 +43,7 @@ export default function Revenue() {
   const [dateField, setDateField] = useState('created_at');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [totals, setTotals] = useState(null);   // all-time, from /dashboard
 
   const load = async (r = range, field = dateField) => {
     if (!r.from || !r.to) return;
@@ -54,6 +56,7 @@ export default function Revenue() {
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { api.get('/dashboard').then(res => setTotals(res.data)).catch(() => {}); }, []);
 
   const pickPreset = (key) => {
     setPreset(key);
@@ -77,6 +80,13 @@ export default function Revenue() {
           Tổng hợp theo kỳ (ngày theo UTC, giống lọc ngày khi export Orders): tiền seller nạp, tổng tiền đơn, và tiền đã chia cho partner. Đơn cancelled không tính.
         </p>
       </div>
+
+      {totals && (
+        <div>
+          <h3 className="text-sm font-semibold text-neutral-600 mb-2">Tổng từ trước đến nay</h3>
+          <TotalsCards stats={totals} />
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-white rounded-xl border border-neutral-200 p-3 flex flex-wrap gap-3 items-end">

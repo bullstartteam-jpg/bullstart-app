@@ -27,6 +27,8 @@ export default function Dashboard() {
   const [completedRows, setCompletedRows] = useState(null); // shipped/day by completed_time
   const { hasRole } = useAuth();
   const isSeller = hasRole('seller');
+  // Admins read the money totals on the Doanh thu page instead.
+  const isAdmin = hasRole('admin');
 
   // Re-render when the background image-URL check writes new failures so the
   // recent-orders rows flag issues without a manual reload (same as Orders).
@@ -94,18 +96,9 @@ export default function Dashboard() {
       <StaleOrders data={stats.stale_unshipped} />
 
       {/* Stats cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Total Orders" value={stats.total_orders} />
-        <StatCard label="Revenue" value={`$${stats.total_revenue}`} />
-        <StatCard label="Paid" value={`$${stats.total_paid}`} color="text-green-600" />
-        <StatCard label="Unpaid" value={`$${stats.total_unpaid}`} color="text-red-500" />
-      </div>
+      {!isAdmin && <TotalsCards stats={stats} />}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Print Cost" value={`$${stats.total_print_cost}`} />
-        <StatCard label="Shipping Cost" value={`$${stats.total_shipping_cost}`} />
-        {stats.total_users !== undefined && <StatCard label="Total Users" value={stats.total_users} />}
-        {stats.total_wallet_balance !== undefined && <StatCard label="Wallet Balance" value={`$${stats.total_wallet_balance}`} />}
         {stats.shipped_tracking && (
           <StatCard
             label={`Tracking đã run · ship 7 ngày${stats.shipped_tracking.shipped ? ` (${stats.shipped_tracking.tracking_ran}/${stats.shipped_tracking.shipped})` : ''}`}
@@ -678,6 +671,27 @@ function trackingRateColor(rate) {
   if (rate < 80) return 'text-red-500';
   if (rate < 95) return 'text-amber-500';
   return 'text-green-600';
+}
+
+// All-time order/money totals from /dashboard. Shared with the Doanh thu page.
+export function TotalsCards({ stats }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <StatCard label="Total Orders" value={stats.total_orders} />
+        <StatCard label="Revenue" value={`$${stats.total_revenue}`} />
+        <StatCard label="Paid" value={`$${stats.total_paid}`} color="text-green-600" />
+        <StatCard label="Unpaid" value={`$${stats.total_unpaid}`} color="text-red-500" />
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <StatCard label="Print Cost" value={`$${stats.total_print_cost}`} />
+        <StatCard label="Shipping Cost" value={`$${stats.total_shipping_cost}`} />
+        {stats.total_users !== undefined && <StatCard label="Total Users" value={stats.total_users} />}
+        {stats.total_wallet_balance !== undefined && <StatCard label="Wallet Balance" value={`$${stats.total_wallet_balance}`} />}
+      </div>
+    </>
+  );
 }
 
 function StatCard({ label, value, color = 'text-neutral-800' }) {

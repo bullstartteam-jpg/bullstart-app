@@ -115,7 +115,7 @@ export default function PartnerPricesTab() {
 
 function PriceEditor({ listId, onSaved }) {
   const [data, setData] = useState(null);
-  const [vals, setVals] = useState({});        // "v:<variantId>:<key>" | "a:<id>" -> string
+  const [vals, setVals] = useState({});        // "v:<variantId>:<key>" | "a:<id>" -> { tierId: string }
   const [partnerUsers, setPartnerUsers] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [saving, setSaving] = useState(false);
@@ -123,56 +123,49 @@ function PriceEditor({ listId, onSaved }) {
   const load = async () => {
     const res = await api.get(`/partner-price-lists/${listId}`);
     setData(res.data);
+    const toStrings = (prices) => Object.fromEntries(
+      Object.entries(prices || {}).map(([t, p]) => [t, p == null ? '' : String(p)])
+    );
     const v = {};
     for (const variant of res.data.variants || []) {
-      for (const k of variant.keys) {
-        v[`v:${variant.variant_id}:${k.key}:pub`]  = k.partner_price         == null ? '' : String(k.partner_price);
-        v[`v:${variant.variant_id}:${k.key}:priv`] = k.partner_price_private == null ? '' : String(k.partner_price_private);
-      }
+      for (const k of variant.keys) v[`v:${variant.variant_id}:${k.key}`] = toStrings(k.partner_prices);
     }
-    for (const a of res.data.accessories || []) {
-      v[`a:${a.accessory_price_id}:pub`]  = a.partner_price         == null ? '' : String(a.partner_price);
-      v[`a:${a.accessory_price_id}:priv`] = a.partner_price_private == null ? '' : String(a.partner_price_private);
-    }
+    for (const a of res.data.accessories || []) v[`a:${a.accessory_price_id}`] = toStrings(a.partner_prices);
     setVals(v);
     setSelected(new Set((res.data.list?.partners || []).map(p => p.id)));
   };
 
   useEffect(() => {
     setData(null);
-    load().catch(() => setData({ variants: [], accessories: [] }));
+    load().catch(() => setData({ tiers: [], variants: [], accessories: [] }));
     api.get('/gangsheets/partner-users').then(r => setPartnerUsers(r.data || [])).catch(() => {});
   }, [listId]);
 
+  // One column per seller tier: an order is paid at its seller's tier's rate.
+  const columns = (data?.tiers || []).map(t => ({ id: String(t.id), name: t.name }));
+
   const save = async () => {
+    const variants = [];
+    const accessories = [];
+    for (const [k, byTier] of Object.entries(vals)) {
+      const prices = {};
+      for (const c of columns) {
+        const raw = (byTier?.[c.id] ?? '').trim();
+        if (raw !== '' && Number.isNaN(Number(raw))) {
+          notify(`Giá "${raw}" không hợp lệ (${k}, ${c.name})`, { title: 'Bảng giá partner', kind: 'error' });
+          return;
+        }
+        prices[c.id] = raw === '' ? null : Number(raw);
+      }
+      const parts = k.split(':');               // ['v', variantId, ...keyParts] | ['a', id]
+      if (parts[0] === 'v') {
+        variants.push({ product_variant_id: Number(parts[1]), key: parts.slice(2).join(':'), prices });
+      } else {
+        accessories.push({ accessory_price_id: Number(parts[1]), prices });
+      }
+    }
     setSaving(true);
     try {
-      // Collect pub+priv per (variantId, key) pair, then emit one row each.
-      const variantMap = {};
-      const accessoryMap = {};
-      for (const [k, raw] of Object.entries(vals)) {
-        const price = raw.trim() === '' ? null : Number(raw);
-        if (price !== null && Number.isNaN(price)) continue;
-        if (k.startsWith('v:')) {
-          const parts = k.split(':');           // ['v', variantId, ...keyParts, tier]
-          const tier = parts[parts.length - 1]; // 'pub' or 'priv'
-          const variantId = parts[1];
-          const key = parts.slice(2, -1).join(':');
-          const mapKey = `${variantId}|${key}`;
-          if (!variantMap[mapKey]) variantMap[mapKey] = { product_variant_id: Number(variantId), key };
-          if (tier === 'pub')  variantMap[mapKey].price         = price;
-          if (tier === 'priv') variantMap[mapKey].price_private = price;
-        } else {
-          const parts = k.split(':');           // ['a', id, tier]
-          const tier = parts[parts.length - 1];
-          const id = parts[1];
-          if (!accessoryMap[id]) accessoryMap[id] = { accessory_price_id: Number(id) };
-          if (tier === 'pub')  accessoryMap[id].price         = price;
-          if (tier === 'priv') accessoryMap[id].price_private = price;
-        }
-      }
-      const variants    = Object.values(variantMap);
-      const accessories = Object.values(accessoryMap);
       await api.put(`/partner-price-lists/${listId}/prices`, { variants, accessories });
       await api.put(`/partner-price-lists/${listId}/partners`, { user_ids: [...selected] });
       notify('Đã lưu bảng giá', { title: 'Bảng giá partner', kind: 'success' });
@@ -185,19 +178,34 @@ function PriceEditor({ listId, onSaved }) {
 
   if (!data) return <div className="text-neutral-400 text-sm">Loading…</div>;
 
-  const set = (k, v) => setVals(p => ({ ...p, [k]: v }));
+  const set = (k, tier, v) => setVals(p => ({ ...p, [k]: { ...p[k], [tier]: v } }));
   const togglePartner = (id) => setSelected(p => {
     const n = new Set(p);
     n.has(id) ? n.delete(id) : n.add(id);
     return n;
   });
 
-  // Sum of the priced keys — what one unit pays, shown for public tier.
-  const variantTotal = (variant) => variant.keys.reduce((s, k) => {
-    const raw = vals[`v:${variant.variant_id}:${k.key}:pub`];
-    const n = raw?.trim() === '' ? 0 : Number(raw);
+  // Sum of the priced keys for one tier — what one unit pays on that tier.
+  const variantTotal = (variant, tierId) => variant.keys.reduce((s, k) => {
+    const raw = vals[`v:${variant.variant_id}:${k.key}`]?.[tierId] ?? '';
+    const n = raw.trim() === '' ? 0 : Number(raw);
     return s + (Number.isNaN(n) ? 0 : n);
   }, 0);
+
+  const priceInput = (k, c) => (
+    <input
+      type="text" inputMode="decimal"
+      value={vals[k]?.[c.id] ?? ''}
+      onChange={e => set(k, c.id, e.target.value)}
+      placeholder="—"
+      title={`Partner nhận trên đơn của seller tier ${c.name}`}
+      className="w-20 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-right"
+    />
+  );
+
+  const tierHeaders = columns.map(c => (
+    <th key={c.id} className="py-1.5 px-2 text-right whitespace-nowrap">Partner ({c.name})</th>
+  ));
 
   return (
     <>
@@ -206,20 +214,26 @@ function PriceEditor({ listId, onSaved }) {
           <h3 className="text-sm font-semibold text-neutral-700">
             {data.list?.name} — giá theo variant
           </h3>
-          <button onClick={save} disabled={saving}
+          <button onClick={save} disabled={saving || !data.tiers}
             className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white text-sm rounded-lg">
             {saving ? 'Đang lưu…' : 'Lưu bảng giá'}
           </button>
         </div>
         <p className="text-[11px] text-neutral-500 mb-3">
-          Bỏ trống = không trả key đó. Cột <b>Giá seller</b> chỉ để tham chiếu khi cân biên lợi nhuận,
-          sửa ở trang Products.
+          Mỗi cột là giá partner nhận trên đơn của seller thuộc tier đó. Bỏ trống = không trả key đó
+          cho đơn của tier đó. Cột <b>Giá seller</b> chỉ để tham chiếu khi cân biên lợi nhuận, sửa ở
+          trang Products.
         </p>
+        {!data.tiers && (
+          <p className="text-xs text-red-600 mb-3">
+            Server chưa cập nhật bảng giá theo tier — cần deploy backend mới trước khi sửa giá ở đây.
+          </p>
+        )}
 
         {data.variants.length === 0 ? (
           <p className="text-neutral-400 text-sm">Chưa có variant nào có bảng giá.</p>
         ) : data.variants.map(v => (
-          <div key={v.variant_id} className="mb-4 border border-neutral-100 rounded-lg overflow-hidden">
+          <div key={v.variant_id} className="mb-4 border border-neutral-100 rounded-lg overflow-x-auto">
             <div className="px-3 py-2 bg-[#faf8f6] flex items-center gap-2 flex-wrap">
               <span className="text-sm font-medium text-neutral-800">{v.product}</span>
               <span className="text-xs text-neutral-500">
@@ -227,7 +241,12 @@ function PriceEditor({ listId, onSaved }) {
                 {v.sku ? ` · ${v.sku}` : ''}
               </span>
               <span className="ml-auto text-xs text-neutral-500">
-                Partner nhận: <b className="text-emerald-700">${variantTotal(v).toFixed(2)}</b> / cái
+                Partner nhận / cái:{' '}
+                {columns.map((c, i) => (
+                  <span key={c.id}>
+                    {i > 0 && ' · '}{c.name} <b className="text-emerald-700">${variantTotal(v, c.id).toFixed(2)}</b>
+                  </span>
+                ))}
               </span>
             </div>
             <table className="w-full text-xs">
@@ -235,8 +254,7 @@ function PriceEditor({ listId, onSaved }) {
                 <tr className="text-neutral-500 border-b border-neutral-100">
                   <th className="py-1.5 px-3 text-left">Key</th>
                   <th className="py-1.5 px-3 text-left">Giá seller</th>
-                  <th className="py-1.5 px-3 text-right w-32">Partner (Public)</th>
-                  <th className="py-1.5 px-3 text-right w-32">Partner (Private)</th>
+                  {tierHeaders}
                 </tr>
               </thead>
               <tbody>
@@ -246,24 +264,9 @@ function PriceEditor({ listId, onSaved }) {
                     <td className="py-1.5 px-3 text-neutral-500">
                       {k.seller_prices.map(sp => `${sp.tier}: $${sp.price}`).join(' · ')}
                     </td>
-                    <td className="py-1.5 px-3 text-right">
-                      <input
-                        type="text" inputMode="decimal"
-                        value={vals[`v:${v.variant_id}:${k.key}:pub`] ?? ''}
-                        onChange={e => set(`v:${v.variant_id}:${k.key}:pub`, e.target.value)}
-                        placeholder="—"
-                        className="w-24 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-right"
-                      />
-                    </td>
-                    <td className="py-1.5 px-3 text-right">
-                      <input
-                        type="text" inputMode="decimal"
-                        value={vals[`v:${v.variant_id}:${k.key}:priv`] ?? ''}
-                        onChange={e => set(`v:${v.variant_id}:${k.key}:priv`, e.target.value)}
-                        placeholder="—"
-                        className="w-24 px-2 py-1 bg-[#faf8f6] border border-purple-200 rounded text-right"
-                      />
-                    </td>
+                    {columns.map(c => (
+                      <td key={c.id} className="py-1.5 px-2 text-right">{priceInput(`v:${v.variant_id}:${k.key}`, c)}</td>
+                    ))}
                   </tr>
                 ))}
               </tbody>
@@ -277,36 +280,32 @@ function PriceEditor({ listId, onSaved }) {
         {data.accessories.length === 0 ? (
           <p className="text-neutral-400 text-sm">Chưa có add-on nào.</p>
         ) : (
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-neutral-500 border-b border-neutral-200">
-                <th className="py-1.5 px-2 text-left">Add-on</th>
-                <th className="py-1.5 px-2 text-left">Style</th>
-                <th className="py-1.5 px-2 text-left">Tier</th>
-                <th className="py-1.5 px-2 text-right">Giá seller</th>
-                <th className="py-1.5 px-2 text-right w-32">Giá partner</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.accessories.map(a => (
-                <tr key={a.accessory_price_id} className="border-b border-neutral-50">
-                  <td className="py-1.5 px-2 text-neutral-700">{a.accessory}</td>
-                  <td className="py-1.5 px-2 text-neutral-600">{a.style || '—'}</td>
-                  <td className="py-1.5 px-2 text-neutral-500">{a.tier}</td>
-                  <td className="py-1.5 px-2 text-right text-neutral-500">${a.seller_price}</td>
-                  <td className="py-1.5 px-2 text-right">
-                    <input
-                      type="text" inputMode="decimal"
-                      value={vals[`a:${a.accessory_price_id}`] ?? ''}
-                      onChange={e => set(`a:${a.accessory_price_id}`, e.target.value)}
-                      placeholder="—"
-                      className="w-24 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-right"
-                    />
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-neutral-500 border-b border-neutral-200">
+                  <th className="py-1.5 px-2 text-left">Add-on</th>
+                  <th className="py-1.5 px-2 text-left">Style</th>
+                  <th className="py-1.5 px-2 text-left">Tier</th>
+                  <th className="py-1.5 px-2 text-right">Giá seller</th>
+                  {tierHeaders}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.accessories.map(a => (
+                  <tr key={a.accessory_price_id} className="border-b border-neutral-50">
+                    <td className="py-1.5 px-2 text-neutral-700">{a.accessory}</td>
+                    <td className="py-1.5 px-2 text-neutral-600">{a.style || '—'}</td>
+                    <td className="py-1.5 px-2 text-neutral-500">{a.tier}</td>
+                    <td className="py-1.5 px-2 text-right text-neutral-500">${a.seller_price}</td>
+                    {columns.map(c => (
+                      <td key={c.id} className="py-1.5 px-2 text-right">{priceInput(`a:${a.accessory_price_id}`, c)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
