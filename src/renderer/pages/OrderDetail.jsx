@@ -466,7 +466,13 @@ export default function OrderDetail() {
               <Row label="Tracking ID" value={order.ship_type === 'stamp' ? 'No tracking (stamp)' : (order.tracking_id || '-')} />
               <Row label="Print Cost" value={`$${order.print_cost}`} />
               {Number(order.base_discount) > 0 && (
-                <Row label="Giảm giá base cost (đã trừ trong Print Cost)" value={`-$${order.base_discount}`} />
+                <Row label={(() => {
+                  // Per-item record when there is one: which percent, on how many items.
+                  const disc = (order.items || []).filter(it => Number(it.discount_amount) > 0);
+                  return disc.length
+                    ? `Giảm ${Number(disc[0].discount_percent)}% base cost · ${disc.length} item (đã trừ trong Print Cost)`
+                    : 'Giảm giá base cost (đã trừ trong Print Cost)';
+                })()} value={`-$${order.base_discount}`} />
               )}
               <Row label={order.ship_type === 'stamp' ? 'Handling Fee' : 'Shipping Cost'} value={`$${order.shipping_cost}`} />
               <Row label="Total Cost" value={`$${order.total_cost}`} />
@@ -589,7 +595,15 @@ export default function OrderDetail() {
                     />
                   </td>
                   <td className="py-2 text-right text-neutral-800 font-medium">${item.price}</td>
-                  <td className="py-2 text-right text-neutral-800 font-medium">${subtotal.toFixed(2)}</td>
+                  <td className="py-2 text-right text-neutral-800 font-medium">
+                    ${subtotal.toFixed(2)}
+                    {/* Volume discount on this item's base_cost — already off Print Cost. */}
+                    {Number(item.discount_amount) > 0 && (
+                      <div className="text-[11px] font-normal text-emerald-600 whitespace-nowrap">
+                        −{Number(item.discount_percent)}% · −${Number(item.discount_amount).toFixed(2)}
+                      </div>
+                    )}
+                  </td>
                 </tr>
               );
             })}
