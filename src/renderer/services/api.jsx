@@ -1,11 +1,16 @@
 import axios from 'axios';
 
-export const DEFAULT_API_URL = 'https://bullstart.us/api';
+export const DEFAULT_API_URL = 'https://fulfillbullstart.us/api';
 
 // Migrate older installs that had the localhost default cached in localStorage
 // — silently swap them over to the production URL on app start. This also
 // self-heals machines that cached localhost from the broken 1.1.37 build.
 if (localStorage.getItem('api_url') === 'http://localhost:8000/api') {
+  localStorage.removeItem('api_url');
+}
+// The hub moved from bullstart.us to fulfillbullstart.us (2026-10-20): a
+// saved override still pointing at the old domain follows it.
+if (/^https:\/\/(www\.)?bullstart\.us\/api\/?$/.test(localStorage.getItem('api_url') || '')) {
   localStorage.removeItem('api_url');
 }
 
