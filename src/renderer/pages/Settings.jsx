@@ -337,7 +337,7 @@ function VolumeDiscountTab({ tiers }) {
       <section className="bg-white rounded-xl border border-neutral-200 p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-neutral-700 mb-1">Giảm giá theo số lượng</h3>
         <p className="text-[11px] text-neutral-500 mb-3">
-          Seller thuộc tier được chọn: khi đơn có số lượng các product được chọn từ ngưỡng trở lên, base_cost
+          Seller thuộc tier được chọn: từ product được chọn thứ N trong đơn trở đi (theo thứ tự item), base_cost
           của các item đó được giảm theo %. Chỉ đếm và chỉ giảm product được chọn; 2nd_fee, add-on và phí ship
           không giảm. Chưa chọn product nào = không giảm. Đơn đã tạo giữ giá cũ cho tới khi được tính lại.
         </p>
@@ -347,7 +347,7 @@ function VolumeDiscountTab({ tiers }) {
         </label>
         <div className="grid grid-cols-2 gap-3">
           <NumField label="Giảm (% base_cost)" value={c.percent} onChange={v => set('percent', v)} step="0.1" />
-          <NumField label="Áp dụng khi SL product được chọn từ (≥)" value={c.qty_over} onChange={v => set('qty_over', v)} step="1" />
+          <NumField label="Giảm từ product được chọn thứ (N)" value={c.qty_over} onChange={v => set('qty_over', v)} step="1" />
         </div>
         <div className="mt-3">
           <div className="text-xs text-neutral-500 mb-1">Tier được giảm</div>
@@ -382,8 +382,9 @@ function VolumeDiscountTab({ tiers }) {
           </div>
         </div>
         <div className="mt-3 p-3 bg-[#faf8f6] border border-neutral-200 rounded text-xs text-neutral-600">
-          Ví dụ: base_cost $5, đơn {over} cái → giảm {pct}% = <b>${(5 * pct / 100).toFixed(2)}</b> mỗi cái
-          {' '}(đơn dưới {over} cái product được chọn không giảm).
+          Ví dụ: base_cost $5, N = {over}, đơn 3 cái → {Math.max(0, Math.min(3, 3 - over + 1))} cái được giảm {pct}%
+          {' '}= <b>${(Math.max(0, Math.min(3, 3 - over + 1)) * 5 * pct / 100).toFixed(2)}</b>
+          {' '}({Math.max(0, over - 1)} cái đầu giữ giá gốc).
         </div>
         <button onClick={save} disabled={saving} className="mt-4 px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
           {saving ? 'Saving…' : 'Save changes'}
