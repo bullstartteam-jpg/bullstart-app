@@ -534,6 +534,24 @@ const METHOD_LABELS = {
 function Working({ breakdown, total }) {
   const items = breakdown?.items || [];
   const orderParts = breakdown?.order || [];
+  const shippingParts = breakdown?.shipping_parts || [];
+  const shipping = breakdown?.shipping;
+
+  // seller_ship / stamp shipping, split out of the partner payout — shown on
+  // its own so the reader sees it isn't part of "Tổng đơn".
+  const shippingBlock = shippingParts.length > 0 ? (
+    <div className="text-xs pt-1 border-t border-neutral-200">
+      <div className="font-medium text-sky-700">Phí ship (tách riêng — KHÔNG tính vào tiền partner)</div>
+      <div className="mt-1 pl-3 border-l-2 border-sky-200 space-y-0.5">
+        {shippingParts.map((part, i) => <Row key={i} part={part} amount={part.amount} />)}
+        {shipping != null && (
+          <div className="flex gap-2 pt-0.5 font-medium text-sky-700">
+            <span>Tổng phí ship</span><Dots /><span>{fmt$(shipping)}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  ) : null;
 
   // Flat amount off a push scan order, after the percentage / rate card.
   const pushScan = breakdown?.push_scan ? (
@@ -545,10 +563,15 @@ function Working({ breakdown, total }) {
   ) : null;
 
   if (breakdown?.percent) {
+    const pct = breakdown.percent;
+    // When shipping was taken off first, show it: total − ship = base − rate%.
+    const baseLabel = shipping
+      ? <>total cost {fmt$(pct.gross_base ?? (pct.base + shipping))} − ship {fmt$(shipping)} = {fmt$(pct.base)} − {Number(pct.rate)}%</>
+      : <>total cost {fmt$(pct.base)} − {Number(pct.rate)}%</>;
     return (
       <div className="space-y-0.5">
         <div className="flex gap-2 text-xs">
-          <span className="text-neutral-600">total cost {fmt$(breakdown.percent.base)} − {Number(breakdown.percent.rate)}%</span>
+          <span className="text-neutral-600">{baseLabel}</span>
           <Dots />
           <span className={pushScan ? 'text-neutral-700' : 'font-semibold text-emerald-700'}>
             {fmt$(pushScan ? breakdown.gross : total)}
@@ -560,12 +583,22 @@ function Working({ breakdown, total }) {
             <span>Tổng đơn</span><span className="flex-1" /><span>{fmt$(total)}</span>
           </div>
         )}
+        {shipping != null && (
+          <div className="flex gap-2 text-xs text-sky-700 pt-0.5">
+            <span>Phí ship (tách riêng — không chia)</span><span className="flex-1" /><span>{fmt$(shipping)}</span>
+          </div>
+        )}
       </div>
     );
   }
 
-  if (items.length === 0 && orderParts.length === 0) {
+  if (items.length === 0 && orderParts.length === 0 && shippingParts.length === 0) {
     return <p className="text-xs text-neutral-400">Bảng giá chưa có giá cho sản phẩm của đơn này.</p>;
+  }
+
+  // Shipping-only (no payout line priced): show just the shipping block.
+  if (items.length === 0 && orderParts.length === 0) {
+    return <div className="space-y-3">{shippingBlock}</div>;
   }
 
   return (
@@ -607,6 +640,8 @@ function Working({ breakdown, total }) {
         <span className="flex-1" />
         <span>{fmt$(total)}</span>
       </div>
+
+      {shippingBlock}
     </div>
   );
 }
@@ -642,7 +677,14 @@ function workingText(breakdown) {
   const items = breakdown?.items || [];
   const orderParts = breakdown?.order || [];
   const push = breakdown?.push_scan ? ` - push scan ${fmt$(breakdown.push_scan)}` : '';
-  if (breakdown?.percent) return `total cost ${fmt$(breakdown.percent.base)} - ${Number(breakdown.percent.rate)}%${push}`;
+  if (breakdown?.percent) {
+    const pct = breakdown.percent;
+    const ship = breakdown?.shipping;
+    const base = ship
+      ? `total cost ${fmt$(pct.gross_base ?? (pct.base + ship))} - ship ${fmt$(ship)} = ${fmt$(pct.base)} - ${Number(pct.rate)}%`
+      : `total cost ${fmt$(pct.base)} - ${Number(pct.rate)}%`;
+    return base + push;
+  }
   const one = (label, note, amt) =>
     `${label}${note ? ` (${note})` : ''} ${amt == null ? '(chưa có giá)' : fmt$(amt)}`;
 
@@ -652,6 +694,10 @@ function workingText(breakdown) {
   });
   if (orderParts.length) {
     parts.push(`Ship: ${orderParts.map(p => one(p.label, p.note, p.amount)).join(' + ')}`);
+  }
+  const shippingParts = breakdown?.shipping_parts || [];
+  if (shippingParts.length) {
+    parts.push(`Ship (tach rieng): ${shippingParts.map(p => one(p.label, p.note, p.amount)).join(' + ')}`);
   }
   return parts.join(' | ') + push;
 }
@@ -728,6 +774,35 @@ function RevenueModal({ partner, onClose, onApplied }) {
     } finally { setApplying(false); }
   };
 
+  // Re-price orders that ALREADY have an amount and whose computed value now
+  // differs (e.g. after the shipping split) — overwriting the old number.
+  // Settled orders are protected hub-side and left out here. Lets staff refresh
+  // old payouts without hand-editing each one.
+  const recalc = async () => {
+    const targets = (data?.orders || [])
+      .filter(o => !o.settled && o.current != null && o.computed != null && o.diff !== 0);
+    if (targets.length === 0) {
+      notify('Không có đơn đã tính nào cần cập nhật. Bỏ "Chỉ đơn chưa tính" để xem đơn đã tính.',
+        { title: 'Tính lại', kind: 'error' });
+      return;
+    }
+    if (!confirm(
+      `Tính lại & GHI ĐÈ số tiền cho ${targets.length} đơn ĐÃ tính của ${partner.user.name}?\n\n`
+      + 'Số tiền cũ sẽ bị thay bằng số mới (đã trừ shipping). Đơn đã chốt tiền được giữ nguyên.'
+    )) return;
+
+    setApplying(true);
+    try {
+      const res = await api.post(`/partner-report/${partner.user.id}/apply-revenue`,
+        { order_ids: targets.map(o => o.order_id) });
+      notify(res.data?.message || 'Đã tính lại', { title: 'Tính lại', kind: 'success' });
+      await load();
+      onApplied?.();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Tính lại thất bại', { title: 'Tính lại', kind: 'error' });
+    } finally { setApplying(false); }
+  };
+
   const exportCsv = () => {
     const rows = data?.orders || [];
     if (rows.length === 0) return;
@@ -735,13 +810,15 @@ function RevenueModal({ partner, onClose, onApplied }) {
       const s = v == null ? '' : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ['system_id', 'ref_id', 'completed_time', 'items', 'qty', 'order_total', 'current', 'computed', 'diff', 'locked', 'paid', 'cach_tinh'];
+    const header = ['system_id', 'ref_id', 'completed_time', 'items', 'qty', 'order_total', 'current', 'computed', 'shipping', 'ship_type', 'diff', 'locked', 'paid', 'cach_tinh'];
     const lines = [header.join(',')];
     for (const r of rows) {
       lines.push([
         r.system_id, r.ref_id, r.completed_time,
         r.items.map(i => `${i.product || ''} x${i.quantity}`).join(' | '),
-        r.qty, r.order_total ?? '', r.current ?? '', r.computed ?? '', r.diff ?? '', r.locked ? 'yes' : '',
+        r.qty, r.order_total ?? '', r.current ?? '', r.computed ?? '',
+        r.shipping ?? '', r.ship_type ?? '',
+        r.diff ?? '', r.locked ? 'yes' : '',
         r.paid ? 'paid' : 'chua paid',
         workingText(r.breakdown),
       ].map(esc).join(','));
@@ -811,8 +888,13 @@ function RevenueModal({ partner, onClose, onApplied }) {
             className="px-3 py-1.5 bg-emerald-100 hover:bg-emerald-200 disabled:opacity-40 text-emerald-700 text-sm rounded-lg">
             Export CSV
           </button>
+          <button onClick={recalc} disabled={applying || !data?.orders?.length}
+            title='Ghi đè số tiền cho đơn đã tính mà giá đã đổi (vd sau khi tách shipping). Bỏ "Chỉ đơn chưa tính" để thấy chúng.'
+            className="px-4 py-1.5 bg-sky-500 hover:bg-sky-600 disabled:opacity-40 text-white text-sm rounded-lg ml-auto">
+            {applying ? 'Đang ghi…' : 'Tính lại (đơn đã tính)'}
+          </button>
           <button onClick={apply} disabled={applying || !data?.orders?.length}
-            className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 text-white text-sm rounded-lg ml-auto">
+            className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 text-white text-sm rounded-lg">
             {applying ? 'Đang ghi…' : 'Ghi số tiền vào đơn'}
           </button>
         </div>
@@ -837,6 +919,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
                   <th className="py-2 px-3 text-right">Giá đơn thật</th>
                   <th className="py-2 px-3 text-right">Hiện tại</th>
                   <th className="py-2 px-3 text-right">Tính ra</th>
+                  <th className="py-2 px-3 text-right">Shipping</th>
                   <th className="py-2 px-3 text-right">Chênh</th>
                 </tr>
               </thead>
@@ -875,6 +958,11 @@ function RevenueModal({ partner, onClose, onApplied }) {
                       {fmt$(o.computed)}
                       {o.breakdown?.push_scan ? <div className="text-[10px] font-normal text-red-600">−{fmt$(o.breakdown.push_scan)} push scan</div> : null}
                     </td>
+                    <td className="py-1.5 px-3 text-right text-xs">
+                      {o.shipping == null
+                        ? <span className="text-neutral-300">—</span>
+                        : <span className="text-sky-700" title={`${o.ship_type || ''} — tách khỏi tiền partner`}>{fmt$(o.shipping)}</span>}
+                    </td>
                     <td className={`py-1.5 px-3 text-right text-xs ${
                       o.diff == null ? 'text-neutral-300'
                         : o.diff > 0 ? 'text-emerald-600' : o.diff < 0 ? 'text-red-500' : 'text-neutral-400'
@@ -884,7 +972,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
                   </tr>
                   {open.has(o.order_id) && (
                     <tr className="border-b border-neutral-100 bg-[#faf8f6]">
-                      <td colSpan={10} className="px-6 py-3">
+                      <td colSpan={11} className="px-6 py-3">
                         <Working breakdown={o.breakdown} total={o.computed} />
                       </td>
                     </tr>
@@ -902,6 +990,9 @@ function RevenueModal({ partner, onClose, onApplied }) {
             <span className="text-neutral-600">Giá đơn thật: <b>{fmt$(t.order_total)}</b></span>
             <span className="text-neutral-600">Hiện tại: <b>{fmt$(t.current)}</b></span>
             <span className="text-emerald-700">Tính ra: <b>{fmt$(t.computed)}</b></span>
+            {t.shipping > 0 && (
+              <span className="text-sky-700">Shipping (tách riêng): <b>{fmt$(t.shipping)}</b>{t.shipping_orders ? ` (${t.shipping_orders} đơn)` : ''}</span>
+            )}
             {t.push_scan_orders > 0 && (
               <span className="text-red-600">đã trừ push scan: <b>−{fmt$(t.push_scan)}</b> ({t.push_scan_orders} đơn)</span>
             )}
