@@ -1,4 +1,4 @@
-import { useState, useEffect, Fragment } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import api from '../services/api';
 import { notify, askConfirm } from '../components/Dialog';
 
@@ -718,6 +718,11 @@ function RevenueModal({ partner, onClose, onApplied }) {
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
   const [open, setOpen] = useState(() => new Set());   // order_ids showing their working
+  // How to price: '' = auto (the partner's current setting), 'percent' = new
+  // way (% of total), 'price' = old way ("ghi giá" / rate card). Lets old
+  // months be worked the way they were back then even after switching to %.
+  const [method, setMethod] = useState('');
+  const methodLabel = (m) => m === 'percent' ? 'cách mới (%)' : m === 'price' ? 'cách cũ (bảng giá)' : 'tự động';
 
   useEffect(() => {
     api.get('/products', { params: { status: 1, per_page: 100 } })
@@ -740,6 +745,7 @@ function RevenueModal({ partner, onClose, onApplied }) {
       if (range.product_id) params.product_id = range.product_id;
       if (range.system_id) params.system_id = range.system_id;
       if (range.unpriced) params.unpriced = 1;
+      if (method) params.method = method;
       const res = await api.get(`/partner-report/${partner.user.id}/orders`, { params });
       setData(res.data);
     } catch (err) {
@@ -747,6 +753,13 @@ function RevenueModal({ partner, onClose, onApplied }) {
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
+  // Reload so the preview amounts match the chosen method (skip first render,
+  // the mount effect above already loads).
+  const firstMethod = useRef(true);
+  useEffect(() => {
+    if (firstMethod.current) { firstMethod.current = false; return; }
+    load();
+  }, [method]);
 
   const apply = async () => {
     // Locked orders are skipped hub-side too; filtering here keeps the
@@ -760,12 +773,14 @@ function RevenueModal({ partner, onClose, onApplied }) {
     }
     if (!confirm(
       `Ghi số tiền tính được vào ${ids.length} đơn của ${partner.user.name}?\n\n`
+      + `Cách tính: ${methodLabel(data?.method || method)}.\n`
       + 'Đơn đã chốt tiền (đã có số tiền + partner đã đánh dấu in) được giữ nguyên.'
     )) return;
 
     setApplying(true);
     try {
-      const res = await api.post(`/partner-report/${partner.user.id}/apply-revenue`, { order_ids: ids });
+      const res = await api.post(`/partner-report/${partner.user.id}/apply-revenue`,
+        { order_ids: ids, ...(method ? { method } : {}) });
       notify(res.data?.message || 'Đã tính tiền', { title: 'Tính tiền', kind: 'success' });
       await load();
       onApplied?.();
@@ -788,13 +803,14 @@ function RevenueModal({ partner, onClose, onApplied }) {
     }
     if (!confirm(
       `Tính lại & GHI ĐÈ số tiền cho ${targets.length} đơn ĐÃ tính của ${partner.user.name}?\n\n`
-      + 'Số tiền cũ sẽ bị thay bằng số mới (đã trừ shipping). Đơn đã chốt tiền được giữ nguyên.'
+      + `Cách tính: ${methodLabel(data?.method || method)}.\n`
+      + 'Số tiền cũ sẽ bị thay bằng số mới. Đơn đã chốt tiền được giữ nguyên.'
     )) return;
 
     setApplying(true);
     try {
       const res = await api.post(`/partner-report/${partner.user.id}/apply-revenue`,
-        { order_ids: targets.map(o => o.order_id) });
+        { order_ids: targets.map(o => o.order_id), ...(method ? { method } : {}) });
       notify(res.data?.message || 'Đã tính lại', { title: 'Tính lại', kind: 'success' });
       await load();
       onApplied?.();
@@ -843,6 +859,11 @@ function RevenueModal({ partner, onClose, onApplied }) {
             <h3 className="text-sm font-semibold text-neutral-800">Tính tiền — {partner.user.name}</h3>
             <div className="text-[11px] text-neutral-500">
               <PayRule percent={data?.percent} priceList={data?.price_list} />
+              {data?.method && (
+                <span className="ml-2 px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-600">
+                  đang tính: {methodLabel(data.method)}
+                </span>
+              )}
             </div>
           </div>
           <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800 text-xl leading-none">×</button>
@@ -883,6 +904,16 @@ function RevenueModal({ partner, onClose, onApplied }) {
               className="accent-orange-500" />
             Chỉ đơn chưa tính
           </label>
+          <div>
+            <label className="text-xs text-neutral-500 block">Cách tính</label>
+            <select value={method} onChange={e => setMethod(e.target.value)}
+              title="Chọn cách tính tiền: mới theo %, hay cũ theo bảng giá (ghi giá). Tháng cũ nên chọn cách cũ."
+              className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
+              <option value="">Tự động (theo partner)</option>
+              <option value="percent" disabled={data && !data?.methods_available?.percent}>Cách mới (%)</option>
+              <option value="price" disabled={data && !data?.methods_available?.price}>Cách cũ (bảng giá)</option>
+            </select>
+          </div>
           <button onClick={load} className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Xem</button>
           <button onClick={exportCsv} disabled={!data?.orders?.length}
             className="px-3 py-1.5 bg-emerald-100 hover:bg-emerald-200 disabled:opacity-40 text-emerald-700 text-sm rounded-lg">
